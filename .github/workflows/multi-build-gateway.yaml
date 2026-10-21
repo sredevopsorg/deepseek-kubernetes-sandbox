@@ -256,6 +256,7 @@ jobs:
                 --annotation='index:org.opencontainers.image.source=${{ github.event.repository.url }}' \
                 $(printf '${{ env.GHCR_IMAGE }}@sha256:%s ' *)
 
+
       - name: Create manifest list and push without annotations
         # This step creates a manifest list for the Docker images built for different platforms.
         # It uses the docker buildx imagetools create command to create the manifest list.
