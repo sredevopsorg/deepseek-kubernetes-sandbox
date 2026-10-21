@@ -140,6 +140,15 @@ sweeper skips everything else, so it can never suspend a sandbox an operator is 
 that marker the sweeper would suspend a hand-applied claim 60s after first sighting and break
 `kubectl logs`/`port-forward` against its pod.
 
+**Resume and file ownership.** The pod template sets `fsGroupChangePolicy: OnRootMismatch` on
+purpose. DSH's credentials plugin refuses to boot when `.credentials.yaml` has any group/other
+permission bit (it creates the file `0600`). The kubelet's default fsGroup policy (`Always`)
+recursively ORs `0660` into every file on each pod start, so the first resume of a sandbox would
+crash-loop with `mode 660`. `OnRootMismatch` only rewrites ownership/permissions when the volume
+root does not already match the fsGroup, which it does after the first mount — so suspend/resume
+keeps working. Sandboxes snapshot their pod template, so an updated `SandboxTemplate` does not
+retroactively change existing ones.
+
 ### WebSocket
 
 ```mermaid
