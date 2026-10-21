@@ -313,11 +313,13 @@ the DSH web GUI is fully interactive. Requirements:
   `60-ingress.yaml` is a starting point (Traefik handles upgrades by default),
 - idle suspension is disabled for users with in-flight proxied requests or open WebSockets, so
   a long-running chat stream is not cut off mid-turn,
-- the upstream upgrade dials the sandbox **pod IP** and forwards no `Host`/`Origin`: DSH's Host
-  fence only trusts its own bind address or a loopback/allow-listed host, and `websockets`
-  derives `Host` from the URI (it cannot be overridden). Forwarding the browser's origin here
-  makes DSH answer `403`, which shows up in the browser as an endless
-  `[connection] connection lost, retry #N` loop,
+- the upstream upgrade dials the sandbox **pod IP**, forwards no `Host`/`Origin`, and performs
+  the launch-token handshake under that same `pod-IP:3080` authority. DSH fences on `Host`
+  (only its bind address, loopback, or an allow-listed host passes) and binds its auth cookie to
+  the request authority (`payload.authority === authority`), while `websockets` derives `Host`
+  from the URI and cannot be overridden. A browser-host cookie or forwarded origin makes the
+  upgrade fail (`401`/`403`, surfaced as close `1011`), which the client retries forever as
+  `[connection] connection lost, retry #N`,
 - missing/invalid gateway auth is rejected right after the upgrade with close code `4401`
   (WebSocket auth has no HTTP `401` path); cross-origin or Origin-less upgrades with the cookie
   are rejected the same way (CSWSH protection), so clients must send a matching `Origin`;
@@ -341,7 +343,7 @@ redirects `/u/<user>` to the trailing-slash form with `308` so relative URLs res
 | `409` on signup | User already has a claim; use `POST /login` with the existing token or delete the user first |
 | Cookie set but browser keeps getting `401` | `COOKIE_SECURE=true` while serving over plain HTTP (secure cookies are not sent); use HTTPS or set `false` for local demos |
 | WebSocket closes immediately (`4401`) | Missing/expired gateway cookie, or the upgrade's `Origin` does not match `Host` (CSWSH check); DSH rejecting `Host` instead surfaces as close `1011` — add the host to `DSH_TRUSTED_HOSTS` |
-| Console spams `[connection] connection lost, retry #N` | The upstream WS upgrade is being rejected (DSH answers `403` to the forward, surfaced as close `1011`). The gateway dials the sandbox **pod IP** and forwards no `Host`/`Origin` for upgrades; a gateway image from before that fix, or a sandbox with an empty `status.podIPs`, hits the loop |
+| Console spams `[connection] connection lost, retry #N` | The upstream WS upgrade is being rejected, surfaced as close `1011`. The gateway dials the sandbox **pod IP**, forwards no `Host`/`Origin`, and handshakes under the same `pod-IP:3080` authority DSH binds its cookie to; an older gateway image, or a sandbox with an empty `status.podIPs`, hits this loop |
 | `manifest.webmanifest` returns `401` in the console | Browsers fetch the Web App Manifest without credentials, so the gateway's session cookie is absent and the request fails closed. The UI is unaffected; only the PWA install prompt is lost |
 | Signup is slow / `202` then `Waking` | Warm pool exhausted (`kubectl get sandboxes -l agents.x-k8s.io/warm-pool-sandbox`); scale the pool |
 | `403` from the Kubernetes API in gateway logs | The gateway ServiceAccount is missing claim/sandbox/pod-log verbs (see `50-gateway.yaml`) |

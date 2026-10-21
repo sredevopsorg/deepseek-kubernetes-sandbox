@@ -41,6 +41,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 from urllib.parse import (
@@ -365,15 +366,21 @@ class Kubernetes:
         self.namespace = namespace
         self._crd: k8s_client.CustomObjectsApi | None = None
         self._core: k8s_client.CoreV1Api | None = None
+        # anyio.to_thread runs _call() on a worker pool, so the lazy init can be
+        # entered concurrently. Serialise it: without the lock one thread can
+        # observe _crd set while _core is still None and return a None client.
+        self._clients_lock = threading.Lock()
 
     def _clients(self):
-        if self._crd is None:
-            try:
-                k8s_config.load_incluster_config()
-            except k8s_config.ConfigException:
-                k8s_config.load_kube_config()
-            self._crd = k8s_client.CustomObjectsApi()
-            self._core = k8s_client.CoreV1Api()
+        if self._crd is None or self._core is None:
+            with self._clients_lock:
+                if self._crd is None or self._core is None:
+                    try:
+                        k8s_config.load_incluster_config()
+                    except k8s_config.ConfigException:
+                        k8s_config.load_kube_config()
+                    self._crd = k8s_client.CustomObjectsApi()
+                    self._core = k8s_client.CoreV1Api()
         return self._crd, self._core
 
     async def _call(self, which: str, method: str, *args, **kwargs):
@@ -1148,17 +1155,22 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
             try:
                 sandbox, fqdn = await self._resolve_sandbox(user, claim)
                 host = websocket.headers.get("host", "")
-                cookie, _, _ = await self.dsh_cookie(user, sandbox, fqdn, host)
                 path = websocket.path_params.get("path", "")
-                # DSH's Host fence accepts its own bind address and requires
-                # any Origin to have the same authority. websockets derives the
-                # Host header from the URI and cannot be overridden, so dial
-                # the pod IP instead of the service FQDN and forward no Origin;
-                # CSWSH is already rejected by same_origin() above.
+                # DSH's Host fence accepts its own bind address and binds the
+                # auth cookie to the request authority. websockets derives the
+                # Host header from the URI and cannot be overridden, so dial the
+                # pod IP (the bind address) and handshake under that same
+                # authority - a cookie minted for the browser authority would be
+                # rejected (401). Forward no Origin either: CSWSH is already
+                # rejected by same_origin() above.
                 upstream_host = self._pod_ip(sandbox) or fqdn
                 if ":" in upstream_host and not upstream_host.startswith("["):
                     upstream_host = f"[{upstream_host}]"  # IPv6 literal
-                url = f"ws://{upstream_host}:{self.settings.dsh_port}/{path}"
+                authority = f"{upstream_host}:{self.settings.dsh_port}"
+                cookie, _, _ = await self.dsh_cookie(
+                    user, sandbox, fqdn, authority
+                )
+                url = f"ws://{authority}/{path}"
                 query = filtered_query(websocket.url.query)
                 if query:
                     url = f"{url}?{query}"
