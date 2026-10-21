@@ -389,6 +389,17 @@ def test_filtered_query_removes_token_only():
     assert filtered_query("a=1&token=x&b=2&token=y") == "a=1&b=2"
 
 
+def test_filtered_query_preserves_vite_combined_module_url():
+    """DSH's ``plugins/??<specifiers>`` query must reach the upstream verbatim."""
+    raw = "?@deepseek-ai/dsh-client-modules/client.js&rev=a1bf7d6a56f9"
+    assert filtered_query(raw) == raw
+    assert filtered_query(raw + "&token=x") == raw
+
+
+def test_filtered_query_drops_an_encoded_token_parameter():
+    assert filtered_query("a=1&to%6Ben=x&b=2") == "a=1&b=2"
+
+
 def test_token_matches_is_timing_safe_hash_check():
     claim = {
         "metadata": {
