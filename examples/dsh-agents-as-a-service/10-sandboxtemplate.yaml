@@ -50,20 +50,39 @@ spec:
             # gateway base URL if you want hard-coded absolute links instead.
             - name: DSH_PUBLIC_URL
               value: ""
+            # DSH Host/Origin-fences /api. The gateway forwards the browser's
+            # Host, so DSH must trust the public gateway host. Empty is right
+            # for port-forward/localhost; for the optional Ingress set this to
+            # the same host as 60-ingress.yaml (e.g. dsh.example.com).
+            - name: DSH_TRUSTED_HOSTS
+              value: ""
+          # Probes target /favicon.svg: DSH gates / behind its launch-token
+          # cookie and answers 401 to an unauthenticated GET, which would
+          # otherwise fail readiness and then get the pod killed by liveness.
+          # /favicon.svg is served without auth and is the cheapest liveness
+          # signal that proves the HTTP server is actually serving requests.
           readinessProbe:
             httpGet:
-              path: /
+              path: /favicon.svg
               port: 3080
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 30
           livenessProbe:
             httpGet:
-              path: /
+              path: /favicon.svg
               port: 3080
             initialDelaySeconds: 15
             periodSeconds: 15
             failureThreshold: 3
+          # The container only needs to serve HTTP; drop every capability and
+          # disallow privilege escalation. DSH writes only to DSH_HOME (PVC).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             requests: {cpu: 250m, memory: 512Mi}
             limits: {cpu: "1", memory: 1Gi}

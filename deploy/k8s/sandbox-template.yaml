@@ -3,6 +3,13 @@
 # This is the "just one DSH Web" quick-start template. For the full
 # multi-tenant platform (warm pool, per-user claims, gateway, idle-suspend),
 # see examples/dsh-agents-as-a-service/.
+#
+# Prerequisites (create these first, or apply 00-prereqs.yaml from the
+# examples directory):
+#   - Namespace dsh-demo.
+#   - Secret dsh-provider-keys in dsh-demo with key DEEPSEEK_API_KEY
+#     (injected via envFrom; the pod starts without it, only model calls fail).
+# The agent-sandbox controller (v1.0.7, API v1beta1) must be installed.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
@@ -27,21 +34,40 @@ spec:
           envFrom:
             - secretRef:
                 name: dsh-provider-keys # Secret with key DEEPSEEK_API_KEY
+          env:
+            # Empty => DSH derives links from the request Host. Keep it empty
+            # when fronting the sandbox with a proxy/gateway.
+            - name: DSH_PUBLIC_URL
+              value: ""
+            # DSH Host/Origin-fences /api. Empty trusts only localhost, which
+            # is right for `kubectl port-forward`. Set this to the public host
+            # (e.g. dsh.example.com) if you expose DSH behind an Ingress, so
+            # requests forwarded with the browser's Host are accepted.
+            - name: DSH_TRUSTED_HOSTS
+              value: ""
           volumeMounts:
             - name: dsh-home
               mountPath: /home/node/.dsh # DSH_HOME
+          # / is behind DSH's launch-token cookie (401 without it); use an
+          # unauthenticated path for probes.
           readinessProbe:
             httpGet:
-              path: /
+              path: /favicon.svg
               port: 3080
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /
+              path: /favicon.svg
               port: 3080
             initialDelaySeconds: 15
             periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
   volumeClaimTemplates:
     - metadata:
         name: dsh-home

@@ -76,6 +76,7 @@ set -eu
 
 : "${DSH_PORT:=3080}"
 : "${DSH_HOST:=}"
+: "${DSH_TRUSTED_HOSTS:=}"
 DSH_PUBLIC_URL="${DSH_PUBLIC_URL-http://localhost:${DSH_PORT}}"
 
 # DSH rejects wildcard hosts. Pick the container/pod's first non-loopback IPv4.
@@ -86,6 +87,18 @@ fi
 if [ -n "$DSH_PUBLIC_URL" ]; then
   set -- --public-url "$DSH_PUBLIC_URL" "$@"
 fi
+
+# Additional trusted hosts (e.g. the public gateway host behind an Ingress).
+# DSH Host/Origin-fences /api: without this, requests forwarded with the
+# browser's Host header are rejected. Accepts comma- or space-separated names;
+# localhost/127.0.0.1 are always trusted below.
+old_ifs="$IFS"
+IFS=', '
+for trusted_host in $DSH_TRUSTED_HOSTS; do
+  [ -n "$trusted_host" ] || continue
+  set -- "$@" --trusted-host "$trusted_host"
+done
+IFS="$old_ifs"
 
 exec node /app/lib/bin.js web \
   --no-open \
