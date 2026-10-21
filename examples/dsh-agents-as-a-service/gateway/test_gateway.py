@@ -38,6 +38,7 @@ from gateway import (
 
 TOKEN = "s3cret-token"
 POD_UID = "pod-uid-1"
+POD_IP = "10.0.0.7"
 FQDN = "dsh-alice-sbx.test-ns.svc.cluster.local"
 
 
@@ -206,6 +207,7 @@ def add_user(k8s, user="alice", token=TOKEN, ready=True, pod_name=None, suffix="
         "status": {
             "conditions": [{"type": "Ready", "status": "True"}] if ready else [],
             "serviceFQDN": FQDN,
+            "podIPs": [POD_IP],
         },
     }
     k8s.pods[pod_name] = {"metadata": {"name": pod_name, "uid": POD_UID}}
@@ -1202,13 +1204,16 @@ def test_ws_bridges_frames_and_injects_cookie(env):
             assert ws.receive_text() == "pong"
 
     url, kwargs = env.ws_connect.calls[0]
-    assert url.startswith(f"ws://{FQDN}:3080/api/remote.mux")
+    # DSH's Host fence: dial the pod IP (its bind address) and never forward
+    # the browser's Host/Origin, which would make the upgrade 403.
+    assert url.startswith(f"ws://{POD_IP}:3080/api/remote.mux")
     assert "token=secret" not in url
     assert "x=1" in url
     headers = kwargs["additional_headers"]
     assert "authorization" not in headers
     assert headers["cookie"] == "dsh-auth-a=one"
-    assert headers["host"] == "testserver"
+    assert "host" not in headers
+    assert "origin" not in headers
     assert env.ws_connect.instances[0].sent == ["hello"]
 
 
@@ -1228,7 +1233,7 @@ def test_ws_cookie_same_origin_bridges_frames(env):
 
     headers = env.ws_connect.calls[0][1]["additional_headers"]
     assert headers["cookie"] == "dsh-auth-a=one"
-    assert headers["origin"] == "http://testserver"
+    assert "origin" not in headers
 
 
 def test_ws_handshake_failure_closes_1011(env):
