@@ -10,6 +10,7 @@ use Starlette's ``TestClient`` (which runs the lifespan) against a fake
 import asyncio
 import hashlib
 import json
+import threading
 import time
 from types import SimpleNamespace
 
@@ -527,6 +528,42 @@ async def test_kubernetes_get_pod_normalises_the_v1pod_model(monkeypatch):
 
     assert isinstance(pod, dict)
     assert pod["metadata"]["uid"] == "pod-uid-9"
+
+
+def test_kubernetes_clients_initialise_once_under_concurrency(monkeypatch):
+    """_call runs on a worker pool: the lazy init must not hand out a None client."""
+    import gateway as gw
+    from gateway import Kubernetes
+
+    created = []
+
+    class Crd:
+        def __init__(self):
+            created.append("crd")
+
+    class SlowCore:
+        def __init__(self):
+            time.sleep(0.05)  # widen the window between _crd and _core
+            created.append("core")
+
+    monkeypatch.setattr(gw.k8s_client, "CustomObjectsApi", Crd)
+    monkeypatch.setattr(gw.k8s_client, "CoreV1Api", SlowCore)
+    monkeypatch.setattr(gw.k8s_config, "load_incluster_config", lambda: None)
+
+    k8s = Kubernetes("test-ns")
+    results = []
+
+    def worker():
+        results.append(k8s._clients())
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert all(core is not None for _, core in results)
+    assert created.count("core") == 1
 
 
 # --- health / landing / redirect ------------------------------------------
