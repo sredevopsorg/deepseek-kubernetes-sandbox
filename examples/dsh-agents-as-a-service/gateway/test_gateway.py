@@ -29,6 +29,7 @@ from gateway import (
     derive_state,
     extract_dsh_cookies,
     filtered_query,
+    gateway_managed,
     parse_dsh_launch_token,
     rewrite_location,
     same_origin,
@@ -318,6 +319,15 @@ def test_claim_name_and_user_roundtrip():
     assert claim_user({"metadata": {"name": "dsh-alice"}}) == "alice"
 
 
+def test_gateway_managed_requires_ownership_annotation():
+    managed = {"metadata": {"annotations": {"aaas.example.com/managed-by": "dsh-gateway"}}}
+    manual = {"metadata": {"name": "dsh-alice"}}
+    other = {"metadata": {"annotations": {"aaas.example.com/managed-by": "someone"}}}
+    assert gateway_managed(managed) is True
+    assert gateway_managed(manual) is False
+    assert gateway_managed(other) is False
+
+
 def test_parse_dsh_launch_token_from_real_log_line():
     log = (
         "2026-10-21T10:00:00Z starting\n"
@@ -443,6 +453,10 @@ async def test_kubernetes_create_claim_body(monkeypatch):
     body = args[4]
     assert body["metadata"]["name"] == "dsh-alice"
     assert body["metadata"]["annotations"]["aaas.example.com/token-sha256"] == "hash"
+    assert (
+        body["metadata"]["annotations"]["aaas.example.com/managed-by"]
+        == "dsh-gateway"
+    )
     assert body["spec"]["warmPoolRef"]["name"] == "test-pool"
     assert body["spec"]["additionalPodMetadata"]["labels"][
         "sandbox.users.io/dsh-user"
@@ -1159,7 +1173,10 @@ def test_ws_upstream_connect_failure_closes_1011(env):
 
 def ready_claim(user="alice"):
     return {
-        "metadata": {"name": claim_name(user)},
+        "metadata": {
+            "name": claim_name(user),
+            "annotations": {"aaas.example.com/managed-by": "dsh-gateway"},
+        },
         "status": {"sandbox": {"name": f"dsh-{user}-sbx"}},
     }
 
@@ -1170,6 +1187,33 @@ def ready_sandbox(user="alice"):
         "spec": {},
         "status": {"conditions": [{"type": "Ready", "status": "True"}]},
     }
+
+
+@pytest.mark.asyncio
+async def test_sweeper_skips_claim_it_does_not_own(env):
+    """A hand-applied claim (e.g. README 30-claim-alice.yaml) must not be swept.
+
+    The gateway shares the namespace with the resource-layer walkthrough; those
+    claims are named dsh-<user> too, but carry no ownership annotation.  The
+    sweeper used to suspend them 60s after first sighting, deleting the pod that
+    README step 3 port-forwards to.
+    """
+    env.k8s.claims["alice"] = {
+        "metadata": {"name": claim_name("alice")},
+        "status": {"sandbox": {"name": "dsh-alice-sbx"}},
+    }
+    env.k8s.sandboxes["dsh-alice-sbx"] = ready_sandbox()
+
+    # The sweeper never starts an idle clock for a claim it does not own...
+    await env.gateway.sweep_once()
+    assert "alice" not in env.gateway.state.last_activity
+
+    # ...and does not suspend it even when it looks long-idle.
+    env.gateway.state.last_activity["alice"] = (
+        time.time() - env.settings.idle_timeout - 10
+    )
+    await env.gateway.sweep_once()
+    assert env.k8s.patches == []
 
 
 @pytest.mark.asyncio

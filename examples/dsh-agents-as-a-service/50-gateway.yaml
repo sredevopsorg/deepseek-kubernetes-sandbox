@@ -101,7 +101,10 @@ spec:
               value: dsh-pool
             # Seconds a sandbox may sit idle before the sweeper suspends it
             # (pod deleted, PVC kept), and the max time a proxy request waits
-            # for a suspended sandbox to become Ready again.
+            # for a suspended sandbox to become Ready again. Only claims this
+            # gateway created are swept: a claim applied by hand from the
+            # resource-layer manifests carries no aaas.example.com/managed-by
+            # annotation and is never suspended.
             - name: IDLE_TIMEOUT
               value: "60"
             - name: WAKE_TIMEOUT

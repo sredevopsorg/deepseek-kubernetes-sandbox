@@ -133,6 +133,13 @@ sequenceDiagram
 Suspend deletes only the pod. The PVC keeps conversations, sessions, and config, so resume
 reattaches exactly the same state.
 
+**Ownership boundary.** The gateway shares its namespace with claims created outside it — the
+example's resource-layer walkthrough applies `dsh-alice` by hand, and every claim is named
+`dsh-<user>`. Claims the gateway creates carry `aaas.example.com/managed-by=dsh-gateway`; the
+sweeper skips everything else, so it can never suspend a sandbox an operator is using. Without
+that marker the sweeper would suspend a hand-applied claim 60s after first sighting and break
+`kubectl logs`/`port-forward` against its pod.
+
 ### WebSocket
 
 ```mermaid
@@ -210,11 +217,15 @@ sequenceDiagram
 ### ADR-5: Claims as the user record
 
 - **Decision:** a user is a `SandboxClaim` named `dsh-<user>`; the bearer-token SHA-256 lives in
-  a claim annotation.
+  a claim annotation, and the gateway marks its own claims with
+  `aaas.example.com/managed-by=dsh-gateway`.
 - **Why:** no database, no separate account service; deleting the claim is account deletion and
-  cascades everything.
+  cascades everything. The ownership annotation keeps a namespaced claim list safe to share with
+  objects created by hand or by other controllers.
 - **Cost:** no password reset, no admin API, no audit log of its own; Kubernetes API load grows
-  with users. Fine for a reference pattern, not for a product.
+  with users. Claims created before the ownership marker existed must be annotated
+  (`kubectl annotate sandboxclaim ...`) to keep being swept. Fine for a reference pattern, not
+  for a product.
 
 ### ADR-6: Gateway cookie session instead of bearer tokens in the browser
 
