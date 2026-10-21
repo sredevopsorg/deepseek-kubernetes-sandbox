@@ -228,6 +228,15 @@ PY
   [ "$STATE" = "Suspended" ] || fail "bob was not idle-suspended (state=$STATE)"
   pass "idle sweeper suspended bob"
 
+  # Regression: alice's claim was applied by hand in step 2, so it has no
+  # aaas.example.com/managed-by annotation. The sweeper must leave it alone -
+  # even though the same idle window just suspended bob. If it does not, README
+  # step 3 (logs/port-forward against alice's pod) breaks.
+  ALICE_MODE=$(kubectl -n "$NS" get sandbox "$SB" -o jsonpath='{.spec.operatingMode}')
+  [ "$ALICE_MODE" = "Running" ] \
+    || fail "sweeper suspended a claim it does not own (alice: $ALICE_MODE)"
+  pass "idle sweeper left the hand-applied alice claim Running"
+
   T0=$(date +%s)
   curl -sf -m 150 -b "$JAR" "http://$GW/u/bob/" >/dev/null \
     || fail "wake-on-connect request failed"

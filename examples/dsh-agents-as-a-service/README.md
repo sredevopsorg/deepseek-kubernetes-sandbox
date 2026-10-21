@@ -130,6 +130,12 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 > never `3080`. `localhost` is always in DSH's trusted-host list, so the forwarded request is
 > accepted.
 
+> **Why the pod stays up:** this claim was applied by hand, so it carries no gateway ownership
+> annotation (`aaas.example.com/managed-by`). The gateway's idle sweeper only suspends claims it
+> created through `POST /users`; the resource-layer claims from these manifests are never
+> touched. You can deploy the gateway (step 8) and still keep a sandbox you are port-forwarding
+> to.
+
 ## 4. Write state on the PVC
 
 ```bash
@@ -307,6 +313,7 @@ redirects `/u/<user>` to the trailing-slash form with `308` so relative URLs res
 | WebSocket closes immediately (`4401`) | Missing/expired gateway cookie, or the upgrade's `Origin` does not match `Host` (CSWSH check); DSH rejecting `Host` instead surfaces as close `1011` — add the host to `DSH_TRUSTED_HOSTS` |
 | Signup is slow / `202` then `Waking` | Warm pool exhausted (`kubectl get sandboxes -l agents.x-k8s.io/warm-pool-sandbox`); scale the pool |
 | `403` from the Kubernetes API in gateway logs | The gateway ServiceAccount is missing claim/sandbox/pod-log verbs (see `50-gateway.yaml`) |
+| Step 3: `pod "$SB" not found` after deploying the gateway | The claim was suspended by the idle sweeper. Claims created by the gateway carry `aaas.example.com/managed-by=dsh-gateway`; hand-applied claims (steps 1–7) do not and are never swept. Upgrade the gateway to a build that honors the marker, or resume the sandbox: `kubectl -n dsh-demo patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Running"}}'` |
 
 ## Limitations
 

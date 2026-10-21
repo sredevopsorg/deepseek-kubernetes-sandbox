@@ -112,7 +112,7 @@ can also be injected into `create_app` for tests.
 | --- | --- | --- |
 | `NAMESPACE` | `dsh-demo` | Namespace holding the claims, sandboxes and pods. |
 | `POOL` | `dsh-pool` | `warmPoolRef.name` for new claims. |
-| `IDLE_TIMEOUT` | `60` | Seconds of inactivity before the sweeper suspends a sandbox. |
+| `IDLE_TIMEOUT` | `60` | Seconds of inactivity before the sweeper suspends a sandbox. Only claims the gateway created (annotation `aaas.example.com/managed-by=dsh-gateway`) are ever suspended. |
 | `WAKE_TIMEOUT` | `120` | Seconds to wait for a sandbox to become Ready (signup and wake-on-connect). |
 | `DSH_PORT` | `3080` | Upstream DSH port. |
 | `DSH_CONTAINER` | `dsh-web` | Container whose logs carry the launch token. |

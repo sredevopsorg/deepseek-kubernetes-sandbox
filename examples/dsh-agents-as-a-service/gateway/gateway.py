@@ -69,6 +69,12 @@ from starlette.websockets import WebSocket
 GROUP, VERSION = "extensions.agents.x-k8s.io", "v1beta1"
 CORE_GROUP = "agents.x-k8s.io"
 TOKEN_ANNOTATION = "aaas.example.com/token-sha256"
+# Ownership marker: the gateway shares its namespace with claims applied by
+# hand (the resource-layer walkthrough in the example README).  Every claim is
+# named "dsh-<user>", so without an explicit marker the sweeper cannot tell its
+# own users from a claim someone created manually.
+MANAGED_ANNOTATION = "aaas.example.com/managed-by"
+MANAGED_BY = "dsh-gateway"
 POD_NAME_ANNOTATION = "agents.x-k8s.io/pod-name"
 USER_LABEL = "sandbox.users.io/dsh-user"
 
@@ -147,6 +153,18 @@ def claim_name(user: str) -> str:
 
 def claim_user(claim: dict) -> str:
     return claim["metadata"]["name"].removeprefix("dsh-")
+
+
+def gateway_managed(claim: dict) -> bool:
+    """True only for claims this gateway created.
+
+    The sweeper must not suspend claims it does not own: a claim applied from
+    a resource-layer manifest (e.g. ``30-claim-alice.yaml``) has the same
+    ``dsh-<user>`` name but no ownership marker, and suspending it deletes a
+    pod the operator is using.
+    """
+    annotations = (claim.get("metadata") or {}).get("annotations") or {}
+    return annotations.get(MANAGED_ANNOTATION) == MANAGED_BY
 
 
 def condition(obj: dict, ctype: str) -> bool:
@@ -372,7 +390,10 @@ class Kubernetes:
             "kind": "SandboxClaim",
             "metadata": {
                 "name": claim_name(user),
-                "annotations": {TOKEN_ANNOTATION: token_hash},
+                "annotations": {
+                    TOKEN_ANNOTATION: token_hash,
+                    MANAGED_ANNOTATION: MANAGED_BY,
+                },
             },
             "spec": {
                 "warmPoolRef": {"name": pool},
@@ -1169,6 +1190,11 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
     async def sweep_once(self) -> None:
         claims = await self.k8s.list_claims()
         for claim in claims:
+            # Only suspend claims this gateway created.  Everything else in
+            # the namespace (resource-layer claims from the README walkthrough,
+            # other controllers' objects) is not ours to manage.
+            if not gateway_managed(claim):
+                continue
             user = claim_user(claim)
             try:
                 sandbox = await self._sandbox_of(claim)
