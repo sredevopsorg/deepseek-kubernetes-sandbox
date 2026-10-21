@@ -43,7 +43,15 @@ import re
 import secrets
 import time
 from dataclasses import dataclass, field
-from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    quote,
+    unquote_plus,
+    urlencode,
+    urlsplit,
+    urlunsplit,
+)
 
 import anyio
 import httpx
@@ -254,13 +262,23 @@ def rewrite_location(location: str, user: str) -> str:
 
 
 def filtered_query(query_string: str) -> str:
-    """Drop ``?token=`` before a request is sent upstream."""
-    pairs = [
-        (key, value)
-        for key, value in parse_qsl(query_string, keep_blank_values=True)
-        if key != "token"
-    ]
-    return urlencode(pairs)
+    """Drop ``?token=`` before a request is sent upstream.
+
+    The remaining query is forwarded byte-for-byte.  DSH's combined-module
+    URLs look like ``plugins/??@deepseek-ai/dsh-client-modules/client.js`` —
+    the raw query itself begins with ``?`` and DSH routes it verbatim.
+    Re-encoding through ``parse_qsl``/``urlencode`` turns that into ``%3F…``,
+    the upstream answers 404, and the client boot dies with "HTML did not
+    preload @deepseek-ai/dsh-client-modules/client.js".
+    """
+    if not query_string:
+        return ""
+    kept = []
+    for part in query_string.split("&"):
+        if unquote_plus(part.split("=", 1)[0]) == "token":
+            continue
+        kept.append(part)
+    return "&".join(kept)
 
 
 def _env_int(name: str, default: int) -> int:
