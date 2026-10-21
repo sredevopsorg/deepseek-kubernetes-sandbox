@@ -34,6 +34,15 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
         runAsNonRoot: true
+        # DSH's credentials plugin refuses to start when .credentials.yaml has
+        # any group/other permission bit (it creates the file 0600). The
+        # default kubelet fsGroup policy ("Always") recursively ORs 0660 into
+        # every file each time the pod starts, so a resumed sandbox comes back
+        # with 0660 and crash-loops before the gateway can proxy to it.
+        # OnRootMismatch skips that walk once the volume root already carries
+        # the fsGroup ownership/mode applied on the first mount.
+        # Keep in sync with deploy/k8s/sandbox-template.yaml.
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: dsh-web
           image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.2

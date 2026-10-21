@@ -159,6 +159,12 @@ kubectl -n dsh-demo wait sandbox "$SB" --for=condition=Ready --timeout=180s
 kubectl -n dsh-demo exec "$SB" -- cat /home/node/.dsh/marker.txt   # "remember me"
 ```
 
+> **Why resume works:** the pod template sets `fsGroupChangePolicy: OnRootMismatch`. DSH requires
+> its `.credentials.yaml` to be `0600`, while the kubelet's default fsGroup policy widens every
+> file to `0660` on each pod start — a resumed sandbox would crash-loop. See
+> [Troubleshooting](#troubleshooting) for the one-time fix on sandboxes created before this
+> setting existed.
+
 ## 7. Injection policy rejects env-carrying claims
 
 ```bash
@@ -194,6 +200,11 @@ kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 > first. Cluster-specific fields such as `nodeAffinity` and the warm-pool replica count are
 > intentionally not in the repo manifests; preserve them with a targeted patch instead of a
 > blind apply. Moving the probes to `/favicon.svg` is the crash-loop fix.
+>
+> The template also sets `fsGroupChangePolicy: OnRootMismatch` (see the note in step 6).
+> Existing `Sandbox` objects snapshot their pod template, so a template apply does not update
+> them: patch each sandbox's `spec.podTemplate.spec.securityContext.fsGroupChangePolicy` and
+> `chmod 600` its `.credentials.yaml`, or recreate it.
 
 ### Browser flow
 
@@ -314,6 +325,7 @@ redirects `/u/<user>` to the trailing-slash form with `308` so relative URLs res
 | Signup is slow / `202` then `Waking` | Warm pool exhausted (`kubectl get sandboxes -l agents.x-k8s.io/warm-pool-sandbox`); scale the pool |
 | `403` from the Kubernetes API in gateway logs | The gateway ServiceAccount is missing claim/sandbox/pod-log verbs (see `50-gateway.yaml`) |
 | Step 3: `pod "$SB" not found` after deploying the gateway | The claim was suspended by the idle sweeper. Claims created by the gateway carry `aaas.example.com/managed-by=dsh-gateway`; hand-applied claims (steps 1–7) do not and are never swept. Upgrade the gateway to a build that honors the marker, or resume the sandbox: `kubectl -n dsh-demo patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Running"}}'` |
+| Resume crash-loops: `credentials-local: … is readable beyond its owner (mode 660)` | The pod template lacks `fsGroupChangePolicy: OnRootMismatch`, so the kubelet's default fsGroup policy rewrote `.credentials.yaml` to `0660`; DSH requires `0600` and refuses to start. New installs get the policy from the template. For an existing sandbox: suspend it, run a throwaway pod on `dsh-home-$SB` to `chmod 600 /home/node/.dsh/.credentials.yaml`, patch the sandbox's `podTemplate` with the policy, then resume. |
 
 ## Limitations
 
