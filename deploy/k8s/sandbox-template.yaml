@@ -58,7 +58,15 @@ spec:
             - name: dsh-home
               mountPath: /home/node/.dsh # DSH_HOME
           # / is behind DSH's launch-token cookie (401 without it); use an
-          # unauthenticated path for probes.
+          # unauthenticated path for probes. The startup probe gives a cold
+          # start (plugin activation on a small node, or the first resume of a
+          # suspended sandbox) up to 120s before liveness can restart it.
+          startupProbe:
+            httpGet:
+              path: /favicon.svg
+              port: 3080
+            periodSeconds: 5
+            failureThreshold: 24
           readinessProbe:
             httpGet:
               path: /favicon.svg

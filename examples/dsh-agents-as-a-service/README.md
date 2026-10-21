@@ -45,7 +45,9 @@ What it demonstrates, feature by feature:
 - **Host allow-list**: DSH rejects unknown `Host` headers. The gateway forwards the browser's
   `Host`, so the public hostname must be added to `DSH_TRUSTED_HOSTS` in the template.
 - **Probes target `/favicon.svg`**: `/` returns `401` without the launch token, so a probe on
-  `/` crash-loops the pod. `/favicon.svg` is unauthenticated.
+  `/` crash-loops the pod. `/favicon.svg` is unauthenticated, and a `startupProbe` gates
+  liveness/readiness so a slow cold start (plugin activation, or a resumed sandbox) is not
+  restarted mid-boot.
 
 ## Prerequisites
 
