@@ -669,6 +669,15 @@ class Gateway:
             or sandbox["metadata"]["name"]
         )
 
+    @staticmethod
+    def _pod_ip(sandbox: dict) -> str | None:
+        """The pod IP is the authority DSH accepts in its Host fence."""
+        for entry in (sandbox.get("status") or {}).get("podIPs") or []:
+            ip = entry.get("ip") if isinstance(entry, dict) else entry
+            if ip:
+                return ip
+        return None
+
     def _clear_handshake(self, user: str) -> None:
         for key in [k for k in self.state.handshake if k[0] == user]:
             self.state.handshake.pop(key, None)
@@ -1141,7 +1150,15 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 host = websocket.headers.get("host", "")
                 cookie, _, _ = await self.dsh_cookie(user, sandbox, fqdn, host)
                 path = websocket.path_params.get("path", "")
-                url = f"ws://{fqdn}:{self.settings.dsh_port}/{path}"
+                # DSH's Host fence accepts its own bind address and requires
+                # any Origin to have the same authority. websockets derives the
+                # Host header from the URI and cannot be overridden, so dial
+                # the pod IP instead of the service FQDN and forward no Origin;
+                # CSWSH is already rejected by same_origin() above.
+                upstream_host = self._pod_ip(sandbox) or fqdn
+                if ":" in upstream_host and not upstream_host.startswith("["):
+                    upstream_host = f"[{upstream_host}]"  # IPv6 literal
+                url = f"ws://{upstream_host}:{self.settings.dsh_port}/{path}"
                 query = filtered_query(websocket.url.query)
                 if query:
                     url = f"{url}?{query}"
@@ -1149,9 +1166,9 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                     key: value
                     for key, value in websocket.headers.items()
                     if key.lower() not in OWNED_REQUEST_HEADERS
+                    and key.lower() != "origin"
                     and not key.lower().startswith("sec-websocket-")
                 }
-                headers["host"] = host
                 headers["cookie"] = cookie
                 headers["x-forwarded-host"] = host
                 headers["x-forwarded-proto"] = websocket.url.scheme
