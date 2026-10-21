@@ -1,15 +1,28 @@
 # The gateway: control+data plane that turns the resources into a usable
-# service. Build the image first (see README step 8):
+# browser-facing service. It is a Starlette ASGI app (see gateway/) listening
+# on :8080 and exposing:
+#   GET /healthz                     unauthenticated health probe
+#   GET /                            landing page (signup / token login)
+#   POST /users, POST /login, ...    session cookie auth
+#   /u/<user>/...                    HTTP + WebSocket proxy to the user's DSH
+#
+# Image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:gateway
+# For local kind development you can build and load a local tag instead, then
+# change `image` below to it:
 #   docker build -t dsh-aaas-gateway:demo gateway/
-#   kind load docker-image dsh-aaas-gateway:demo   # (kind clusters)
+#   kind load docker-image dsh-aaas-gateway:demo
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: dsh-gateway
   namespace: dsh-demo
 ---
-# Least privilege: claims are created/deleted per user; sandboxes are only
-# read and patched (operatingMode flips for suspend/resume).
+# Least privilege:
+#   - claims are created/deleted per user (signup/delete);
+#   - sandboxes are read, and patched only to flip operatingMode (suspend/resume);
+#   - pods are read, and pods/log is read to capture DSH's launch token from
+#     the startup log line (`dsh web: ...?token=...`).
+# configmaps are not needed: all state is in memory / claim annotations.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -22,6 +35,12 @@ rules:
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
     verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -43,7 +62,11 @@ metadata:
   name: dsh-gateway
   namespace: dsh-demo
 spec:
-  replicas: 1 # in-memory idle clock => single replica by design
+  # Single replica BY DESIGN: the idle clock, in-flight counters and the
+  # per-(user, pod, Host) DSH cookie cache are in-process memory. Running two
+  # replicas would fragment that state (double suspend/resume races, repeated
+  # log-token handshakes). Scale only after moving state to a shared store.
+  replicas: 1
   selector:
     matchLabels:
       app: dsh-gateway
@@ -61,7 +84,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gateway
-          image: dsh-aaas-gateway:demo
+          image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:gateway
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -69,17 +92,60 @@ spec:
             capabilities:
               drop: ["ALL"]
           ports:
-            - containerPort: 8080
+            - name: http
+              containerPort: 8080
           env:
             - name: NAMESPACE
               value: dsh-demo
             - name: POOL
               value: dsh-pool
+            # Seconds a sandbox may sit idle before the sweeper suspends it
+            # (pod deleted, PVC kept), and the max time a proxy request waits
+            # for a suspended sandbox to become Ready again.
             - name: IDLE_TIMEOUT
               value: "60"
+            - name: WAKE_TIMEOUT
+              value: "120"
+            # Container name inside the per-user sandbox pods whose logs carry
+            # the DSH launch token.
+            - name: DSH_CONTAINER
+              value: dsh-web
+            # Cookie dsh_gw_session is HttpOnly + SameSite=Lax. Set to "true"
+            # when this Service is reached over HTTPS (e.g. the optional
+            # 60-ingress.yaml with TLS); "false" keeps the plain-HTTP demo
+            # usable via port-forward.
+            - name: COOKIE_SECURE
+              value: "false"
+            # Reject proxied request bodies larger than this (413).
+            - name: MAX_BODY_MB
+              value: "32"
+          # /healthz is unauthenticated and returns 200 without touching the
+          # cluster, so it is safe for both readiness and liveness.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
           resources:
             requests: {cpu: 50m, memory: 128Mi}
             limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            # readOnlyRootFilesystem leaves no writable HOME/tmp; the image sets
+            # HOME=/tmp, so back it with scratch space. No state lives here.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -1,3 +1,6 @@
-flask==3.1.*
-requests==2.32.*
-kubernetes==31.0.*
+starlette==1.9.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+websockets==17.3
+kubernetes==37.0.1
+python-multipart==0.0.32

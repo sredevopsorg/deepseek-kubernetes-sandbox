@@ -11,10 +11,11 @@ sessions, config) surviving on a per-user PVC at `/home/node/.dsh`.
 It ships in two layers:
 
 1. **The resource layer** (steps 1–7): pure manifests + kubectl, so every mechanism is visible.
-2. **The service layer** (step 8): a small included **gateway** (`gateway/`) that makes it
-   directly usable — signup API, per-user bearer tokens, a `/u/{user}/**` proxy that
-   transparently **wakes suspended instances on connect**, and an idle sweeper that suspends
-   them again.
+2. **The service layer** (step 8): a small included **gateway** (`gateway/`) that makes the
+   platform browser-usable — a signup page/API, `HttpOnly` cookie sessions, a `/u/{user}/**`
+   proxy for HTTP **and WebSocket** that transparently **wakes suspended instances on
+   connect**, and an idle sweeper that suspends them again. The gateway performs the DSH
+   launch-token handshake server-side, so the browser never sees the token.
 
 What it demonstrates, feature by feature:
 
@@ -37,11 +38,14 @@ What it demonstrates, feature by feature:
   instead of splitting `/v1/*` (API) from the dashboard.
 - **One shared secret**: only `DEEPSEEK_API_KEY` is injected (via `envFrom`); there is no
   dashboard basic-auth, session-cookie secret, or API-server key.
-- **Host forwarding**: the gateway forwards the original `Host` + `X-Forwarded-*` (and keeps
-  `DSH_PUBLIC_URL` empty) so DSH generates reachable links from the request.
-- **WebSocket caveat**: the requests-based streaming proxy handles SSE but not WebSocket
-  upgrades. For full DSH web-GUI interactivity, front the gateway with a path-based Ingress
-  per user (or a WS-capable proxy).
+- **Launch-token handshake**: DSH gates `/` behind a token it prints only in its logs. The
+  gateway reads it, performs the handshake, and keeps the resulting auth cookie server-side;
+  the browser authenticates to the gateway with its own cookie. See
+  [How the DSH handshake works](#how-the-dsh-handshake-works).
+- **Host allow-list**: DSH rejects unknown `Host` headers. The gateway forwards the browser's
+  `Host`, so the public hostname must be added to `DSH_TRUSTED_HOSTS` in the template.
+- **Probes target `/favicon.svg`**: `/` returns `401` without the launch token, so a probe on
+  `/` crash-loops the pod. `/favicon.svg` is unauthenticated.
 
 ## Prerequisites
 
@@ -55,7 +59,7 @@ What it demonstrates, feature by feature:
   ```
 
 Or run everything below in one shot with `./run-test-kind.sh` (expects a kind cluster + the
-manifest above already applied).
+manifest above already applied; it creates and deletes the namespace itself).
 
 ## 1. Install the platform resources
 
@@ -111,14 +115,20 @@ Three things worth noticing:
 
 ## 3. Talk to the instance
 
+DSH Web needs its launch token on first contact — a bare `/` returns `401`. The token is in the
+pod logs:
+
 ```bash
-kubectl -n dsh-demo port-forward "$SB" 18081:3080
-# open http://localhost:18081 — DSH Web for alice
+kubectl -n dsh-demo logs "$SB" | grep -m1 '?token='
+# dsh web: http://<pod-ip>:3080/?token=...
+kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
+# open http://localhost:18081/?token=... (from the log line)
 ```
 
 > **Local port note:** DSH Web listens on `3080` **in-cluster**. If `3080` is already in use
 > on your workstation (e.g. by a local DSH), forward to a different local port (here `18081`),
-> never `3080`.
+> never `3080`. `localhost` is always in DSH's trusted-host list, so the forwarded request is
+> accepted.
 
 ## 4. Write state on the PVC
 
@@ -153,37 +163,168 @@ kubectl -n dsh-demo get sandboxclaim dsh-mallory \
 kubectl delete -f 40-claim-rejected.yaml
 ```
 
-## 8. The gateway: signup, proxy, idle-suspend, wake-on-connect
+## 8. The gateway: signup, browser proxy, idle-suspend, wake-on-connect
 
-Build the gateway image and deploy it:
+### Deploy it
 
 ```bash
-docker build -t dsh-aaas-gateway:demo gateway/
-kind load docker-image dsh-aaas-gateway:demo   # (kind clusters)
+# Published image (on kind, load it into the cluster; on a real cluster it is
+# pulled from GHCR):
+docker pull ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:gateway
+kind load docker-image ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:gateway --name <kind-cluster>
+
+# ... or build it locally and tag it exactly as 50-gateway.yaml expects:
+docker build -t ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:gateway gateway/
+kind load docker-image ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:gateway --name <kind-cluster>
+
 kubectl apply -f 50-gateway.yaml
 kubectl -n dsh-demo rollout status deploy/dsh-gateway --timeout=120s
 kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 ```
 
-Then:
+> The gateway binds `8080`; the local port-forward uses `18080` and never `3080`.
+>
+> **Applying over an existing install?** Run `kubectl diff -f 10-sandboxtemplate.yaml`
+> first. Cluster-specific fields such as `nodeAffinity` and the warm-pool replica count are
+> intentionally not in the repo manifests; preserve them with a targeted patch instead of a
+> blind apply. Moving the probes to `/favicon.svg` is the crash-loop fix.
+
+### Browser flow
+
+Open <http://localhost:18080>. The landing page has a one-field signup form. Enter `bob`, and
+the gateway:
+
+1. creates the `SandboxClaim` over the warm pool,
+2. waits for it to become `Ready`,
+3. sets an `HttpOnly`, `SameSite=Lax` cookie `dsh_gw_session=<user>:<token>` on the browser,
+4. redirects to `/u/bob/`, where the DSH Web UI loads through the gateway.
+
+From then on every request under `/u/bob/` (assets, API calls, SSE, WebSocket) is proxied to
+bob's sandbox. The DSH launch token and DSH's own auth cookie stay in the gateway; the browser
+only holds the gateway cookie.
+
+The same flow with `curl`, no JavaScript (the session cookie is the only credential):
 
 ```bash
-# signup → claim over the warm pool + one-time bearer token
-SIGNUP=$(curl -s -X POST http://localhost:18080/users -H 'Content-Type: application/json' -d '{"user":"bob"}')
-TOKEN=$(echo "$SIGNUP" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-
-# proxy to bob's DSH Web (the gateway wakes it if suspended)
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:18080/u/bob/
-
-# tokenless is rejected
+JAR=$(mktemp)
+# signup (form POST, exactly what the landing page sends)
+curl -s -i -c "$JAR" -H 'Origin: http://localhost:18080' \
+  -d 'user=bob' http://localhost:18080/users
+# proxy: bob's DSH Web through the gateway
+curl -s -b "$JAR" http://localhost:18080/u/bob/ | head -5
+# without the cookie the gateway fails closed
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18080/u/bob/   # 401
-
-# after IDLE_TIMEOUT (60s) the sweeper suspends bob
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:18080/users/bob   # state: Suspended
-
+# derived state: Ready / Waking / Suspended / ...
+curl -s -b "$JAR" http://localhost:18080/users/bob
 # delete bob (cascades sandbox + PVC)
-curl -s -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:18080/users/bob
+curl -s -b "$JAR" -H 'Origin: http://localhost:18080' -X DELETE http://localhost:18080/users/bob
 ```
+
+API clients that prefer bearer tokens can use `POST /users` with a JSON body
+(`{"user":"bob"}`) and the returned one-time token, `POST /login` to exchange a token for a
+cookie, and `Authorization: Bearer <token>` on subsequent calls.
+
+### Gateway API
+
+| Route | Purpose |
+| --- | --- |
+| `GET /healthz` | Liveness/readiness; no cluster access |
+| `GET /` | Landing page: signup, token login, logout |
+| `POST /users` | Signup. JSON or form; `201` (JSON), `202` (waking), `303` (browser redirect), `409` if user exists; sets the session cookie |
+| `POST /login` | Exchange a bearer token for the session cookie |
+| `POST /logout` | Clear the session cookie |
+| `GET /users/{user}` | Derived state (`Ready`/`Waking`/`Suspended`) |
+| `DELETE /users/{user}` | Delete claim (cascades sandbox + PVC) |
+| `GET /u/{user}` | `308` redirect to `/u/{user}/` |
+| `GET /u/{user}/**` | HTTP/SSE proxy to the user's DSH Web |
+| `WS /u/{user}/**` | WebSocket proxy to the user's DSH Web |
+
+### How the DSH handshake works
+
+DSH does not expose an API for its launch token; it prints a URL containing `?token=…` in the
+pod logs. For each `(user, pod UID, Host)` the gateway:
+
+1. resolves the claim → sandbox → pod (annotation `agents.x-k8s.io/pod-name`, or the sandbox
+   name as pod name),
+2. reads the pod's logs (last `DSH_LOG_TAIL_LINES` lines) and parses the most recent
+   `dsh web: …?token=…` line,
+3. requests `http://<serviceFQDN>:3080/?token=…` with the browser's `Host`,
+4. captures DSH's `dsh-auth-*` `Set-Cookie` response and caches it,
+5. injects that cookie (and strips the browser's `Cookie`/`Authorization` and any `?token=`)
+   on every proxied HTTP and WebSocket request,
+6. refreshes the handshake once if DSH answers `401`, and drops the cached cookie when the
+   sandbox suspends or is deleted.
+
+This is why the gateway's RBAC includes `pods` `get`/`list` and `pods/log` `get`. It is also
+the most fragile part of the design; see [Limitations](#limitations).
+
+### DSH_TRUSTED_HOSTS
+
+DSH rejects requests whose `Host` is not allow-listed (`localhost` and `127.0.0.1` are always
+trusted). Because the gateway forwards the browser's `Host`, set the public hostname in the
+template:
+
+```yaml
+env:
+  - name: DSH_TRUSTED_HOSTS
+    value: "dsh.example.com"   # comma or space separated; empty for port-forward only
+```
+
+The same applies to a local `docker run`: the printed token URL uses `DSH_PUBLIC_URL` if set,
+otherwise `http://localhost:${DSH_PORT}`.
+
+### WebSocket
+
+The gateway is a Starlette ASGI app and proxies WebSocket upgrades with a bidirectional pump, so
+the DSH web GUI is fully interactive. Requirements:
+
+- the ingress/load balancer in front of the gateway must pass `Upgrade`/`Connection` headers;
+  `60-ingress.yaml` is a starting point (Traefik handles upgrades by default),
+- idle suspension is disabled for users with in-flight proxied requests or open WebSockets, so
+  a long-running chat stream is not cut off mid-turn,
+- missing/invalid gateway auth is rejected right after the upgrade with close code `4401`
+  (WebSocket auth has no HTTP `401` path); cross-origin or Origin-less upgrades with the cookie
+  are rejected the same way (CSWSH protection), so clients must send a matching `Origin`;
+  upstream bridging failures close with `1011`.
+
+### Path routing
+
+Each user's DSH Web is served under `/u/<user>/`. DSH injects `<base href="./">` and uses
+relative asset/API URLs, so the UI works under a path prefix without a per-user hostname or
+wildcard DNS. The gateway also rewrites absolute-path `Location` headers into `/u/<user>/…` and
+redirects `/u/<user>` to the trailing-slash form with `308` so relative URLs resolve correctly.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+| --- | --- |
+| Pod `CrashLoopBackOff`, probes failing with `401` | Probe path is `/`; change readiness/liveness to `/favicon.svg` |
+| Browser shows `401` from DSH through the gateway | Gateway handshake failed — check `kubectl -n dsh-demo logs deploy/dsh-gateway` and that RBAC grants `pods/log` |
+| `502` / `upstream unavailable` | Sandbox pod is not Ready (wake timed out) or the Service DNS is stale; check `kubectl get sandbox`, `WAKE_TIMEOUT` |
+| `503` with `Retry-After` | The launch token was not found in the pod logs yet; the gateway retries after a short delay. Check the pod logs and `DSH_LOG_TAIL_LINES` |
+| `409` on signup | User already has a claim; use `POST /login` with the existing token or delete the user first |
+| Cookie set but browser keeps getting `401` | `COOKIE_SECURE=true` while serving over plain HTTP (secure cookies are not sent); use HTTPS or set `false` for local demos |
+| WebSocket closes immediately (`4401`) | Missing/expired gateway cookie, or the upgrade's `Origin` does not match `Host` (CSWSH check); DSH rejecting `Host` instead surfaces as close `1011` — add the host to `DSH_TRUSTED_HOSTS` |
+| Signup is slow / `202` then `Waking` | Warm pool exhausted (`kubectl get sandboxes -l agents.x-k8s.io/warm-pool-sandbox`); scale the pool |
+| `403` from the Kubernetes API in gateway logs | The gateway ServiceAccount is missing claim/sandbox/pod-log verbs (see `50-gateway.yaml`) |
+
+## Limitations
+
+Deliberately **not** production code:
+
+- **Single replica.** Idle clocks, in-flight tracking, and the handshake cache are in memory.
+  Running two gateway replicas would double-suspend or lose wake tracking; scale up only after
+  moving that state to a shared store.
+- **Log scraping.** The launch token is recovered from pod logs. Log rotation, a restarted pod,
+  or a changed DSH log format can break the handshake until the next `401` refresh.
+- **Shared provider key.** `DEEPSEEK_API_KEY` is shared by all tenants via the template. Real
+  multi-tenancy needs per-tenant credentials or an egress proxy.
+- **No TLS in the gateway.** Terminate TLS at an Ingress/reverse proxy and set
+  `COOKIE_SECURE=true`.
+- **In-memory user directory.** Users are claims + annotations; there is no database, password
+  reset, or admin API. Tokens are stored only as SHA-256 hashes in claim annotations.
+- **Bearer tokens in URLs.** Avoid putting the signup token in a URL/log; the browser flow uses
+  the `HttpOnly` cookie instead.
 
 ## Cost model
 

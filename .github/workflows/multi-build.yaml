@@ -4,6 +4,17 @@ name: Build multi arch Docker Image with separate Github Runners
 
 on:
   workflow_dispatch:
+    inputs:
+      dsh_version:
+        description: "DSH git ref to build (tag or branch)"
+        required: true
+        default: dsh-v0.2.1-rc.2
+        type: string
+      pnpm_version:
+        description: "pnpm version used to build DSH"
+        required: true
+        default: "11.28.5"
+        type: string
   push:
     branches:
       - main
@@ -15,7 +26,10 @@ env:
   # The image name is derived from the GitHub repository name and the GitHub Container Registry (GHCR) URL.
   # The image name will be in the format: ghcr.io/<owner>/<repo>
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
-  DSH_VERSION: dsh-v0.2.1-rc.2 #TODO: Make this configurable from workflow inputs and/or an custom Github Action
+  # workflow_dispatch inputs win; pushes to main fall back to the pinned
+  # defaults. Both values flow into the Docker build args and the image tags.
+  DSH_VERSION: ${{ inputs.dsh_version || 'dsh-v0.2.1-rc.2' }}
+  PNPM_VERSION: ${{ inputs.pnpm_version || '11.28.5' }}
 permissions:
   # Global permissions for the workflow, which can be overridden at the job level
   contents: read
@@ -130,14 +144,14 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           DOCKER_BUILDKIT: 1
-          DSH_VERSION: dsh-v0.2.1-rc.2 #TODO: Make this configurable from workflow inputs and/or an custom Github Action
-          PNPM_VERSION: 11.28.5
           DSH_PORT: 3080
         with:
           context: .
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: DSH_VERSION=${{ env.DSH_VERSION }}
+          build-args: |
+            DSH_VERSION=${{ env.DSH_VERSION }}
+            PNPM_VERSION=${{ env.PNPM_VERSION }}
           annotations: ${{ steps.meta.outputs.annotations }}
           outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true
           cache-from: type=gha,scope=${{ github.repository }}-${{ github.ref_name }}-${{ matrix.platform }}
@@ -209,8 +223,6 @@ jobs:
         # The metadata includes information such as the image name, tags, and labels.
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        env:
-          DSH_VERSION: ${{ env.DSH_VERSION }}
         with:
           images: ${{ env.GHCR_IMAGE }}
           annotations: |
@@ -218,7 +230,7 @@ jobs:
           tags: |
             type=raw,value=main,enable=${{ github.ref_name == 'main' }}
             type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
-            type=raw,value=${{ env.DSH_VERSION }},enable=${{ github.ref_name == 'main' }}
+            type=raw,value=${{ env.DSH_VERSION }},enable=${{ github.ref_name == 'main' || github.event_name == 'workflow_dispatch' }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
