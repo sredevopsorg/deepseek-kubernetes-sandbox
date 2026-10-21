@@ -70,6 +70,19 @@ spec:
           # otherwise fail readiness and then get the pod killed by liveness.
           # /favicon.svg is served without auth and is the cheapest liveness
           # signal that proves the HTTP server is actually serving requests.
+          #
+          # Gate liveness/readiness behind a startup probe: a cold start on a
+          # small node takes tens of seconds to load plugins and start serving
+          # (a resumed sandbox starts cold too). Without it the kubelet can kill
+          # DSH mid-startup, and a SIGTERM'd DSH exits 0, which the sandbox
+          # controller records as finished. 24 x 5s = 120s, matching the
+          # gateway's WAKE_TIMEOUT.
+          startupProbe:
+            httpGet:
+              path: /favicon.svg
+              port: 3080
+            periodSeconds: 5
+            failureThreshold: 24
           readinessProbe:
             httpGet:
               path: /favicon.svg
