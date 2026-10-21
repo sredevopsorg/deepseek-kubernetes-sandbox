@@ -1049,7 +1049,11 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         for attempt in range(self.settings.upstream_attempts):
             try:
                 upstream_request = self.http.build_request(
-                    request.method, url, headers=headers, content=body
+                    request.method,
+                    url,
+                    headers=headers,
+                    content=body,
+                    timeout=self._stream_timeout(),
                 )
                 return await self.http.send(upstream_request, stream=True)
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
@@ -1061,6 +1065,21 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
             except httpx.HTTPError as exc:
                 raise UpstreamError("upstream request failed") from exc
         raise UpstreamError("upstream unavailable") from last_error
+
+    def _stream_timeout(self) -> httpx.Timeout:
+        """Proxied streams (SSE, long responses) must not hit a read timeout.
+
+        An idle event stream would otherwise raise ``httpx.ReadTimeout`` every
+        ``HTTP_TIMEOUT`` seconds and cut the browser's connection.  The relay
+        is cancelled when the browser disconnects and ``_relay`` closes the
+        upstream response, so an unbounded read cannot outlive the client.
+        """
+        return httpx.Timeout(
+            connect=self.settings.http_timeout,
+            read=None,
+            write=self.settings.http_timeout,
+            pool=self.settings.http_timeout,
+        )
 
     @staticmethod
     def _response_headers(upstream: httpx.Response, user: str):
@@ -1076,8 +1095,15 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
 
     async def _relay(self, user: str, upstream: httpx.Response):
         try:
-            async for chunk in upstream.aiter_raw():
-                yield chunk
+            try:
+                async for chunk in upstream.aiter_raw():
+                    yield chunk
+            except httpx.HTTPError as exc:
+                # The upstream stream ended abnormally (reset, network change,
+                # deadline). The browser reconnects; one traceback per idle SSE
+                # stream is noise, so end the response cleanly instead.
+                print(f"stream for {user} ended early: {exc!r}", flush=True)
+                return
         finally:
             with contextlib.suppress(Exception):
                 await upstream.aclose()

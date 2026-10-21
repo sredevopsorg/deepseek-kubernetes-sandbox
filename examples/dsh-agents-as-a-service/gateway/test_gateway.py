@@ -1105,6 +1105,65 @@ async def test_proxy_cookie_mutation_requires_same_origin(env):
     assert good.status_code == 200
 
 
+def test_stream_timeout_leaves_read_unbounded(env):
+    timeout = env.gateway._stream_timeout()
+    assert timeout.read is None
+    assert timeout.connect == env.settings.http_timeout
+
+
+@pytest.mark.asyncio
+async def test_proxied_requests_use_the_stream_timeout(env, monkeypatch):
+    from starlette.requests import Request
+
+    captured = {}
+    real_build = env.gateway.http.build_request
+
+    def spy_build(method, url, **kwargs):
+        captured.update(kwargs)
+        return real_build(method, url, **kwargs)
+
+    monkeypatch.setattr(env.gateway.http, "build_request", spy_build)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/u/alice/events",
+        "raw_path": b"/u/alice/events",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"gateway.test")],
+        "client": ("127.0.0.1", 4321),
+        "server": ("gateway.test", 80),
+        "path_params": {"user": "alice", "path": "events"},
+    }
+    response = await env.gateway._send_upstream(
+        Request(scope), "alice", FQDN, "dsh-auth-a=1", b""
+    )
+    await response.aclose()
+
+    assert captured["timeout"].read is None
+
+
+@pytest.mark.asyncio
+async def test_relay_ends_cleanly_when_the_upstream_stream_breaks(env):
+    class Broken:
+        closed = False
+
+        async def aiter_raw(self):
+            yield b"chunk"
+            raise httpx.ReadTimeout("upstream went quiet")
+
+        async def aclose(self):
+            self.closed = True
+
+    upstream = Broken()
+    chunks = [chunk async for chunk in env.gateway._relay("alice", upstream)]
+
+    assert chunks == [b"chunk"]
+    assert upstream.closed is True
+    assert env.gateway.state.in_flight["alice"] == 0
+
+
 # --- WebSocket proxy -------------------------------------------------------
 
 
