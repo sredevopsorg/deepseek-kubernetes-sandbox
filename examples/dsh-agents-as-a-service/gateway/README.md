@@ -121,7 +121,7 @@ can also be injected into `create_app` for tests.
 | `COOKIE_SECURE` | `false` | Add `Secure` to the session cookie when served over TLS. |
 | `COOKIE_MAX_AGE` | `604800` | Session cookie lifetime in seconds. |
 | `MAX_BODY_MB` | `32` | Maximum buffered request body (and `413` threshold). |
-| `HTTP_TIMEOUT` | `300` | Upstream connect/read timeout in seconds. |
+| `HTTP_TIMEOUT` | `300` | Upstream connect/read timeout in seconds. Proxied streams (SSE, long responses) keep the connect/write budget but have **no read timeout**, so an idle event stream is not cut every five minutes. |
 | `SWEEP_INTERVAL` | `15` | Seconds between idle sweeps. |
 
 ### Required RBAC
