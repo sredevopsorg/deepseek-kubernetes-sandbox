@@ -48,9 +48,9 @@ FROM ${NODE_RUNTIME_IMAGE} AS runtime
 
 ARG DSH_VERSION
 
-LABEL org.opencontainers.image.title="DeepSeek Harness Web" \
+LABEL org.opencontainers.image.title="DeepSeek Harness Web packaged by SREDevOps.org" \
       org.opencontainers.image.version="${DSH_VERSION}" \
-      org.opencontainers.image.source="https://github.com/deepseek-ai/deepseek-harness"
+      org.opencontainers.image.source="https://github.com/sredevopsorg/deepseek-kubernetes-sandbox"
 
 ENV NODE_ENV=production \
     HOME=/home/node \
