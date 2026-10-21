@@ -475,13 +475,17 @@ class Kubernetes:
 
     async def get_pod(self, name: str) -> dict | None:
         try:
-            return await self._call(
+            pod = await self._call(
                 "core", "read_namespaced_pod", name, self.namespace
             )
         except ApiException as exc:
             if exc.status == 404:
                 return None
             raise
+        # CoreV1Api returns a V1Pod model while every other call in this module
+        # (CRD calls, fakes in tests) yields a dict. Normalise at the boundary
+        # so callers can keep using ``pod.get(...)``.
+        return k8s_client.ApiClient().sanitize_for_serialization(pod)
 
     async def read_pod_logs(
         self, name: str, container: str, tail_lines: int

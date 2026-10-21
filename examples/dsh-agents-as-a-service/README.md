@@ -198,6 +198,18 @@ kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 
 > The gateway binds `8080`; the local port-forward uses `18080` and never `3080`.
 >
+> **Re-deploying after a new image?** The workflow publishes the mutable `:gateway` tag and the
+> Deployment uses `imagePullPolicy: IfNotPresent`, so a node that already cached the tag keeps
+> the old image across `kubectl apply`/`rollout restart`. Pin the digest for a reproducible
+> rollout (the workflow's `Inspect image` step and `docker buildx imagetools inspect` both show
+> it):
+>
+> ```bash
+> kubectl -n dsh-demo set image deploy/dsh-gateway \
+>   gateway=ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
+> kubectl -n dsh-demo rollout status deploy/dsh-gateway --timeout=120s
+> ```
+>
 > **Applying over an existing install?** Run `kubectl diff -f 10-sandboxtemplate.yaml`
 > first. Cluster-specific fields such as `nodeAffinity` and the warm-pool replica count are
 > intentionally not in the repo manifests; preserve them with a targeted patch instead of a

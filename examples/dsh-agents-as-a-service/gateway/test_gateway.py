@@ -497,6 +497,25 @@ async def test_kubernetes_read_pod_logs_forwards_container_and_tail(monkeypatch)
     assert calls == [(("pod-1", "test-ns"), {"container": "dsh-web", "tail_lines": 200})]
 
 
+@pytest.mark.asyncio
+async def test_kubernetes_get_pod_normalises_the_v1pod_model(monkeypatch):
+    """CoreV1Api returns a V1Pod model; callers index it like a dict."""
+    from kubernetes.client import V1ObjectMeta, V1Pod
+
+    from gateway import Kubernetes
+
+    async def fake_call(which, method, *args):
+        return V1Pod(metadata=V1ObjectMeta(name="dsh-alice", uid="pod-uid-9"))
+
+    k8s = Kubernetes("test-ns")
+    monkeypatch.setattr(k8s, "_call", fake_call)
+
+    pod = await k8s.get_pod("dsh-alice")
+
+    assert isinstance(pod, dict)
+    assert pod["metadata"]["uid"] == "pod-uid-9"
+
+
 # --- health / landing / redirect ------------------------------------------
 
 
