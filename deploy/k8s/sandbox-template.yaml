@@ -1,30 +1,53 @@
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+# Minimal single-tenant SandboxTemplate for DeepSeek Harness Web.
+#
+# This is the "just one DSH Web" quick-start template. For the full
+# multi-tenant platform (warm pool, per-user claims, gateway, idle-suspend),
+# see examples/dsh-agents-as-a-service/.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: dsh-web-template
-  namespace: default
+  namespace: dsh-demo
 spec:
+  service: true # headless Service per Sandbox -> stable DNS (status.serviceFQDN)
   podTemplate:
     spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000 # Matches the UID of the 'node' user
         runAsGroup: 1000
+        fsGroup: 1000
       containers:
         - name: dsh-web
-          image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/deepseek-kubernetes-sandbox:0.2.1-rc.2
+          image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.2
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 3080
-          env:
-            - name: DEEPSEEK_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: deepseek-secret
-                  key: api-key
+            - name: web
+              containerPort: 3080
+          envFrom:
+            - secretRef:
+                name: dsh-provider-keys # Secret with key DEEPSEEK_API_KEY
           volumeMounts:
             - name: dsh-home
-              mountPath: /home/node/.dsh
-      volumes:
-        - name: dsh-home
-          persistentVolumeClaim:
-            claimName: dsh-home-pvc # You will need to create this PVC
+              mountPath: /home/node/.dsh # DSH_HOME
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+  volumeClaimTemplates:
+    - metadata:
+        name: dsh-home
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+        # storageClassName omitted => cluster default

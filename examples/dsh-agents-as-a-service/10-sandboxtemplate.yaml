@@ -1,0 +1,81 @@
+# The reusable DSH Web blueprint. Warm pools stamp pod env BEFORE any user
+# exists, so per-user secrets cannot live in pod env; the shared provider key
+# is injected via envFrom, and claims that would bypass the warm pool are
+# rejected outright (see 40-claim-rejected.yaml).
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: dsh-web
+  namespace: dsh-demo
+spec:
+  # Claims must not inject env or volumeClaimTemplates: with Disallowed, such
+  # claims are REJECTED instead of silently taking the cold (non-warm-pool)
+  # provisioning path. Demonstrated in step 6.
+  envVarsInjectionPolicy: Disallowed
+  volumeClaimTemplatesPolicy: Disallowed
+
+  # Per-sandbox headless Service -> stable DNS (sandbox.status.serviceFQDN).
+  # The gateway routes each user to their DSH Web instance by this name.
+  service: true
+
+  # No gateway pod scopes ingress in this standalone demo, so the
+  # NetworkPolicy is left unmanaged. A production platform would use
+  # networkPolicyManagement: Managed and restrict ingress to its gateway on
+  # :3080 — with the shared provider key, that NetworkPolicy is the per-user
+  # isolation boundary.
+  networkPolicyManagement: Unmanaged
+
+  podTemplate:
+    spec:
+      # DSH Web is multi-arch (amd64 + arm64); no arch nodeSelector needed.
+      restartPolicy: "OnFailure"
+      securityContext:
+        runAsUser: 1000   # the 'node' user in the DSH image
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      containers:
+        - name: dsh-web
+          image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: web
+              containerPort: 3080
+          envFrom:
+            - secretRef:
+                name: dsh-provider-keys
+          env:
+            # Empty => DSH derives links from the request Host, which the
+            # gateway forwards (plus X-Forwarded-*). Point this at the
+            # gateway base URL if you want hard-coded absolute links instead.
+            - name: DSH_PUBLIC_URL
+              value: ""
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - name: dsh-home
+              mountPath: /home/node/.dsh # DSH_HOME: sessions, config, state
+  volumeClaimTemplates:
+    - metadata:
+        name: dsh-home
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+        # storageClassName omitted => cluster default (kind & GKE both work)

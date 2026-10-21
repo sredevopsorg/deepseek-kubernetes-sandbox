@@ -1,0 +1,65 @@
+name: Validate
+
+# Validates the Kubernetes manifests against the real agent-sandbox CRD
+# schema (server-side dry-run on a throwaway kind cluster) and runs the
+# gateway unit tests. Runs on every PR and on pushes to main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          version: v0.23.0
+          cluster_name: dsh-validate
+
+      - name: Install agent-sandbox (extensions)
+        run: |
+          VERSION=v1.0.7
+          kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${VERSION}/sandbox-with-extensions.yaml
+          kubectl wait --for=condition=Established crd/sandboxtemplates.extensions.agents.x-k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/sandboxwarmpools.extensions.agents.x-k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/sandboxclaims.extensions.agents.x-k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/sandboxes.agents.x-k8s.io --timeout=180s
+
+      - name: Validate manifests (server dry-run)
+        run: |
+          set -euo pipefail
+          kubectl create namespace dsh-demo
+          for f in examples/dsh-agents-as-a-service/*.yaml; do
+            echo "== $f =="
+            kubectl apply --dry-run=server -f "$f"
+          done
+          kubectl apply --dry-run=server -f deploy/k8s/sandbox-template.yaml
+          echo "all manifests validated"
+
+  gateway-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/dsh-agents-as-a-service/gateway
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run gateway unit tests
+        run: python -m pytest test_gateway.py -v

@@ -149,3 +149,7 @@ vite.config.ts.timestamp-*
 .turbo
 
 !.env.sample
+
+# Python
+__pycache__/
+*.py[cod]
