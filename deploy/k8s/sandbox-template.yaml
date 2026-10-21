@@ -1,0 +1,30 @@
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: dsh-web-template
+  namespace: default
+spec:
+  podTemplate:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000 # Matches the UID of the 'node' user
+        runAsGroup: 1000
+      containers:
+        - name: dsh-web
+          image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/deepseek-kubernetes-sandbox:0.2.1-rc.2
+          ports:
+            - containerPort: 3080
+          env:
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: deepseek-secret
+                  key: api-key
+          volumeMounts:
+            - name: dsh-home
+              mountPath: /home/node/.dsh
+      volumes:
+        - name: dsh-home
+          persistentVolumeClaim:
+            claimName: dsh-home-pvc # You will need to create this PVC
