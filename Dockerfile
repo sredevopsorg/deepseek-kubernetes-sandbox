@@ -47,6 +47,7 @@ RUN cd /opt/dsh \
 FROM ${NODE_RUNTIME_IMAGE} AS runtime
 
 ARG DSH_VERSION
+ARG PNPM_VERSION=11.28.5
 
 LABEL org.opencontainers.image.title="DeepSeek Harness Web packaged by SREDevOps.org" \
       org.opencontainers.image.version="${DSH_VERSION}" \
@@ -64,9 +65,16 @@ RUN apt-get update \
       ca-certificates \
       git \
       ripgrep \
+      jq \
+      yq \
+      curl \
+      wget \
       tini \
  && rm -rf /var/lib/apt/lists/* \
- && install -d -o node -g node -m 0755 /workspace "${DSH_HOME}"
+     && install -d -o node -g node -m 0755 /workspace "${DSH_HOME}" \
+     && corepack enable \
+     && corepack prepare "pnpm@${PNPM_VERSION}" --activate \
+     && pnpm --version
 
 COPY --from=build --chown=node:node /opt/dsh /app
 
