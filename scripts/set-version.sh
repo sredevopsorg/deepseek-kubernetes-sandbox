@@ -53,5 +53,12 @@ done < <(git ls-files)
 sed -i "s/^DSH_VERSION=.*/DSH_VERSION=$new_version/" versions.env
 sed -i "s/^RELEASE_REVISION=.*/RELEASE_REVISION=$new_revision/" versions.env
 
+# Values stored separately from the full identity: Dockerfile ARG defaults and
+# the human-facing sample cannot be reached by the identity replacement above.
+sed -i "s/^ARG DSH_VERSION=.*/ARG DSH_VERSION=$new_version/" Dockerfile
+sed -i "s/^ARG RELEASE_REVISION=.*/ARG RELEASE_REVISION=$new_revision/" Dockerfile
+sed -i "s/^DSH_VERSION=.*/DSH_VERSION=$new_version/" .env.sample
+sed -i "s/^RELEASE_REVISION=.*/RELEASE_REVISION=$new_revision/" .env.sample
+
 echo "set-version: $old_identity -> $new_identity"
 echo "set-version: run 'make check' and review the diff"
