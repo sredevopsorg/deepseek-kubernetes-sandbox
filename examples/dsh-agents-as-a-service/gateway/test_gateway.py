@@ -1460,32 +1460,36 @@ def test_remote_user_returns_valid_and_rejects_invalid(env):
 
 
 @pytest.mark.asyncio
-async def test_sso_landing_provisions_new_user_and_redirects(env, monkeypatch):
+async def test_sso_landing_new_user_shows_provisioning(env):
     enable_sso(env)
-
-    async def ready(user, timeout):
-        return {"metadata": {"name": f"dsh-{user}-sbx"}}
-
-    monkeypatch.setattr(env.gateway, "wait_ready", ready)
     async with asgi_client(env) as client:
         response = await client.get("/", headers={"X-Forwarded-User": "alice"})
-    assert response.status_code == 303
-    assert response.headers["location"] == "/u/alice/"
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "Signed in as <strong>alice</strong>" in response.text
+    assert "Provisioning" in response.text
+    assert "Recreate sandbox" not in response.text
     assert re_cookie_user(response.headers["set-cookie"]) == "alice"
     assert [c[0] for c in env.k8s.created] == ["alice"]
     assert env.k8s.token_patches == []
 
 
 @pytest.mark.asyncio
-async def test_sso_landing_reuses_valid_session_without_rotation(env):
+async def test_sso_landing_ready_connects_and_offers_recreate_only(env):
     enable_sso(env)
     add_user(env.k8s)
     async with asgi_client(
         env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}
     ) as client:
         response = await client.get("/", headers={"X-Forwarded-User": "alice"})
-    assert response.status_code == 303
-    assert response.headers["location"] == "/u/alice/"
+    assert response.status_code == 200
+    assert "Signed in as <strong>alice</strong>" in response.text
+    assert "Recreate sandbox" in response.text
+    # No signup/token forms for SSO users.
+    assert 'action="/users"' not in response.text
+    assert 'action="/login"' not in response.text
+    # Auto-connects to the workspace.
+    assert "url=/u/alice/" in response.text
     assert env.k8s.created == []
     assert env.k8s.token_patches == []
 
@@ -1496,11 +1500,52 @@ async def test_sso_landing_rotates_token_when_session_missing(env):
     add_user(env.k8s)
     async with asgi_client(env) as client:
         response = await client.get("/", headers={"X-Forwarded-User": "alice"})
-    assert response.status_code == 303
-    assert response.headers["location"] == "/u/alice/"
+    assert response.status_code == 200
+    assert "Recreate sandbox" in response.text
     assert re_cookie_user(response.headers["set-cookie"]) == "alice"
     assert [p[0] for p in env.k8s.token_patches] == ["alice"]
     assert env.k8s.created == []
+
+
+@pytest.mark.asyncio
+async def test_recreate_deletes_and_reprovisions(env):
+    enable_sso(env)
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.post(
+            "/recreate", headers={"X-Forwarded-User": "alice"}
+        )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/u/alice/"
+    assert env.k8s.deleted == ["alice"]
+    assert [c[0] for c in env.k8s.created] == ["alice"]
+    assert re_cookie_user(response.headers["set-cookie"]) == "alice"
+
+
+@pytest.mark.asyncio
+async def test_recreate_requires_sso(env):
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.post(
+            "/recreate", headers={"X-Forwarded-User": "alice"}
+        )
+    assert response.status_code == 401
+    assert env.k8s.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_recreate_rejects_cross_origin(env):
+    enable_sso(env)
+    add_user(env.k8s)
+    async with asgi_client(
+        env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}
+    ) as client:
+        response = await client.post(
+            "/recreate",
+            headers={"X-Forwarded-User": "alice", "Origin": "http://evil.test"},
+        )
+    assert response.status_code == 403
+    assert env.k8s.deleted == []
 
 
 @pytest.mark.asyncio
