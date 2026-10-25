@@ -40,15 +40,16 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
       - name: Read versions.env
         id: meta
         shell: bash
         run: |
           set -euo pipefail
-          while IFS= read -r line; do
-            case "$line" in ''|'#'*) continue ;; esac
-            echo "$line" >> "$GITHUB_ENV"
-          done < versions.env
+          set -a
+          # shellcheck disable=SC1091
+          source versions.env
+          set +a
           identity="$DSH_VERSION"
           [ -z "$RELEASE_REVISION" ] || identity="$DSH_VERSION-$RELEASE_REVISION"
           {
