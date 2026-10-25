@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/sredevopsorg/deepseek-kubernetes-sandbox/security/advisories/new
+    about: Report security issues privately; do not open a public issue.
+  - name: Documentation
+    url: https://github.com/sredevopsorg/deepseek-kubernetes-sandbox/tree/main/docs
+    about: Read the repository docs before opening an issue.

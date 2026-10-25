@@ -1,0 +1,11 @@
+# Container lint policy. Base images are supplied as build args defaulting to
+# pinned tags, and the image is rebuilt on every DSH release, so unpinned
+# packages inside a pinned base image are intentional.
+failure-threshold: warning
+ignored:
+  - DL3008  # apt-get packages are intentionally not version-pinned
+  - DL3018  # apk packages are intentionally not version-pinned
+  - DL3006  # FROM uses build args (NODE_BUILD_IMAGE/NODE_RUNTIME_IMAGE) from versions.env
+  - DL3003  # the DSH packaging step deliberately cds inside a single layer
+  - DL3059  # consecutive RUN layers are kept for cache reuse and readability
+  - DL4006  # the upstream uv installer pipes curl to sh by design

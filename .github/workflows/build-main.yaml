@@ -1,0 +1,83 @@
+# Development channel for the main DSH Web image: every merge to main that
+# touches the image definition publishes ghcr.io/<owner>/<repo>:main.
+# Releases are published by release.yaml with immutable version tags.
+name: Build main image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - versions.env
+      - .github/workflows/build-main.yaml
+      - .github/workflows/_build-image.yaml
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: build-main-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  meta:
+    name: Read versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      identity: ${{ steps.meta.outputs.identity }}
+      dsh_version: ${{ steps.meta.outputs.dsh_version }}
+      pnpm_version: ${{ steps.meta.outputs.pnpm_version }}
+      release_revision: ${{ steps.meta.outputs.release_revision }}
+      ghcr_image: ${{ steps.meta.outputs.ghcr_image }}
+      gateway_image: ${{ steps.meta.outputs.gateway_image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read versions.env
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            echo "$line" >> "$GITHUB_ENV"
+          done < versions.env
+          identity="$DSH_VERSION"
+          [ -z "$RELEASE_REVISION" ] || identity="$DSH_VERSION-$RELEASE_REVISION"
+          {
+            echo "identity=$identity"
+            echo "dsh_version=$DSH_VERSION"
+            echo "pnpm_version=$PNPM_VERSION"
+            echo "release_revision=$RELEASE_REVISION"
+            echo "ghcr_image=$GHCR_IMAGE"
+            echo "gateway_image=$GATEWAY_IMAGE"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and push main image
+    needs: meta
+    uses: ./.github/workflows/_build-image.yaml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      image: ${{ needs.meta.outputs.ghcr_image }}
+      version: ${{ needs.meta.outputs.identity }}
+      context: .
+      dockerfile: Dockerfile
+      build-args: |
+        DSH_VERSION=${{ needs.meta.outputs.dsh_version }}
+        RELEASE_REVISION=${{ needs.meta.outputs.release_revision }}
+        PNPM_VERSION=${{ needs.meta.outputs.pnpm_version }}
+        VCS_REF=${{ github.sha }}
+      tags: |
+        ${{ needs.meta.outputs.ghcr_image }}:main

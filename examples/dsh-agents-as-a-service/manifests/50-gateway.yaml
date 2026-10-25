@@ -1,0 +1,187 @@
+# The gateway: control+data plane that turns the resources into a usable
+# browser-facing service. It is a Starlette ASGI app (see gateway/) listening
+# on :8080 and exposing:
+#   GET /healthz                     unauthenticated health probe
+#   GET /                            landing page (signup / token login)
+#   POST /users, POST /login, ...    session cookie auth
+#   /u/<user>/...                    HTTP + WebSocket proxy to the user's DSH
+#
+# Image: the release image published for this example, pinned by tag.
+# imagePullPolicy: IfNotPresent lets a local kind build loaded under the same
+# tag be used without a registry round-trip (scripts/e2e-kind.sh builds
+# dsh-aaas-gateway:e2e and overrides this image).
+#
+# SSO IS OPT-IN: this manifest runs the gateway with its own bearer/session
+# auth only, so AUTH_PROXY_HEADER is intentionally NOT set (see the env
+# block). To put GitHub OAuth in front of it, use
+# manifests/exposure/gateway-api-sso/.
+#
+# This Service is ClusterIP and is the only intended entry point: expose it
+# through exactly ONE of the documented variants in manifests/exposure/
+# (ingress/ or gateway-api-sso/), never both and never directly.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dsh-gateway
+  namespace: dsh-demo
+---
+# Least privilege:
+#   - claims are created/deleted per user (signup/delete);
+#   - sandboxes are read, and patched only to flip operatingMode (suspend/resume);
+#   - pods are read, and pods/log is read to capture DSH's launch token from
+#     the startup log line (`dsh web: ...?token=...`).
+# configmaps are not needed: all state is in memory / claim annotations.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dsh-gateway
+  namespace: dsh-demo
+rules:
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dsh-gateway
+  namespace: dsh-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dsh-gateway
+subjects:
+  - kind: ServiceAccount
+    name: dsh-gateway
+    namespace: dsh-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dsh-gateway
+  namespace: dsh-demo
+spec:
+  # Single replica BY DESIGN: the idle clock, in-flight counters and the
+  # per-(user, pod, Host) DSH cookie cache are in-process memory. Running two
+  # replicas would fragment that state (double suspend/resume races, repeated
+  # log-token handshakes). Scale only after moving state to a shared store.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dsh-gateway
+  template:
+    metadata:
+      labels:
+        app: dsh-gateway
+    spec:
+      serviceAccountName: dsh-gateway
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000 # matches USER in gateway/Dockerfile
+        runAsGroup: 10000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway:dsh-v0.2.1-rc.2-r2
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: NAMESPACE
+              value: dsh-demo
+            - name: POOL
+              value: dsh-pool
+            # Seconds a sandbox may sit idle before the sweeper suspends it
+            # (pod deleted, PVC kept), and the max time a proxy request waits
+            # for a suspended sandbox to become Ready again. Only claims this
+            # gateway created are swept: a claim applied by hand from the
+            # resource-layer manifests carries no aaas.example.com/managed-by
+            # annotation and is never suspended.
+            #
+            # These are the demo values (360/240). scripts/e2e-kind.sh
+            # overrides both to 60/120 with `kubectl set env` so the smoke
+            # test does not wait six minutes for the sweeper.
+            - name: IDLE_TIMEOUT
+              value: "360"
+            - name: WAKE_TIMEOUT
+              value: "240"
+            # Container name inside the per-user sandbox pods whose logs carry
+            # the DSH launch token.
+            - name: DSH_CONTAINER
+              value: dsh-web
+            # Cookie dsh_gw_session is HttpOnly + SameSite=Lax. "false" keeps
+            # the plain-HTTP demo usable through port-forward: a Secure cookie
+            # is never sent over HTTP, so login would silently fail.
+            # HTTPS deployments (the ingress/ variant with TLS, or
+            # gateway-api-sso/, which terminates TLS at the Gateway) MUST set
+            # this to "true".
+            - name: COOKIE_SECURE
+              value: "false"
+            # SSO IS OPT-IN AND DISABLED HERE. With AUTH_PROXY_HEADER unset the
+            # gateway trusts only its own bearer/session auth and ignores every
+            # identity header. Enable it ONLY behind
+            # manifests/exposure/gateway-api-sso/, where oauth2-proxy is the
+            # sole route to this Service: set it to X-Forwarded-User, keep the
+            # Service ClusterIP and reachable only through the proxy, and
+            # terminate TLS in front of the gateway. Otherwise anyone who can
+            # reach :8080 can impersonate any user by sending that header.
+            # - name: AUTH_PROXY_HEADER
+            #   value: X-Forwarded-User
+            # Reject proxied request bodies larger than this (413).
+            - name: MAX_BODY_MB
+              value: "32"
+          # /healthz is unauthenticated and returns 200 without touching the
+          # cluster, so it is safe for both readiness and liveness.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            # readOnlyRootFilesystem leaves no writable HOME/tmp; the image sets
+            # HOME=/tmp, so back it with scratch space. No state lives here.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dsh-gateway
+  namespace: dsh-demo
+spec:
+  selector:
+    app: dsh-gateway
+  ports:
+    - port: 8080
+      targetPort: 8080

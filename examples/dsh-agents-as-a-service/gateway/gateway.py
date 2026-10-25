@@ -195,9 +195,7 @@ def derive_state(sandbox: dict | None) -> str:
 
 def token_matches(claim: dict, token: str | None) -> bool:
     """Timing-safe check of a user token against the stored SHA-256."""
-    want = (claim.get("metadata", {}).get("annotations") or {}).get(
-        TOKEN_ANNOTATION, ""
-    )
+    want = (claim.get("metadata", {}).get("annotations") or {}).get(TOKEN_ANNOTATION, "")
     if not token or not want:
         return False
     got = hashlib.sha256(token.encode()).hexdigest()
@@ -518,9 +516,7 @@ class Kubernetes:
 
     async def get_pod(self, name: str) -> dict | None:
         try:
-            pod = await self._call(
-                "core", "read_namespaced_pod", name, self.namespace
-            )
+            pod = await self._call("core", "read_namespaced_pod", name, self.namespace)
         except ApiException as exc:
             if exc.status == 404:
                 return None
@@ -530,9 +526,7 @@ class Kubernetes:
         # so callers can keep using ``pod.get(...)``.
         return k8s_client.ApiClient().sanitize_for_serialization(pod)
 
-    async def read_pod_logs(
-        self, name: str, container: str, tail_lines: int
-    ) -> str:
+    async def read_pod_logs(self, name: str, container: str, tail_lines: int) -> str:
         result = await self._call(
             "core",
             "read_namespaced_pod_log",
@@ -616,9 +610,7 @@ class Gateway:
             return False  # a session for another user never authorizes this one
         return token_matches(claim, token)
 
-    async def _sso_session(
-        self, remote: str, headers, cookies, response: Response
-    ) -> dict | None:
+    async def _sso_session(self, remote: str, headers, cookies, response: Response) -> dict | None:
         """Provision ``remote`` idempotently and mint/refresh a session token.
 
         The authenticating proxy has already verified ``remote``, so it is
@@ -682,9 +674,7 @@ class Gateway:
         while True:
             async with self.state.lock:
                 if not self.state.maintenance.get(user):
-                    self.state.in_flight[user] = (
-                        self.state.in_flight.get(user, 0) + 1
-                    )
+                    self.state.in_flight[user] = self.state.in_flight.get(user, 0) + 1
                     self.state.last_activity[user] = time.time()
                     return True
             if time.monotonic() > deadline:
@@ -693,9 +683,7 @@ class Gateway:
 
     async def _release(self, user: str) -> None:
         async with self.state.lock:
-            self.state.in_flight[user] = max(
-                self.state.in_flight.get(user, 1) - 1, 0
-            )
+            self.state.in_flight[user] = max(self.state.in_flight.get(user, 1) - 1, 0)
             self.state.last_activity[user] = time.time()
 
     # -- sandbox / handshake helpers --------------------------------------
@@ -724,9 +712,7 @@ class Gateway:
             # Wake-on-connect: safe in ANY state, including mid-suspension.
             self._clear_handshake(user)
             try:
-                await self.k8s.patch_operating_mode(
-                    sandbox["metadata"]["name"], "Running"
-                )
+                await self.k8s.patch_operating_mode(sandbox["metadata"]["name"], "Running")
             except Exception as exc:
                 raise SandboxUnavailable("could not wake the sandbox") from exc
             sandbox = await self.wait_ready(user, self.settings.wake_timeout)
@@ -740,10 +726,7 @@ class Gateway:
 
     def _pod_name(self, sandbox: dict) -> str:
         annotations = sandbox.get("metadata", {}).get("annotations") or {}
-        return (
-            annotations.get(POD_NAME_ANNOTATION)
-            or sandbox["metadata"]["name"]
-        )
+        return annotations.get(POD_NAME_ANNOTATION) or sandbox["metadata"]["name"]
 
     @staticmethod
     def _pod_ip(sandbox: dict) -> str | None:
@@ -787,16 +770,11 @@ class Gateway:
                 self.settings.dsh_log_tail_lines,
             )
         except ApiException as exc:
-            raise HandshakeError(
-                f"could not read logs for {pod_name}: {exc}"
-            ) from exc
+            raise HandshakeError(f"could not read logs for {pod_name}: {exc}") from exc
         launch_token = parse_dsh_launch_token(logs)
         if not launch_token:
             raise HandshakeError("DSH launch token not found in pod logs")
-        url = (
-            f"http://{fqdn}:{self.settings.dsh_port}/"
-            f"?token={quote(launch_token, safe='')}"
-        )
+        url = f"http://{fqdn}:{self.settings.dsh_port}/?token={quote(launch_token, safe='')}"
         headers = {
             "Host": host,
             "X-Forwarded-Host": host,
@@ -812,9 +790,7 @@ class Gateway:
         except httpx.HTTPError as exc:
             raise HandshakeError(f"DSH handshake failed: {exc}") from exc
         if response.status_code >= 400:
-            raise HandshakeError(
-                f"DSH handshake returned {response.status_code}"
-            )
+            raise HandshakeError(f"DSH handshake returned {response.status_code}")
         cookie = extract_dsh_cookies(response.headers.get_list("set-cookie"))
         if not cookie:
             raise HandshakeError("DSH handshake set no dsh-auth cookie")
@@ -856,7 +832,7 @@ class Gateway:
         else:
             status = html.escape(state)
             confirm = (
-                'onsubmit="return confirm(\'Delete this sandbox and start fresh? '
+                "onsubmit=\"return confirm('Delete this sandbox and start fresh? "
                 "Your workspace data will be wiped.')\""
             )
             body = (
@@ -887,9 +863,7 @@ class Gateway:
             # session cookie minted by _sso_session; the real page is rendered
             # once the sandbox state is known.
             response = HTMLResponse()
-            claim = await self._sso_session(
-                remote, request.headers, request.cookies, response
-            )
+            claim = await self._sso_session(remote, request.headers, request.cookies, response)
             sandbox = await self._sandbox_of(claim) if claim else None
             page = HTMLResponse(self._sso_page(remote, derive_state(sandbox)))
             if "set-cookie" in response.headers:
@@ -953,14 +927,10 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
     @staticmethod
     def _wants_form(request: Request) -> bool:
         ctype = request.headers.get("content-type", "").lower()
-        return ctype.startswith(
-            ("application/x-www-form-urlencoded", "multipart/form-data")
-        )
+        return ctype.startswith(("application/x-www-form-urlencoded", "multipart/form-data"))
 
     async def _read_payload(self, request: Request) -> dict:
-        if request.headers.get("content-type", "").lower().startswith(
-            "application/json"
-        ):
+        if request.headers.get("content-type", "").lower().startswith("application/json"):
             data = await self._read_body(request)
             try:
                 payload = json.loads(data)
@@ -997,9 +967,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
             return self._error(413, "request body too large")
         user = payload.get("user", "")
         if not valid_user(user):
-            return self._error(
-                400, "body must be {'user': '<dns-1123 label>'}"
-            )
+            return self._error(400, "body must be {'user': '<dns-1123 label>'}")
         if await self.k8s.get_claim(user) is not None:
             return self._error(409, "user exists")
         token = secrets.token_urlsafe(32)
@@ -1059,9 +1027,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         if claim is None:
             return self._error(404, "not found")
         token, cookie_user = self.credentials(request.headers, request.cookies)
-        if not self._authorized(
-            claim, token, cookie_user, user, self.remote_user(request.headers)
-        ):
+        if not self._authorized(claim, token, cookie_user, user, self.remote_user(request.headers)):
             return self._error(401, "unauthorized")
         sandbox = await self._sandbox_of(claim)
         return JSONResponse(
@@ -1080,9 +1046,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         if claim is None:
             return self._error(404, "not found")
         token, cookie_user = self.credentials(request.headers, request.cookies)
-        if not self._authorized(
-            claim, token, cookie_user, user, self.remote_user(request.headers)
-        ):
+        if not self._authorized(claim, token, cookie_user, user, self.remote_user(request.headers)):
             return self._error(401, "unauthorized")
         if self._mutation_from_cookie(request.headers, "DELETE", cookie_user):
             return self._error(403, "cross-origin request rejected")
@@ -1091,9 +1055,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         async with self.state.lock:
             self.state.last_activity.pop(user, None)
             self.state.in_flight.pop(user, None)
-        return JSONResponse(
-            {"user": user, "note": "claim deleted; sandbox and PVC cascade"}
-        )
+        return JSONResponse({"user": user, "note": "claim deleted; sandbox and PVC cascade"})
 
     async def recreate(self, request: Request) -> Response:
         """Delete and re-provision the SSO user's sandbox for a clean start.
@@ -1122,9 +1084,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 break
             await asyncio.sleep(1)
         response = RedirectResponse(f"/u/{remote}/", status_code=303)
-        await self._sso_session(
-            remote, request.headers, request.cookies, response
-        )
+        await self._sso_session(remote, request.headers, request.cookies, response)
         return response
 
     # -- HTTP proxy --------------------------------------------------------
@@ -1141,9 +1101,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 return RedirectResponse("/", status_code=303)
             return self._error(404, "unknown user")
         token, cookie_user = self.credentials(request.headers, request.cookies)
-        if remote == user and not (
-            cookie_user == user and token_matches(claim, token)
-        ):
+        if remote == user and not (cookie_user == user and token_matches(claim, token)):
             # SSO user without a valid session cookie: bootstrap, then continue.
             return RedirectResponse("/", status_code=303)
         if not self._authorized(claim, token, cookie_user, user, remote):
@@ -1152,31 +1110,21 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
             return self._error(403, "cross-origin request rejected")
 
         if not await self._acquire(user):
-            return self._error(
-                503, "gateway busy, retry shortly", {"Retry-After": "5"}
-            )
+            return self._error(503, "gateway busy, retry shortly", {"Retry-After": "5"})
         streaming = False
         try:
             sandbox, fqdn = await self._resolve_sandbox(user, claim)
             host = request.headers.get("host", "")
-            cookie, _, was_cached = await self.dsh_cookie(
-                user, sandbox, fqdn, host
-            )
+            cookie, _, was_cached = await self.dsh_cookie(user, sandbox, fqdn, host)
             body = await self._read_body(request)
 
-            upstream = await self._send_upstream(
-                request, user, fqdn, cookie, body
-            )
+            upstream = await self._send_upstream(request, user, fqdn, cookie, body)
             if upstream.status_code == 401 and was_cached:
                 # The cached DSH cookie expired (pod restart, logout, ...):
                 # handshake once more and replay the (already buffered) request.
                 await upstream.aclose()
-                cookie, _, _ = await self.dsh_cookie(
-                    user, sandbox, fqdn, host, force=True
-                )
-                upstream = await self._send_upstream(
-                    request, user, fqdn, cookie, body
-                )
+                cookie, _, _ = await self.dsh_cookie(user, sandbox, fqdn, host, force=True)
+                upstream = await self._send_upstream(request, user, fqdn, cookie, body)
 
             response = StreamingResponse(
                 self._relay(user, upstream),
@@ -1216,8 +1164,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         headers = {
             key: value
             for key, value in request.headers.items()
-            if key.lower() not in OWNED_REQUEST_HEADERS
-            and key.lower() != "content-length"
+            if key.lower() not in OWNED_REQUEST_HEADERS and key.lower() != "content-length"
         }
         host = request.headers.get("host", "")
         headers["host"] = host
@@ -1229,9 +1176,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         else:
             headers["x-forwarded-for"] = ""
         port = host.rsplit(":", 1)[1] if ":" in host else ""
-        headers["x-forwarded-port"] = port or (
-            "443" if request.url.scheme == "https" else "80"
-        )
+        headers["x-forwarded-port"] = port or ("443" if request.url.scheme == "https" else "80")
 
         last_error: Exception | None = None
         for attempt in range(self.settings.upstream_attempts):
@@ -1341,9 +1286,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 if ":" in upstream_host and not upstream_host.startswith("["):
                     upstream_host = f"[{upstream_host}]"  # IPv6 literal
                 authority = f"{upstream_host}:{self.settings.dsh_port}"
-                cookie, _, _ = await self.dsh_cookie(
-                    user, sandbox, fqdn, authority
-                )
+                cookie, _, _ = await self.dsh_cookie(user, sandbox, fqdn, authority)
                 url = f"ws://{authority}/{path}"
                 query = filtered_query(websocket.url.query)
                 if query:
@@ -1362,9 +1305,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                     headers["x-forwarded-for"] = websocket.client.host
                 subprotocols = [
                     part.strip()
-                    for part in websocket.headers.get(
-                        "sec-websocket-protocol", ""
-                    ).split(",")
+                    for part in websocket.headers.get("sec-websocket-protocol", "").split(",")
                     if part.strip()
                 ]
                 upstream_cm = self.ws_connect(
@@ -1380,16 +1321,12 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 return await self._ws_reject(websocket, 1011)
 
             try:
-                await websocket.accept(
-                    subprotocol=getattr(upstream, "subprotocol", None)
-                )
+                await websocket.accept(subprotocol=getattr(upstream, "subprotocol", None))
             except RuntimeError:
                 pass
             await self._pump(websocket, upstream)
             with contextlib.suppress(Exception):
-                await websocket.close(
-                    code=self._upstream_close_code(upstream)
-                )
+                await websocket.close(code=self._upstream_close_code(upstream))
         finally:
             if upstream_cm is not None:
                 with contextlib.suppress(Exception):
@@ -1429,9 +1366,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
             asyncio.create_task(client_to_upstream()),
             asyncio.create_task(upstream_to_client()),
         ]
-        done, pending = await asyncio.wait(
-            tasks, return_when=asyncio.FIRST_COMPLETED
-        )
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
         await asyncio.gather(*done, *pending, return_exceptions=True)
@@ -1458,17 +1393,13 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                     continue
                 if self.state.in_flight.get(user, 0) > 0:
                     continue  # requests in flight => the user is active
-                idle = time.time() - self.state.last_activity.setdefault(
-                    user, time.time()
-                )
+                idle = time.time() - self.state.last_activity.setdefault(user, time.time())
                 if idle < self.settings.idle_timeout:
                     continue
                 self.state.maintenance[user] = True
             try:
                 print(f"suspending {user} (idle {int(idle)}s)", flush=True)
-                await self.k8s.patch_operating_mode(
-                    sandbox["metadata"]["name"], "Suspended"
-                )
+                await self.k8s.patch_operating_mode(sandbox["metadata"]["name"], "Suspended")
                 self._clear_handshake(user)
             finally:
                 async with self.state.lock:
@@ -1519,12 +1450,8 @@ def create_app(
     k8s = k8s if k8s is not None else Kubernetes(settings.namespace)
     owns_http_client = http_client is None
     if http_client is None:
-        http_client = httpx.AsyncClient(
-            follow_redirects=False, timeout=settings.http_timeout
-        )
-    gateway = Gateway(
-        settings, k8s, http_client, ws_connect or websockets.connect
-    )
+        http_client = httpx.AsyncClient(follow_redirects=False, timeout=settings.http_timeout)
+    gateway = Gateway(settings, k8s, http_client, ws_connect or websockets.connect)
     routes = [
         Route("/healthz", gateway.healthz),
         Route("/", gateway.landing),

@@ -1,0 +1,52 @@
+# OPTIONAL browser entry point: expose the gateway through Traefik.
+#
+# This is the "no SSO" exposure variant and is MUTUALLY EXCLUSIVE with
+# ../gateway-api-sso/ — apply exactly one of them (see ../README.md).
+#
+# Requires the base manifests (Service dsh-gateway:8080 from
+# manifests/50-gateway.yaml) and a Traefik install with an IngressClass named
+# "traefik" (k3s ships one). Replace the placeholder host below with a name
+# that resolves to your ingress address, and either supply a real TLS Secret or
+# delete the `tls:` block for plain HTTP.
+#
+# Two things must match this host:
+#   1. SandboxTemplate (manifests/10-sandboxtemplate.yaml): set
+#      DSH_TRUSTED_HOSTS to this host so DSH accepts the forwarded Host/Origin
+#      on /api.
+#   2. Gateway Deployment (manifests/50-gateway.yaml): set COOKIE_SECURE to
+#      "true" once this Ingress serves HTTPS, so the session cookie is Secure.
+#      The base manifest sets "false" for the plain-HTTP port-forward demo.
+#
+# WebSocket support is REQUIRED: the browser talks to /u/<user>/... and DSH
+# uses WebSockets for live session traffic. Traefik upgrades WS/SSE
+# transparently for ordinary HTTP routers, but do NOT attach buffering
+# middlewares (e.g. compress, buffering) to this router — they break streaming
+# and upgrades. `path: /` Prefix covers the landing page and every per-user
+# proxy path, so no per-sandbox Ingress is needed.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dsh-gateway
+  namespace: dsh-demo
+  # Typical Traefik + cert-manager wiring (uncomment and adapt):
+  # annotations:
+  #   traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  annotations: {}
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - dsh.example.com # placeholder
+      secretName: dsh-example-tls # placeholder; create/PKI-provision this Secret
+  rules:
+    - host: dsh.example.com # placeholder
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dsh-gateway
+                port:
+                  number: 8080

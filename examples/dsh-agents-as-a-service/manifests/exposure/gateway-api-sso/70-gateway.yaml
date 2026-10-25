@@ -1,0 +1,25 @@
+# Browser entry point (TLS) for the gateway-api-sso variant: terminates TLS
+# for dsh-demo.example.com and routes through 71-httproute.yaml to
+# oauth2-proxy, which authenticates the browser before the gateway.
+# Mutually exclusive with ../../ingress/ (see ../../README.md). The
+# "dsh-demo-tls" Secret comes from 74-tls-secret.yaml.example.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: dsh-gateway
+  namespace: dsh-demo
+  labels:
+    app.kubernetes.io/part-of: dsh-demo
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: https
+      port: 8443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: dsh-demo-tls
+      allowedRoutes:
+        namespaces:
+          from: Same

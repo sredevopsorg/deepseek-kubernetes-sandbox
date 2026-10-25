@@ -1,0 +1,268 @@
+# Release pipeline. Pushing a tag that matches the identity in versions.env
+# publishes both images (version + latest), creates the GitHub Release from
+# git-cliff, and opens a PR that refreshes CHANGELOG.md on main.
+#
+# The tag must be dsh-vX.Y.Z or dsh-vX.Y.Z-rN and must match versions.env;
+# tags are immutable, so a broken release is fixed with a new -rN revision.
+name: Release
+
+on:
+  push:
+    tags:
+      - "dsh-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release (must match versions.env)
+        required: true
+        type: string
+      publish_legacy_gateway_alias:
+        description: Also publish the legacy :gateway alias (one release only)
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    name: Validate release identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      identity: ${{ steps.meta.outputs.identity }}
+      dsh_version: ${{ steps.meta.outputs.dsh_version }}
+      pnpm_version: ${{ steps.meta.outputs.pnpm_version }}
+      release_revision: ${{ steps.meta.outputs.release_revision }}
+      ghcr_image: ${{ steps.meta.outputs.ghcr_image }}
+      gateway_image: ${{ steps.meta.outputs.gateway_image }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate tag against versions.env
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          while IFS= read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            echo "$line" >> "$GITHUB_ENV"
+          done < versions.env
+          identity="$DSH_VERSION"
+          [ -z "$RELEASE_REVISION" ] || identity="$DSH_VERSION-$RELEASE_REVISION"
+          if [ "$tag" != "$identity" ]; then
+            echo "tag '$tag' does not match versions.env identity '$identity'" >&2
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            git fetch origin main '+refs/heads/release/*:refs/remotes/origin/release/*'
+            commit=$(git rev-list -n1 "refs/tags/$tag")
+            allowed=0
+            for ref in origin/main origin/release/*; do
+              if git rev-parse -q --verify "$ref" >/dev/null && git merge-base --is-ancestor "$commit" "$ref"; then
+                allowed=1
+                break
+              fi
+            done
+            if [ "$allowed" -ne 1 ]; then
+              echo "tag commit $commit is not on main or a release branch" >&2
+              exit 1
+            fi
+          else
+            echo "tag '$tag' does not exist in this repository" >&2
+            exit 1
+          fi
+          if ! git ls-remote --tags --exit-code "$DSH_REPO" "$DSH_VERSION" >/dev/null; then
+            echo "upstream ref '$DSH_VERSION' not found in $DSH_REPO" >&2
+            exit 1
+          fi
+          {
+            echo "identity=$identity"
+            echo "dsh_version=$DSH_VERSION"
+            echo "pnpm_version=$PNPM_VERSION"
+            echo "release_revision=$RELEASE_REVISION"
+            echo "ghcr_image=$GHCR_IMAGE"
+            echo "gateway_image=$GATEWAY_IMAGE"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify repository pins
+        run: ./scripts/check-versions.sh
+
+  tests:
+    name: Unit tests and lint
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: examples/dsh-agents-as-a-service/gateway
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            examples/dsh-agents-as-a-service/gateway/requirements.txt
+            examples/dsh-agents-as-a-service/gateway/requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint
+        run: |
+          set -euo pipefail
+          python -m ruff check .
+          python -m ruff format --check .
+      - name: Unit tests
+        run: python -m pytest -q
+
+  build-main:
+    name: Publish main image
+    needs: [meta, tests]
+    uses: ./.github/workflows/_build-image.yaml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      image: ${{ needs.meta.outputs.ghcr_image }}
+      version: ${{ needs.meta.outputs.identity }}
+      context: .
+      dockerfile: Dockerfile
+      build-args: |
+        DSH_VERSION=${{ needs.meta.outputs.dsh_version }}
+        RELEASE_REVISION=${{ needs.meta.outputs.release_revision }}
+        PNPM_VERSION=${{ needs.meta.outputs.pnpm_version }}
+        VCS_REF=${{ github.sha }}
+      tags: |
+        ${{ needs.meta.outputs.ghcr_image }}:${{ needs.meta.outputs.identity }}
+        ${{ needs.meta.outputs.ghcr_image }}:latest
+
+  build-gateway:
+    name: Publish gateway image
+    needs: [meta, tests]
+    uses: ./.github/workflows/_build-image.yaml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      image: ${{ needs.meta.outputs.gateway_image }}
+      version: ${{ needs.meta.outputs.identity }}
+      context: examples/dsh-agents-as-a-service/gateway
+      dockerfile: Dockerfile
+      tags: |
+        ${{ needs.meta.outputs.gateway_image }}:${{ needs.meta.outputs.identity }}
+        ${{ needs.meta.outputs.gateway_image }}:latest
+
+  legacy-gateway-alias:
+    name: Publish legacy :gateway alias (temporary)
+    needs: [meta, build-gateway]
+    if: github.event_name != 'workflow_dispatch' || inputs.publish_legacy_gateway_alias
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Retag gateway as the legacy package tag
+        env:
+          SOURCE: ${{ needs.meta.outputs.gateway_image }}:${{ needs.meta.outputs.identity }}
+          LEGACY: ${{ needs.meta.outputs.ghcr_image }}:gateway
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "$LEGACY" "$SOURCE"
+          echo "Deprecated alias $LEGACY now points at $SOURCE" >> "$GITHUB_STEP_SUMMARY"
+
+  publish-release:
+    name: Changelog and GitHub Release
+    needs: [meta, build-main, build-gateway]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install git-cliff
+        env:
+          GIT_CLIFF_VERSION: v2.14.2
+        run: |
+          set -euo pipefail
+          version="${GIT_CLIFF_VERSION#v}"
+          curl -fsSL -o /tmp/git-cliff.tar.gz             "https://github.com/orhun/git-cliff/releases/download/$GIT_CLIFF_VERSION/git-cliff-$version-x86_64-unknown-linux-gnu.tar.gz"
+          tar -xzf /tmp/git-cliff.tar.gz -C /tmp
+          install -m 0755 "/tmp/git-cliff-$version/git-cliff" /usr/local/bin/git-cliff
+          git-cliff --version
+
+      - name: Generate CHANGELOG and release notes
+        env:
+          IDENTITY: ${{ needs.meta.outputs.identity }}
+        run: |
+          set -euo pipefail
+          git-cliff --tag "$IDENTITY" --output CHANGELOG.md
+          git-cliff --tag "$IDENTITY" --latest --strip header --output /tmp/release-notes.md
+          echo "### Release $IDENTITY" >> "$GITHUB_STEP_SUMMARY"
+          head -n 40 /tmp/release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IDENTITY: ${{ needs.meta.outputs.identity }}
+        run: |
+          set -euo pipefail
+          if gh release view "$IDENTITY" >/dev/null 2>&1; then
+            echo "release $IDENTITY already exists; skipping" >&2
+          else
+            gh release create "$IDENTITY"               --title "$IDENTITY"               --notes-file /tmp/release-notes.md               --verify-tag
+          fi
+
+      - name: Open CHANGELOG pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IDENTITY: ${{ needs.meta.outputs.identity }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "CHANGELOG.md already up to date"
+            exit 0
+          fi
+          branch="chore/changelog-$IDENTITY"
+          git switch -c "$branch"
+          git add CHANGELOG.md
+          git commit -m "chore(changelog): refresh for $IDENTITY"
+          git push origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore(changelog): refresh for $IDENTITY" \
+            --body "Generated by git-cliff for $IDENTITY. Do not edit CHANGELOG.md by hand."

@@ -1,0 +1,13 @@
+# Link checker for README/docs. Placeholders used by the examples are excluded
+# on purpose; real URLs must resolve.
+verbose = "info"
+no_progress = true
+max_retries = 2
+exclude = [
+  "localhost",
+  "127\\.0\\.0\\.1",
+  "example\\.com",
+  "your-github-org",
+  "mailto:",
+  "ghcr\\.io/.*@sha256",
+]

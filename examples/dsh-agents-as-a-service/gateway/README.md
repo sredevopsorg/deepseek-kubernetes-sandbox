@@ -4,7 +4,7 @@ A single-file, browser-usable control + data plane for
 [DeepSeek Harness Web (DSH)](https://github.com/deepseek-ai/deepseek-harness)
 sandboxes running behind the `agent-sandbox` CRDs.
 
-It does three things:
+It does four things:
 
 1. **Users** — creates a `SandboxClaim` from a warm pool, mints a bearer token
    (only its SHA-256 is stored as a claim annotation), reports derived state,
@@ -15,10 +15,15 @@ It does three things:
 3. **Reverse proxy** — proxies HTTP (including SSE) and WebSocket traffic to
    the sandbox's DSH Web server on `:3080`, including DSH's own cookie
    handshake.
+4. **Optional SSO** — when `AUTH_PROXY_HEADER` is set, trusts the identity
+   header an authenticating reverse proxy (for example oauth2-proxy) forwards,
+   auto-provisions that user, and exposes `POST /recreate` for a clean restart.
 
-DSH is pinned to `dsh-v0.2.1-rc.2` in the example manifests. It binds `:3080`,
-serves `/`, gates `/api` behind a `dsh-auth-*` cookie and requires a WebSocket
-at `/api/remote.mux`.
+The DSH version pin lives in [`versions.env`](../../../versions.env)
+(`DSH_VERSION` plus the optional repository `RELEASE_REVISION`); the example
+manifests and published images use the release identity built from it (currently
+`dsh-v0.2.1-rc.2-r2`). DSH binds `:3080`, serves `/`, gates `/api` behind a
+`dsh-auth-*` cookie and requires a WebSocket at `/api/remote.mux`.
 
 ## Flow
 
@@ -58,10 +63,11 @@ token. A failed handshake returns `503` with `Retry-After: 10`.
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | `GET` | `/healthz` | none | Liveness/readiness. Never touches the cluster. |
-| `GET` | `/` | none | Landing page with signup + token login forms. |
+| `GET` | `/` | none | Landing page with signup + token login forms. With SSO it auto-provisions the proxy-identified user and redirects to their workspace. |
 | `POST` | `/users` | none | Signup. JSON body `{"user": "<dns-1123 label>"}` or form field `user`. JSON returns `201` when Ready, `202` when accepted but still Waking; form returns `303` to `/u/<user>/`. Both set the session cookie. `409` if the user exists, `400` if invalid, `413` if the body is too large. |
 | `POST` | `/login` | none | Form (`user`, `token`) returns `303` to `/u/<user>/`; JSON returns `200`. Sets the session cookie. `401` on a bad token, `404` for an unknown user. |
 | `POST` | `/logout` | none | Clears the session cookie and `303`s to `/`. |
+| `POST` | `/recreate` | trusted proxy header | **SSO only.** Deletes the authenticated user's claim (cascading sandbox + PVC, so workspace data is wiped), waits out finalizers, provisions a fresh claim and `303`s to `/u/<user>/`. `401` without a valid identity header; cookie-authenticated calls must be same-origin. |
 | `GET` | `/users/{user}` | bearer or cookie | Derived state: `Provisioning`, `Waking`, `Ready`, `Suspending`, `Suspended`. |
 | `DELETE` | `/users/{user}` | bearer or cookie | Delete the claim (sandbox + PVC cascade). Cookie-auth mutations require a same-origin `Origin`/`Referer`. |
 | `GET` | `/u/{user}` | — | `308` redirect to `/u/{user}/`. |
@@ -85,6 +91,37 @@ token. A failed handshake returns `503` with `Retry-After: 10`.
 * Upstream `Set-Cookie` headers are dropped. `Location` headers that are
   absolute paths are rewritten under `/u/<user>/`, and any `token` query
   parameter is stripped.
+
+### SSO (opt-in)
+
+By default the gateway is the only authenticator: users sign up with a token or
+the session cookie, and the gateway ignores all identity headers. Set
+`AUTH_PROXY_HEADER` to enable SSO behind an authenticating reverse proxy such as
+oauth2-proxy:
+
+```bash
+kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER=X-Forwarded-User
+```
+
+When set, the gateway treats a request carrying that header as authenticated as
+that user, provided the value is a valid DNS-1123 label; the header is never
+trusted when the variable is unset. The landing page then auto-provisions the
+user (creates their claim idempotently, mints a rotated session token) and
+redirects to `/u/<user>/`, and `POST /recreate` becomes available for a clean
+restart. The base manifests leave it unset on purpose; the
+[SSO exposure variant](../manifests/exposure/gateway-api-sso/) documents how to
+enable it on the Deployment (`kubectl set env`).
+
+> **Trust boundary — this is the security-critical part.** A trusted identity
+> header is only safe when **nothing else can reach the gateway**. The gateway
+> Service must stay ClusterIP and be reachable exclusively through the
+> authenticating proxy; if a client can reach `dsh-gateway:8080` directly (a
+> second Ingress/Gateway/Route, a port-forward on a shared host, a broad
+> NetworkPolicy), it can send `X-Forwarded-User` itself and impersonate any user.
+> Treat `AUTH_PROXY_HEADER` as "the proxy already authenticated this request",
+> not as an authentication mechanism of its own. Disable SSO by removing the
+> variable: the header is then ignored and bearer-token/session auth applies
+> again.
 
 ### Proxy failure semantics
 
@@ -123,6 +160,7 @@ can also be injected into `create_app` for tests.
 | `MAX_BODY_MB` | `32` | Maximum buffered request body (and `413` threshold). |
 | `HTTP_TIMEOUT` | `300` | Upstream connect/read timeout in seconds. Proxied streams (SSE, long responses) keep the connect/write budget but have **no read timeout**, so an idle event stream is not cut every five minutes. |
 | `SWEEP_INTERVAL` | `15` | Seconds between idle sweeps. |
+| `AUTH_PROXY_HEADER` | unset | Opt-in SSO: name of the trusted identity header set by an authenticating reverse proxy (e.g. `X-Forwarded-User`). Unset disables SSO and the header is never trusted. Enable only when the Service is reachable exclusively through that proxy (see [SSO](#sso-opt-in)). |
 
 ### Required RBAC
 
@@ -147,11 +185,20 @@ python -m ruff check .
 uvicorn gateway:create_app --factory --host 0.0.0.0 --port 8080
 ```
 
-Container image:
+Container image, from the repository root:
 
 ```bash
-docker build -t dsh-gateway examples/dsh-agents-as-a-service/gateway
+make gateway    # builds dsh-aaas-gateway:dev from this directory
 ```
+
+The equivalent direct build is
+`docker build -t dsh-aaas-gateway:dev examples/dsh-agents-as-a-service/gateway`.
+For kind, retag it to the image reference in
+`examples/dsh-agents-as-a-service/manifests/50-gateway.yaml` and `kind load` it.
+Published images are nested below the main image as
+`<GHCR_IMAGE>/dsh-agents-as-a-service/gateway:<identity>`, where the identity
+comes from [`versions.env`](../../../versions.env) — see
+[`docs/versioning.md`](../../../docs/versioning.md).
 
 The image runs as UID `10000`, sets `PYTHONDONTWRITEBYTECODE=1` and
 `HOME=/tmp` (read-only-rootfs compatible), listens on `8080`, and disables
@@ -182,3 +229,8 @@ uvicorn's access log so bearer tokens in URLs are not logged.
   re-runs the handshake once and replays the request.
 * **Only DSH on `:3080` is proxied.** There is no dashboard/API-port split and
   no platform API key injection.
+* **SSO trusts a header.** With `AUTH_PROXY_HEADER` set, any client that can
+  reach the gateway Service directly can spoof the identity header. The gateway
+  cannot enforce the trust boundary itself: keep the Service ClusterIP and
+  reachable only through the authenticating proxy. There is no mTLS or signed
+  identity assertion.

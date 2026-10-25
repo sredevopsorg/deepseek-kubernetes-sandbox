@@ -1,0 +1,128 @@
+# The reusable DSH Web blueprint. Warm pools stamp pod env BEFORE any user
+# exists, so per-user secrets cannot live in pod env; the shared provider key
+# is injected via envFrom, and claims that would bypass the warm pool are
+# rejected outright (see 40-claim-rejected.yaml).
+#
+# A stripped-down single-tenant variant of this template (no warm pool, no
+# policy enforcement) lives in examples/minimal-single-tenant/.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: dsh-web
+  namespace: dsh-demo
+spec:
+  # Claims must not inject env or volumeClaimTemplates: with Disallowed, such
+  # claims are REJECTED instead of silently taking the cold (non-warm-pool)
+  # provisioning path. Demonstrated in step 6.
+  envVarsInjectionPolicy: Disallowed
+  volumeClaimTemplatesPolicy: Disallowed
+
+  # Per-sandbox headless Service -> stable DNS (sandbox.status.serviceFQDN).
+  # The gateway routes each user to their DSH Web instance by this name.
+  service: true
+
+  # The example gateway does not manage NetworkPolicy, so it is left
+  # unmanaged here. A production platform would use
+  # networkPolicyManagement: Managed and restrict ingress to its gateway on
+  # :3080 — with the shared provider key, that NetworkPolicy is the per-user
+  # isolation boundary.
+  networkPolicyManagement: Unmanaged
+
+  podTemplate:
+    spec:
+      # DSH Web is multi-arch (amd64 + arm64); no arch nodeSelector needed.
+      restartPolicy: "OnFailure"
+      securityContext:
+        runAsUser: 1000   # the 'node' user in the DSH image
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+        # DSH's credentials plugin refuses to start when .credentials.yaml has
+        # any group/other permission bit (it creates the file 0600). The
+        # default kubelet fsGroup policy ("Always") recursively ORs 0660 into
+        # every file each time the pod starts, so a resumed sandbox comes back
+        # with 0660 and crash-loops before the gateway can proxy to it.
+        # OnRootMismatch skips that walk once the volume root already carries
+        # the fsGroup ownership/mode applied on the first mount.
+        # Keep in sync with the minimal variant:
+        # examples/minimal-single-tenant/manifests/sandbox-template.yaml.
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: dsh-web
+          image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.2-r2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: web
+              containerPort: 3080
+          envFrom:
+            - secretRef:
+                name: dsh-provider-keys
+          env:
+            # Empty => DSH derives links from the request Host, which the
+            # gateway forwards (plus X-Forwarded-*). Point this at the
+            # gateway base URL if you want hard-coded absolute links instead.
+            - name: DSH_PUBLIC_URL
+              value: ""
+            # DSH Host/Origin-fences /api. The gateway forwards the browser's
+            # Host, so DSH must trust the public gateway host. Empty is right
+            # for port-forward/localhost; for either exposure variant set this
+            # to the public host (e.g. dsh.example.com for
+            # manifests/exposure/ingress/60-ingress.yaml, or
+            # dsh-demo.example.com for the gateway-api-sso/ HTTPRoute).
+            - name: DSH_TRUSTED_HOSTS
+              value: ""
+          # Probes target /favicon.svg: DSH gates / behind its launch-token
+          # cookie and answers 401 to an unauthenticated GET, which would
+          # otherwise fail readiness and then get the pod killed by liveness.
+          # /favicon.svg is served without auth and is the cheapest liveness
+          # signal that proves the HTTP server is actually serving requests.
+          #
+          # Gate liveness/readiness behind a startup probe: a cold start on a
+          # small node takes tens of seconds to load plugins and start serving
+          # (a resumed sandbox starts cold too). Without it the kubelet can kill
+          # DSH mid-startup, and a SIGTERM'd DSH exits 0, which the sandbox
+          # controller records as finished. 24 x 5s = 120s, matching the
+          # gateway's WAKE_TIMEOUT.
+          startupProbe:
+            httpGet:
+              path: /favicon.svg
+              port: 3080
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /favicon.svg
+              port: 3080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /favicon.svg
+              port: 3080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          # The container only needs to serve HTTP; drop every capability and
+          # disallow privilege escalation. DSH writes only to DSH_HOME (PVC).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - name: dsh-home
+              mountPath: /home/node/.dsh # DSH_HOME: sessions, config, state
+  volumeClaimTemplates:
+    - metadata:
+        name: dsh-home
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+        # storageClassName omitted => cluster default (kind & GKE both work)
