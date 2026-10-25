@@ -622,10 +622,12 @@ class Gateway:
         """Provision ``remote`` idempotently and mint/refresh a session token.
 
         The authenticating proxy has already verified ``remote``, so it is
-        trusted. A brand-new user is provisioned like ``signup`` (claim created,
-        token minted, sandbox awaited); an existing user whose session cookie is
-        missing or no longer matches gets a rotated token so a fresh cookie can
-        be issued. A still-valid session is reused untouched.
+        trusted. A brand-new user is provisioned (claim created, token minted);
+        an existing user whose session cookie is missing or no longer matches
+        gets a rotated token so a fresh cookie can be issued. A still-valid
+        session is reused untouched. Provisioning is non-blocking: the sandbox
+        is awaited by the proxy path (``_resolve_sandbox``), so the landing page
+        can report "Provisioning" instead of stalling for ``WAKE_TIMEOUT``.
         """
         claim = await self.k8s.get_claim(remote)
         token, cookie_user = self.credentials(headers, cookies)
@@ -643,7 +645,6 @@ class Gateway:
                 await self.k8s.patch_token(remote, token_hash)
             else:
                 await self._touch(remote)
-                await self.wait_ready(remote, self.settings.wake_timeout)
         else:
             await self.k8s.patch_token(remote, token_hash)
             await self._touch(remote)
@@ -835,14 +836,65 @@ class Gateway:
     async def healthz(self, request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
+    @staticmethod
+    def _sso_page(user: str, state: str) -> str:
+        """Minimal SSO landing: connect to the sandbox, or offer to recreate it.
+
+        No signup/token forms — the authenticating proxy has already identified
+        the user. A "Provisioning" sandbox refreshes itself until a pod exists;
+        any other state auto-connects to ``/u/<user>/`` and offers the single
+        "Recreate sandbox" action.
+        """
+        safe_user = html.escape(user)
+        path = quote(user)
+        if state == "Provisioning":
+            status = "Provisioning"
+            body = (
+                '<meta http-equiv="refresh" content="3">'
+                "<p>Provisioning your sandbox… this can take a minute.</p>"
+            )
+        else:
+            status = html.escape(state)
+            confirm = (
+                'onsubmit="return confirm(\'Delete this sandbox and start fresh? '
+                "Your workspace data will be wiped.')\""
+            )
+            body = (
+                f'<meta http-equiv="refresh" content="1;url=/u/{path}/">'
+                "<p>Connecting to your sandbox…</p>"
+                f'<form method="post" action="/recreate" {confirm}>'
+                '<button type="submit">Recreate sandbox</button></form>'
+            )
+        return (
+            '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            "<title>DSH sandbox</title><style>"
+            "body{font-family:system-ui,sans-serif;max-width:42rem;margin:3rem auto;"
+            "padding:0 1rem;line-height:1.5}"
+            "form{margin:1rem 0}button{padding:.4rem 1rem}"
+            "</style></head><body>"
+            "<h1>DeepSeek Harness sandbox</h1>"
+            f"<p>Signed in as <strong>{safe_user}</strong>.</p>"
+            f"<p>Sandbox status: <strong>{status}</strong>.</p>"
+            f"{body}"
+            "</body></html>"
+        )
+
     async def landing(self, request: Request) -> Response:
         remote = self.remote_user(request.headers)
         if remote:
-            response = RedirectResponse(f"/u/{remote}/", status_code=303)
-            await self._sso_session(
+            # SSO: auto-provision + connect. A temporary response captures the
+            # session cookie minted by _sso_session; the real page is rendered
+            # once the sandbox state is known.
+            response = HTMLResponse()
+            claim = await self._sso_session(
                 remote, request.headers, request.cookies, response
             )
-            return response
+            sandbox = await self._sandbox_of(claim) if claim else None
+            page = HTMLResponse(self._sso_page(remote, derive_state(sandbox)))
+            if "set-cookie" in response.headers:
+                page.headers["set-cookie"] = response.headers["set-cookie"]
+            return page
         token, user = self.credentials(request.headers, request.cookies)
         session = ""
         if user and token:
@@ -1042,6 +1094,38 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         return JSONResponse(
             {"user": user, "note": "claim deleted; sandbox and PVC cascade"}
         )
+
+    async def recreate(self, request: Request) -> Response:
+        """Delete and re-provision the SSO user's sandbox for a clean start.
+
+        SSO-only: the identity comes from the trusted proxy header. Deleting the
+        claim cascades to the sandbox pod and its PVC, wiping user state; we poll
+        until the claim is fully gone (finalizers) before recreating to avoid a
+        name-collision 409, then reconnect.
+        """
+        remote = self.remote_user(request.headers)
+        if not remote:
+            return self._error(401, "unauthorized")
+        _token, cookie_user = self.credentials(request.headers, request.cookies)
+        if cookie_user is not None and cookie_user != remote:
+            return self._error(401, "unauthorized")
+        if self._mutation_from_cookie(request.headers, "POST", cookie_user):
+            return self._error(403, "cross-origin request rejected")
+        await self.k8s.delete_claim(remote)
+        self._clear_handshake(remote)
+        async with self.state.lock:
+            self.state.last_activity.pop(remote, None)
+            self.state.in_flight.pop(remote, None)
+        # Wait out any finalizer so the claim name is reusable.
+        for _ in range(30):
+            if await self.k8s.get_claim(remote) is None:
+                break
+            await asyncio.sleep(1)
+        response = RedirectResponse(f"/u/{remote}/", status_code=303)
+        await self._sso_session(
+            remote, request.headers, request.cookies, response
+        )
+        return response
 
     # -- HTTP proxy --------------------------------------------------------
 
@@ -1447,6 +1531,7 @@ def create_app(
         Route("/users", gateway.signup, methods=["POST"]),
         Route("/login", gateway.login, methods=["POST"]),
         Route("/logout", gateway.logout, methods=["POST"]),
+        Route("/recreate", gateway.recreate, methods=["POST"]),
         Route("/users/{user}", gateway.get_user),
         Route("/users/{user}", gateway.delete_user, methods=["DELETE"]),
         Route("/u/{user}", gateway.redirect_to_workspace),
