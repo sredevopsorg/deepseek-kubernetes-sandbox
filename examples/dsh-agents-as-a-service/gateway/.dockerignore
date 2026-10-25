@@ -1,0 +1,11 @@
+# Runtime image only needs the app and its pinned runtime requirements.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+test_gateway.py
+requirements-dev.txt
+pyproject.toml
+README.md
+coverage.xml

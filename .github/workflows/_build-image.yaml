@@ -1,0 +1,160 @@
+# Reusable multi-arch image build: one workflow, called by build-main,
+# build-gateway and release. Builds natively per platform (no QEMU), pushes by
+# digest, then merges the manifest list with SBOM and provenance attestations.
+name: Reusable multi-arch image build
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Fully qualified image name without a tag
+        required: true
+        type: string
+      version:
+        description: Version recorded in the OCI labels
+        required: true
+        type: string
+      context:
+        description: Docker build context
+        required: true
+        type: string
+      dockerfile:
+        description: Dockerfile path, relative to the context
+        required: false
+        default: Dockerfile
+        type: string
+      build-args:
+        description: Newline-separated build args
+        required: false
+        default: ""
+        type: string
+      tags:
+        description: Newline-separated fully qualified tags to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.platform == 'linux/amd64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare environment
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          pair=$(printf '%s' "${{ matrix.platform }}" | tr '/' '-')
+          echo "PLATFORM_PAIR=$pair" >> "$GITHUB_ENV"
+          echo "CACHE_SCOPE=$(printf '%s' "$IMAGE" | tr '/' '-')" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ inputs.build-args }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ inputs.image }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}-${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge manifest list
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest list
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ inputs.image }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              args+=("-t" "$tag")
+            fi
+          done <<< "$TAGS"
+          refs=()
+          for digest in *; do
+            refs+=("$IMAGE@sha256:$digest")
+          done
+          docker buildx imagetools create "${args[@]}" "${refs[@]}"
+
+      - name: Inspect image
+        env:
+          IMAGE: ${{ inputs.image }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          first=$(printf '%s\n' "$TAGS" | head -n1)
+          docker buildx imagetools inspect "$first"
+          echo "### Published ${{ inputs.image }}" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$TAGS" | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,257 @@
+# Continuous integration: lint, unit tests, manifest dry-run, gateway image
+# smoke test and dependency review. Job names are the required branch-protection
+# checks documented in docs/gitflow.md.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install Python linters
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install "yamllint==1.38.0" "pyyaml==6.0.3"
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: v1.7.12
+        run: |
+          set -euo pipefail
+          version="${ACTIONLINT_VERSION#v}"
+          curl -fsSL -o /tmp/actionlint.tar.gz             "https://github.com/rhysd/actionlint/releases/download/$ACTIONLINT_VERSION/actionlint_${version}_linux_amd64.tar.gz"
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
+          actionlint -version
+      - name: Install hadolint
+        env:
+          HADOLINT_VERSION: v2.12.0
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/hadolint             "https://github.com/hadolint/hadolint/releases/download/$HADOLINT_VERSION/hadolint-Linux-x86_64"
+          install -m 0755 /tmp/hadolint /usr/local/bin/hadolint
+          hadolint --version
+      - name: Repository checks
+        run: |
+          set -euo pipefail
+          ./scripts/check-versions.sh
+          ./scripts/check-examples.sh
+          python scripts/check-manifests.py
+      - name: Shellcheck
+        run: shellcheck -x build.sh scripts/*.sh examples/*/scripts/*.sh
+      - name: Actionlint
+        run: actionlint -color
+      - name: Yamllint
+        run: yamllint .
+      - name: Hadolint
+        run: |
+          set -euo pipefail
+          hadolint Dockerfile
+          hadolint examples/dsh-agents-as-a-service/gateway/Dockerfile
+      - name: Documentation links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2
+        with:
+          args: >-
+            --offline --no-progress --verbose
+            ./README.md ./CONTRIBUTING.md ./SECURITY.md ./AGENTS.md ./docs ./examples
+
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: examples/dsh-agents-as-a-service/gateway
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            examples/dsh-agents-as-a-service/gateway/requirements.txt
+            examples/dsh-agents-as-a-service/gateway/requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint
+        run: |
+          set -euo pipefail
+          python -m ruff check .
+          python -m ruff format --check .
+      - name: Unit tests with coverage
+        run: >-
+          python -m pytest -q
+          --cov=. --cov-report=xml:coverage.xml --cov-report=term
+          --junitxml=junit.xml
+      - name: Coverage summary
+        run: |
+          set -euo pipefail
+          {
+            echo "### Gateway test coverage"
+            python -m coverage report
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload test artefacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gateway-test-results
+          path: |
+            examples/dsh-agents-as-a-service/gateway/junit.xml
+            examples/dsh-agents-as-a-service/gateway/coverage.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  manifests:
+    name: manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          cluster_name: dsh-ci
+      - name: Read versions.env
+        run: |
+          set -euo pipefail
+          while IFS= read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            echo "$line" >> "$GITHUB_ENV"
+          done < versions.env
+      - name: Install agent-sandbox and Gateway API CRDs
+        run: |
+          set -euo pipefail
+          kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml"
+          kubectl wait --for=condition=Established crd/sandboxtemplates.extensions.agents.x-k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/sandboxwarmpools.extensions.agents.x-k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/sandboxclaims.extensions.agents.x-k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/sandboxes.agents.x-k8s.io --timeout=180s
+          kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/$GATEWAY_API_VERSION/standard-install.yaml"
+          kubectl wait --for=condition=Established crd/gateways.gateway.networking.k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/httproutes.gateway.networking.k8s.io --timeout=180s
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install check dependencies
+        run: pip install "pyyaml==6.0.3"
+      - name: Validate manifest shape
+        run: python scripts/check-manifests.py
+      - name: Validate manifests (server dry-run)
+        run: |
+          set -euo pipefail
+          kubectl create namespace dsh-demo
+          shopt -s globstar nullglob
+          count=0
+          for file in examples/*/manifests/**/*.yaml; do
+            case "$file" in *.yaml.example) continue ;; esac
+            echo "== $file =="
+            kubectl apply --dry-run=server -f "$file"
+            count=$((count + 1))
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "no manifests were validated" >&2
+            exit 1
+          fi
+          echo "validated $count manifests"
+
+  gateway-image:
+    name: gateway-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build gateway image
+        run: docker build -t dsh-aaas-gateway:ci examples/dsh-agents-as-a-service/gateway/
+      - name: Smoke-test /healthz without a cluster
+        run: |
+          set -euo pipefail
+          cat > /tmp/kubeconfig <<'EOF'
+          apiVersion: v1
+          kind: Config
+          clusters:
+            - name: dummy
+              cluster:
+                server: https://127.0.0.1:6443
+                insecure-skip-tls-verify: true
+          contexts:
+            - name: dummy
+              context:
+                cluster: dummy
+                user: dummy
+          users:
+            - name: dummy
+              user: {}
+          current-context: dummy
+          EOF
+          docker run -d --name gateway-smoke \
+            -p 18080:8080 \
+            -e NAMESPACE=dsh-demo \
+            -e POOL=dsh-pool \
+            -e KUBECONFIG=/tmp/kubeconfig \
+            -v /tmp/kubeconfig:/tmp/kubeconfig:ro \
+            dsh-aaas-gateway:ci
+          trap 'docker logs gateway-smoke || true; docker rm -f gateway-smoke || true' EXIT
+          code=""
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18080/healthz || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          if [ "$code" != "200" ]; then
+            echo "gateway /healthz returned '$code' instead of 200" >&2
+            exit 1
+          fi
+          echo "gateway image healthy: GET /healthz -> 200"
+
+  dependency-review:
+    name: dependency-review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dependency review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4

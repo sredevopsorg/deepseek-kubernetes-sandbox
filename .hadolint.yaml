@@ -1,0 +1,6 @@
+# Container lint policy. The base images are rebuilt on every DSH release, so
+# unpinned apt/pip packages are intentional inside a pinned base image.
+failure-threshold: warning
+ignored:
+  - DL3008  # apt-get packages are intentionally not version-pinned
+  - DL3018  # apk packages are intentionally not version-pinned

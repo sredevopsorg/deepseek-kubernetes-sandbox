@@ -45,9 +45,7 @@ FQDN = "dsh-alice-sbx.test-ns.svc.cluster.local"
 
 def dsh_response(status=200, content=b"", headers=None):
     """A MockTransport response that is a real stream (``aiter_raw`` works)."""
-    return httpx.Response(
-        status, headers=headers, stream=httpx.ByteStream(content)
-    )
+    return httpx.Response(status, headers=headers, stream=httpx.ByteStream(content))
 
 
 # --- fakes -----------------------------------------------------------------
@@ -99,9 +97,7 @@ class FakeK8s:
         self.token_patches.append((user, token_hash))
         claim = self.claims.get(user)
         if claim is not None:
-            annotations = claim.setdefault("metadata", {}).setdefault(
-                "annotations", {}
-            )
+            annotations = claim.setdefault("metadata", {}).setdefault("annotations", {})
             annotations["aaas.example.com/token-sha256"] = token_hash
 
     async def get_pod(self, name):
@@ -118,9 +114,7 @@ class FakeUpstream:
         self.requests = []
         self.handshake_requests = []
         self.handshake_status = 303
-        self.handshake_cookies = [
-            "dsh-auth-a=one; Path=/; HttpOnly; SameSite=Strict"
-        ]
+        self.handshake_cookies = ["dsh-auth-a=one; Path=/; HttpOnly; SameSite=Strict"]
         self.proxy_handler = None
         self.proxy_requests = []
 
@@ -140,9 +134,7 @@ class FakeUpstream:
         self.proxy_requests.append(request)
         if self.proxy_handler is not None:
             return self.proxy_handler(request)
-        return dsh_response(
-            200, b"hello from DSH", {"content-type": "text/plain"}
-        )
+        return dsh_response(200, b"hello from DSH", {"content-type": "text/plain"})
 
 
 class FakeWS:
@@ -207,9 +199,7 @@ def add_user(k8s, user="alice", token=TOKEN, ready=True, pod_name=None, suffix="
         "metadata": {
             "name": claim_name(user),
             "annotations": {
-                "aaas.example.com/token-sha256": hashlib.sha256(
-                    token.encode()
-                ).hexdigest()
+                "aaas.example.com/token-sha256": hashlib.sha256(token.encode()).hexdigest()
             },
         },
         "status": {"sandbox": {"name": sandbox_name}},
@@ -224,10 +214,7 @@ def add_user(k8s, user="alice", token=TOKEN, ready=True, pod_name=None, suffix="
         },
     }
     k8s.pods[pod_name] = {"metadata": {"name": pod_name, "uid": POD_UID}}
-    k8s.logs[pod_name] = (
-        "booting\n"
-        f"dsh web: http://10.0.0.7:3080/?token={TOKEN}-launch\n"
-    )
+    k8s.logs[pod_name] = f"booting\ndsh web: http://10.0.0.7:3080/?token={TOKEN}-launch\n"
     return sandbox_name, pod_name
 
 
@@ -243,9 +230,7 @@ def env():
     )
     k8s = FakeK8s()
     upstream = FakeUpstream()
-    http_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(upstream), timeout=5
-    )
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(upstream), timeout=5)
     ws_connect = FakeWSConnect()
     app = create_app(
         settings=settings,
@@ -275,9 +260,7 @@ def asgi_client(env, cookies=None):
 
 
 def stale_handshake(env):
-    env.gateway.state.handshake[("alice", POD_UID, "gateway.test")] = (
-        "dsh-auth-a=stale"
-    )
+    env.gateway.state.handshake[("alice", POD_UID, "gateway.test")] = "dsh-auth-a=stale"
 
 
 # --- pure helpers ----------------------------------------------------------
@@ -419,9 +402,7 @@ def test_token_matches_is_timing_safe_hash_check():
     claim = {
         "metadata": {
             "annotations": {
-                "aaas.example.com/token-sha256": hashlib.sha256(
-                    TOKEN.encode()
-                ).hexdigest()
+                "aaas.example.com/token-sha256": hashlib.sha256(TOKEN.encode()).hexdigest()
             }
         }
     }
@@ -486,14 +467,9 @@ async def test_kubernetes_create_claim_body(monkeypatch):
     body = args[4]
     assert body["metadata"]["name"] == "dsh-alice"
     assert body["metadata"]["annotations"]["aaas.example.com/token-sha256"] == "hash"
-    assert (
-        body["metadata"]["annotations"]["aaas.example.com/managed-by"]
-        == "dsh-gateway"
-    )
+    assert body["metadata"]["annotations"]["aaas.example.com/managed-by"] == "dsh-gateway"
     assert body["spec"]["warmPoolRef"]["name"] == "test-pool"
-    assert body["spec"]["additionalPodMetadata"]["labels"][
-        "sandbox.users.io/dsh-user"
-    ] == "alice"
+    assert body["spec"]["additionalPodMetadata"]["labels"]["sandbox.users.io/dsh-user"] == "alice"
 
 
 @pytest.mark.asyncio
@@ -625,9 +601,7 @@ async def test_landing_page_has_signup_and_login_forms(env):
 
 @pytest.mark.asyncio
 async def test_landing_page_shows_session_when_cookie_present(env):
-    async with asgi_client(
-        env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}
-    ) as client:
+    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
         response = await client.get("/")
     assert "Signed in as" in response.text
     assert "/u/alice/" in response.text
@@ -645,9 +619,7 @@ async def test_workspace_redirect_adds_trailing_slash(env):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "bad_user", ["Alice", "-alice", "alice-", "", "a_b", 123, None, "a" * 60]
-)
+@pytest.mark.parametrize("bad_user", ["Alice", "-alice", "alice-", "", "a_b", 123, None, "a" * 60])
 async def test_signup_rejects_invalid_dns1123_label(env, bad_user):
     async with asgi_client(env) as client:
         response = await client.post("/users", json={"user": bad_user})
@@ -781,9 +753,7 @@ async def test_login_json_and_failures(env):
 
 @pytest.mark.asyncio
 async def test_logout_clears_cookie(env):
-    async with asgi_client(
-        env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}
-    ) as client:
+    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
         response = await client.post("/logout")
     assert response.status_code == 303
     assert response.headers["location"] == "/"
@@ -798,12 +768,8 @@ async def test_logout_clears_cookie(env):
 async def test_get_user_requires_valid_bearer_or_cookie(env):
     add_user(env.k8s)
     async with asgi_client(env) as client:
-        forbidden = await client.get(
-            "/users/alice", headers={"Authorization": "Bearer wrong"}
-        )
-        bearer = await client.get(
-            "/users/alice", headers={"Authorization": f"Bearer {TOKEN}"}
-        )
+        forbidden = await client.get("/users/alice", headers={"Authorization": "Bearer wrong"})
+        bearer = await client.get("/users/alice", headers={"Authorization": f"Bearer {TOKEN}"})
         cookie = await client.get(
             "/users/alice",
             headers={"Cookie": f"dsh_gw_session=alice:{TOKEN}"},
@@ -839,9 +805,7 @@ async def test_invalid_user_in_path_is_404(env, path):
 async def test_delete_user_requires_auth(env):
     add_user(env.k8s)
     async with asgi_client(env) as client:
-        response = await client.delete(
-            "/users/alice", headers={"Authorization": "Bearer wrong"}
-        )
+        response = await client.delete("/users/alice", headers={"Authorization": "Bearer wrong"})
     assert response.status_code == 401
     assert env.k8s.deleted == []
 
@@ -853,12 +817,8 @@ async def test_delete_with_cookie_requires_same_origin(env):
     cookies = {"dsh_gw_session": f"alice:{TOKEN}"}
     async with asgi_client(env, cookies=cookies) as client:
         missing = await client.delete("/users/alice")
-        cross = await client.delete(
-            "/users/alice", headers={"Origin": "http://evil.test"}
-        )
-        good = await client.delete(
-            "/users/alice", headers={"Origin": "http://gateway.test"}
-        )
+        cross = await client.delete("/users/alice", headers={"Origin": "http://evil.test"})
+        good = await client.delete("/users/alice", headers={"Origin": "http://gateway.test"})
     assert missing.status_code == 403
     assert cross.status_code == 403
     assert good.status_code == 200
@@ -870,9 +830,7 @@ async def test_delete_with_cookie_requires_same_origin(env):
 async def test_delete_with_bearer_does_not_need_origin(env):
     add_user(env.k8s)
     async with asgi_client(env) as client:
-        response = await client.delete(
-            "/users/alice", headers={"Authorization": f"Bearer {TOKEN}"}
-        )
+        response = await client.delete("/users/alice", headers={"Authorization": f"Bearer {TOKEN}"})
     assert response.status_code == 200
 
 
@@ -881,9 +839,7 @@ async def test_delete_missing_claim_is_404(env):
     add_user(env.k8s)
     env.k8s.claims.clear()
     async with asgi_client(env) as client:
-        response = await client.delete(
-            "/users/alice", headers={"Authorization": f"Bearer {TOKEN}"}
-        )
+        response = await client.delete("/users/alice", headers={"Authorization": f"Bearer {TOKEN}"})
     assert response.status_code == 404
 
 
@@ -958,9 +914,9 @@ async def test_missing_cookie_in_handshake_is_503(env):
 @pytest.mark.asyncio
 async def test_pod_annotation_overrides_sandbox_name(env):
     sandbox_name, pod_name = add_user(env.k8s)
-    env.k8s.sandboxes[sandbox_name]["metadata"]["annotations"][
-        "agents.x-k8s.io/pod-name"
-    ] = "custom-pod"
+    env.k8s.sandboxes[sandbox_name]["metadata"]["annotations"]["agents.x-k8s.io/pod-name"] = (
+        "custom-pod"
+    )
     env.k8s.pods["custom-pod"] = {"metadata": {"uid": "other-uid"}}
     env.k8s.logs["custom-pod"] = env.k8s.logs[pod_name]
     async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
@@ -1082,9 +1038,7 @@ async def test_proxy_upstream_connection_error_is_502(env):
 @pytest.mark.asyncio
 async def test_proxy_body_limit_returns_413(env):
     add_user(env.k8s)
-    env.gateway.settings = Settings(
-        **{**env.settings.__dict__, "max_body_bytes": 4}
-    )
+    env.gateway.settings = Settings(**{**env.settings.__dict__, "max_body_bytes": 4})
     async with asgi_client(env) as client:
         response = await client.post(
             "/u/alice/api/echo",
@@ -1194,9 +1148,7 @@ async def test_proxied_requests_use_the_stream_timeout(env, monkeypatch):
         "server": ("gateway.test", 80),
         "path_params": {"user": "alice", "path": "events"},
     }
-    response = await env.gateway._send_upstream(
-        Request(scope), "alice", FQDN, "dsh-auth-a=1", b""
-    )
+    response = await env.gateway._send_upstream(Request(scope), "alice", FQDN, "dsh-auth-a=1", b"")
     await response.aclose()
 
     assert captured["timeout"].read is None
@@ -1359,9 +1311,7 @@ async def test_sweeper_skips_claim_it_does_not_own(env):
     assert "alice" not in env.gateway.state.last_activity
 
     # ...and does not suspend it even when it looks long-idle.
-    env.gateway.state.last_activity["alice"] = (
-        time.time() - env.settings.idle_timeout - 10
-    )
+    env.gateway.state.last_activity["alice"] = time.time() - env.settings.idle_timeout - 10
     await env.gateway.sweep_once()
     assert env.k8s.patches == []
 
@@ -1370,9 +1320,7 @@ async def test_sweeper_skips_claim_it_does_not_own(env):
 async def test_sweeper_suspends_idle_ready_sandbox(env):
     env.k8s.claims["alice"] = ready_claim()
     env.k8s.sandboxes["dsh-alice-sbx"] = ready_sandbox()
-    env.gateway.state.last_activity["alice"] = (
-        time.time() - env.settings.idle_timeout - 10
-    )
+    env.gateway.state.last_activity["alice"] = time.time() - env.settings.idle_timeout - 10
     env.gateway.state.handshake[("alice", POD_UID, "gateway.test")] = "dsh-auth-a=x"
 
     await env.gateway.sweep_once()
@@ -1478,9 +1426,7 @@ async def test_sso_landing_new_user_shows_provisioning(env):
 async def test_sso_landing_ready_connects_and_offers_recreate_only(env):
     enable_sso(env)
     add_user(env.k8s)
-    async with asgi_client(
-        env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}
-    ) as client:
+    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
         response = await client.get("/", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 200
     assert "Signed in as <strong>alice</strong>" in response.text
@@ -1512,9 +1458,7 @@ async def test_recreate_deletes_and_reprovisions(env):
     enable_sso(env)
     add_user(env.k8s)
     async with asgi_client(env) as client:
-        response = await client.post(
-            "/recreate", headers={"X-Forwarded-User": "alice"}
-        )
+        response = await client.post("/recreate", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 303
     assert response.headers["location"] == "/u/alice/"
     assert env.k8s.deleted == ["alice"]
@@ -1526,9 +1470,7 @@ async def test_recreate_deletes_and_reprovisions(env):
 async def test_recreate_requires_sso(env):
     add_user(env.k8s)
     async with asgi_client(env) as client:
-        response = await client.post(
-            "/recreate", headers={"X-Forwarded-User": "alice"}
-        )
+        response = await client.post("/recreate", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 401
     assert env.k8s.deleted == []
 
@@ -1537,9 +1479,7 @@ async def test_recreate_requires_sso(env):
 async def test_recreate_rejects_cross_origin(env):
     enable_sso(env)
     add_user(env.k8s)
-    async with asgi_client(
-        env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}
-    ) as client:
+    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
         response = await client.post(
             "/recreate",
             headers={"X-Forwarded-User": "alice", "Origin": "http://evil.test"},
@@ -1553,9 +1493,7 @@ async def test_sso_get_user_authorizes_via_header(env):
     enable_sso(env)
     add_user(env.k8s)
     async with asgi_client(env) as client:
-        response = await client.get(
-            "/users/alice", headers={"X-Forwarded-User": "alice"}
-        )
+        response = await client.get("/users/alice", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 200
     assert response.json()["user"] == "alice"
 
@@ -1565,9 +1503,7 @@ async def test_sso_proxy_redirects_to_bootstrap_without_session(env):
     enable_sso(env)
     add_user(env.k8s)
     async with asgi_client(env) as client:
-        response = await client.get(
-            "/u/alice/", headers={"X-Forwarded-User": "alice"}
-        )
+        response = await client.get("/u/alice/", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 303
     assert response.headers["location"] == "/"
 
@@ -1576,9 +1512,7 @@ async def test_sso_proxy_redirects_to_bootstrap_without_session(env):
 async def test_sso_proxy_redirects_to_bootstrap_when_claim_missing(env):
     enable_sso(env)
     async with asgi_client(env) as client:
-        response = await client.get(
-            "/u/alice/", headers={"X-Forwarded-User": "alice"}
-        )
+        response = await client.get("/u/alice/", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 303
     assert response.headers["location"] == "/"
 
@@ -1587,7 +1521,5 @@ async def test_sso_proxy_redirects_to_bootstrap_when_claim_missing(env):
 async def test_spoofed_header_ignored_when_sso_disabled(env):
     add_user(env.k8s)
     async with asgi_client(env) as client:
-        response = await client.get(
-            "/u/alice/", headers={"X-Forwarded-User": "alice"}
-        )
+        response = await client.get("/u/alice/", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 401

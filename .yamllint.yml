@@ -1,0 +1,19 @@
+extends: default
+
+rules:
+  document-start: disable
+  line-length:
+    max: 200
+    level: error
+  truthy:
+    check-keys: false
+  comments-indentation: disable
+  comments:
+    min-spaces-from-content: 1
+
+ignore: |
+  .venv/
+  .uvcache/
+  node_modules/
+  # Upstream CodeQL boilerplate: long documentation comments, linted by actionlint.
+  .github/workflows/codeql.yml

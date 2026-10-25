@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /examples/dsh-agents-as-a-service/gateway
+    schedule:
+      interval: weekly
+    groups:
+      gateway-python:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /examples/dsh-agents-as-a-service/gateway
+    schedule:
+      interval: weekly

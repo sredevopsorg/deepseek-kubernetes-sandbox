@@ -1,0 +1,69 @@
+# Development channel for the example gateway image: a merge that touches the
+# gateway publishes ghcr.io/<owner>/<repo>/dsh-agents-as-a-service/gateway:main.
+name: Build gateway image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - examples/dsh-agents-as-a-service/gateway/**
+      - versions.env
+      - .github/workflows/build-gateway.yaml
+      - .github/workflows/_build-image.yaml
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: build-gateway-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  meta:
+    name: Read versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      identity: ${{ steps.meta.outputs.identity }}
+      gateway_image: ${{ steps.meta.outputs.gateway_image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read versions.env
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            echo "$line" >> "$GITHUB_ENV"
+          done < versions.env
+          identity="$DSH_VERSION"
+          [ -z "$RELEASE_REVISION" ] || identity="$DSH_VERSION-$RELEASE_REVISION"
+          {
+            echo "identity=$identity"
+            echo "gateway_image=$GATEWAY_IMAGE"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and push gateway image
+    needs: meta
+    uses: ./.github/workflows/_build-image.yaml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      image: ${{ needs.meta.outputs.gateway_image }}
+      version: ${{ needs.meta.outputs.identity }}
+      context: examples/dsh-agents-as-a-service/gateway
+      dockerfile: Dockerfile
+      tags: |
+        ${{ needs.meta.outputs.gateway_image }}:main

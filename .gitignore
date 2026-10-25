@@ -159,3 +159,8 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
+
+# Local repository tooling
+.uvcache/
+coverage.xml
+

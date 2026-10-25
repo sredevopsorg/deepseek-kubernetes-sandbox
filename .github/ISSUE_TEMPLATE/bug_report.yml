@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a reproducible problem with the image, an example or the tooling.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, tokens or other secrets. Report security
+        issues privately via SECURITY.md instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The observed behavior and the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Commands, manifests and versions. Redact secrets.
+      placeholder: |
+        make image
+        docker run ...
+    validations:
+      required: true
+  - type: input
+    id: image-tag
+    attributes:
+      label: Image or release
+      description: The pinned tag or digest, for example dsh-v0.2.1-rc.2-r2.
+  - type: input
+    id: cluster
+    attributes:
+      label: Environment
+      description: Kubernetes distribution/version, kind version, agent-sandbox version.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste the smallest useful excerpt. Remove tokens and API keys.
+      render: shell
