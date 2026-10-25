@@ -34,8 +34,9 @@ Browser ──▶ Gateway dsh-gateway (HTTPS, TLS-terminate)
    (replace `dsh-demo.example.com` with the actual public FQDN). Note the client
    ID and client secret.
 2. **oauth2-proxy Secret** — `kubectl -n dsh-demo create secret generic oauth2-proxy`
-   with `client-id`, `client-secret`, and a `cookie-secret`
-   (`openssl rand -base64 32`). See `oauth2-proxy-secret.yaml.example`.
+   with `client-id`, `client-secret`, and a `cookie-secret` (URL-safe, unpadded
+   base64 of 32 bytes: `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`).
+   See `oauth2-proxy-secret.yaml.example`.
 3. **TLS secret** — create `dsh-demo-tls` in `dsh-demo` (see `tls-secret.yaml.example`).
 4. **Gateway app env** — the `dsh-gateway` Deployment must run the SSO-capable
    image with `AUTH_PROXY_HEADER=X-Forwarded-User` and `COOKIE_SECURE=true`
