@@ -70,7 +70,9 @@ RUN apt-get update \
       curl \
       wget \
       tini \
+      gh \
  && rm -rf /var/lib/apt/lists/* \
+ && curl -LsSf https://astral.sh/uv/install.sh | sh \
      && install -d -o node -g node -m 0755 /workspace "${DSH_HOME}" \
      && corepack enable \
      && corepack prepare "pnpm@${PNPM_VERSION}" --activate \
