@@ -20,7 +20,7 @@ ARG NODE_RUNTIME_IMAGE=docker.io/node:24-trixie-slim
 FROM $NODE_BUILD_IMAGE AS build
 
 ARG DSH_REPO=https://github.com/deepseek-ai/deepseek-harness.git
-ARG DSH_VERSION=dsh-v0.2.1-rc.2
+ARG DSH_VERSION=dsh-v0.2.1-rc.3
 ARG PNPM_VERSION=11.28.5
 
 ENV CI=true \
@@ -57,8 +57,8 @@ RUN cd /opt/dsh \
 # ---------------------------------------------------------------------------
 FROM $NODE_RUNTIME_IMAGE AS runtime
 
-ARG DSH_VERSION=dsh-v0.2.1-rc.2
-ARG RELEASE_REVISION=r2
+ARG DSH_VERSION=dsh-v0.2.1-rc.3
+ARG RELEASE_REVISION=r3
 ARG PNPM_VERSION=11.28.5
 ARG VCS_REF=unknown
 

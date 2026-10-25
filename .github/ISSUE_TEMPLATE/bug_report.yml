@@ -28,7 +28,7 @@ body:
     id: image-tag
     attributes:
       label: Image or release
-      description: The pinned tag or digest, for example dsh-v0.2.1-rc.2-r2.
+      description: The pinned tag or digest, for example dsh-v0.2.1-rc.3-r3.
   - type: input
     id: cluster
     attributes:
