@@ -3,7 +3,7 @@
 # "make check".
 #
 #   ./scripts/set-version.sh dsh-v0.2.2-rc.1        # new DSH ref, no revision
-#   ./scripts/set-version.sh dsh-v0.2.1-rc.2 r3    # same ref, new repo revision
+#   ./scripts/set-version.sh dsh-v0.2.1-rc.3 r3    # same ref, new repo revision
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -31,11 +31,11 @@ To reproduce the equivalent by hand:
 
 ```bash
 docker build \
-  --build-arg DSH_VERSION=dsh-v0.2.1-rc.2 \
+  --build-arg DSH_VERSION=dsh-v0.2.1-rc.3 \
   --build-arg RELEASE_REVISION=r2 \
   --build-arg PNPM_VERSION=11.28.5 \
   --build-arg VCS_REF="$(git rev-parse --short HEAD)" \
-  -t ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.2-r2 .
+  -t ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r3 .
 ```
 
 ### Build args
@@ -142,17 +142,17 @@ GitHub Container Registry:
 
 | Tag | Meaning |
 | --- | --- |
-| `dsh-v0.2.1-rc.2-r2` | Current release identity. **Immutable**: once published it never moves. |
+| `dsh-v0.2.1-rc.3-r3` | Current release identity. **Immutable**: once published it never moves. |
 | `latest` | Most recent release; points at the same digest as the current identity. |
 | `main` | Development channel rebuilt from every push to `main`; not a release, not for production. |
-| `dsh-v0.2.1-rc.2` | Legacy tag published before the release-identity scheme existed. Do not use it for new deployments; see the migration table in the [root README](../README.md). |
+| `dsh-v0.2.1-rc.3` | Legacy tag published before the release-identity scheme existed. Do not use it for new deployments; see the migration table in the [root README](../README.md). |
 
 Release identities, channels and rollback rules are defined in
 [versioning](versioning.md). Tags are immutable, so production deployments should
 pin a digest:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.2-r2
+docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r3
 # ... pin the digest in your deployment manifests:
 #   image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
 ```
@@ -160,7 +160,7 @@ docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbo
 ## Verifying an image
 
 ```bash
-docker inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.2-r2 \
+docker inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r3 \
   --format '{{json .Config.Labels}}'
 # org.opencontainers.image.title / .version / .source
 ```
