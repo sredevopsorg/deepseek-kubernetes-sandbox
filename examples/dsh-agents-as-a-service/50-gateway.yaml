@@ -85,7 +85,7 @@ spec:
       containers:
         - name: gateway
           image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:gateway
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -106,9 +106,9 @@ spec:
             # resource-layer manifests carries no aaas.example.com/managed-by
             # annotation and is never suspended.
             - name: IDLE_TIMEOUT
-              value: "60"
+              value: "360"
             - name: WAKE_TIMEOUT
-              value: "120"
+              value: "240"
             # Container name inside the per-user sandbox pods whose logs carry
             # the DSH launch token.
             - name: DSH_CONTAINER
