@@ -11,9 +11,11 @@ spec:
       namespace: dsh-demo
       sectionName: https
   hostnames:
-    # TODO: replace with the actual public FQDN once provided.
+    # TODO: replace with the actual public FQDN before applying.
     - dsh-demo.example.com
   rules:
     - backendRefs:
-        - name: dsh-gateway
-          port: 8080
+        # Route through oauth2-proxy (GitHub OAuth) first; it authenticates the
+        # browser and forwards to dsh-gateway:8080 with X-Forwarded-User set.
+        - name: oauth2-proxy
+          port: 4180

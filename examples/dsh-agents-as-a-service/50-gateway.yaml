@@ -118,7 +118,14 @@ spec:
             # 60-ingress.yaml with TLS); "false" keeps the plain-HTTP demo
             # usable via port-forward.
             - name: COOKIE_SECURE
-              value: "false"
+              value: "true"
+            # Trusted reverse-proxy identity header for SSO. oauth2-proxy sets
+            # X-Forwarded-User to the authenticated GitHub login on every request;
+            # the gateway trusts it (and auto-provisions the user) only when this
+            # is set. Remove/unset to disable SSO and fall back to bearer/session
+            # auth only.
+            - name: AUTH_PROXY_HEADER
+              value: X-Forwarded-User
             # Reject proxied request bodies larger than this (413).
             - name: MAX_BODY_MB
               value: "32"

@@ -331,6 +331,11 @@ class Settings:
     # Connection retries while a Ready pod is still binding its port.
     upstream_attempts: int = 3
     upstream_retry_delay: float = 1.0
+    # Optional identity header (e.g. "X-Forwarded-User") set by an authenticating
+    # reverse proxy such as oauth2-proxy. When configured, requests carrying a
+    # valid user in this header are treated as authenticated (SSO); unset (None)
+    # disables SSO entirely and the header is never trusted.
+    auth_proxy_header: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -348,6 +353,7 @@ class Settings:
             max_body_bytes=_env_int("MAX_BODY_MB", 32) * 1024 * 1024,
             http_timeout=_env_float("HTTP_TIMEOUT", 300.0),
             sweep_interval=_env_float("SWEEP_INTERVAL", 15.0),
+            auth_proxy_header=os.environ.get("AUTH_PROXY_HEADER") or None,
         )
 
 
@@ -496,6 +502,18 @@ class Kubernetes:
             {"spec": {"operatingMode": mode}},
         )
 
+    async def patch_token(self, user: str, token_hash: str) -> None:
+        await self._call(
+            "crd",
+            "patch_namespaced_custom_object",
+            GROUP,
+            VERSION,
+            self.namespace,
+            "sandboxclaims",
+            claim_name(user),
+            {"metadata": {"annotations": {TOKEN_ANNOTATION: token_hash}}},
+        )
+
     # -- pods and logs -----------------------------------------------------
 
     async def get_pod(self, name: str) -> dict | None:
@@ -571,16 +589,66 @@ class Gateway:
                 return token, user
         return None, None
 
+    def remote_user(self, headers) -> str | None:
+        """The user asserted by a trusted reverse proxy, when SSO is enabled.
+
+        Honored only when ``auth_proxy_header`` is configured, and only when the
+        value is a valid dns-1123 label — a spoofed or malformed value is never
+        trusted.
+        """
+        name = self.settings.auth_proxy_header
+        if not name:
+            return None
+        raw = (headers.get(name) or "").strip()
+        return raw if valid_user(raw) else None
+
     def _authorized(
         self,
         claim: dict,
         token: str | None,
         cookie_user: str | None,
         user: str,
+        remote: str | None = None,
     ) -> bool:
+        if remote == user:
+            return True  # identity asserted by the authenticating proxy
         if cookie_user is not None and cookie_user != user:
             return False  # a session for another user never authorizes this one
         return token_matches(claim, token)
+
+    async def _sso_session(
+        self, remote: str, headers, cookies, response: Response
+    ) -> dict | None:
+        """Provision ``remote`` idempotently and mint/refresh a session token.
+
+        The authenticating proxy has already verified ``remote``, so it is
+        trusted. A brand-new user is provisioned like ``signup`` (claim created,
+        token minted, sandbox awaited); an existing user whose session cookie is
+        missing or no longer matches gets a rotated token so a fresh cookie can
+        be issued. A still-valid session is reused untouched.
+        """
+        claim = await self.k8s.get_claim(remote)
+        token, cookie_user = self.credentials(headers, cookies)
+        if claim is not None and cookie_user == remote and token_matches(claim, token):
+            return claim
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        is_new = claim is None
+        if is_new:
+            try:
+                await self.k8s.create_claim(remote, token_hash, self.settings.pool)
+            except UserExists:
+                # Lost a concurrent signup race: rotate the existing token.
+                is_new = False
+                await self.k8s.patch_token(remote, token_hash)
+            else:
+                await self._touch(remote)
+                await self.wait_ready(remote, self.settings.wake_timeout)
+        else:
+            await self.k8s.patch_token(remote, token_hash)
+            await self._touch(remote)
+        self.set_session(response, remote, token)
+        return await self.k8s.get_claim(remote) if is_new else claim
 
     @staticmethod
     def _mutation_from_cookie(headers, method: str, cookie_user: str | None) -> bool:
@@ -767,7 +835,14 @@ class Gateway:
     async def healthz(self, request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
-    async def landing(self, request: Request) -> HTMLResponse:
+    async def landing(self, request: Request) -> Response:
+        remote = self.remote_user(request.headers)
+        if remote:
+            response = RedirectResponse(f"/u/{remote}/", status_code=303)
+            await self._sso_session(
+                remote, request.headers, request.cookies, response
+            )
+            return response
         token, user = self.credentials(request.headers, request.cookies)
         session = ""
         if user and token:
@@ -932,7 +1007,9 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         if claim is None:
             return self._error(404, "not found")
         token, cookie_user = self.credentials(request.headers, request.cookies)
-        if not self._authorized(claim, token, cookie_user, user):
+        if not self._authorized(
+            claim, token, cookie_user, user, self.remote_user(request.headers)
+        ):
             return self._error(401, "unauthorized")
         sandbox = await self._sandbox_of(claim)
         return JSONResponse(
@@ -951,7 +1028,9 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         if claim is None:
             return self._error(404, "not found")
         token, cookie_user = self.credentials(request.headers, request.cookies)
-        if not self._authorized(claim, token, cookie_user, user):
+        if not self._authorized(
+            claim, token, cookie_user, user, self.remote_user(request.headers)
+        ):
             return self._error(401, "unauthorized")
         if self._mutation_from_cookie(request.headers, "DELETE", cookie_user):
             return self._error(403, "cross-origin request rejected")
@@ -970,11 +1049,20 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         user = request.path_params["user"]
         if not valid_user(user):
             return self._error(404, "unknown user")
+        remote = self.remote_user(request.headers)
         claim = await self.k8s.get_claim(user)
         if claim is None:
+            if remote == user:
+                # SSO first hit straight at a deep link: let landing bootstrap.
+                return RedirectResponse("/", status_code=303)
             return self._error(404, "unknown user")
         token, cookie_user = self.credentials(request.headers, request.cookies)
-        if not self._authorized(claim, token, cookie_user, user):
+        if remote == user and not (
+            cookie_user == user and token_matches(claim, token)
+        ):
+            # SSO user without a valid session cookie: bootstrap, then continue.
+            return RedirectResponse("/", status_code=303)
+        if not self._authorized(claim, token, cookie_user, user, remote):
             return self._error(401, "unauthorized")
         if self._mutation_from_cookie(request.headers, request.method, cookie_user):
             return self._error(403, "cross-origin request rejected")
@@ -1143,7 +1231,9 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         if claim is None:
             return await self._ws_reject(websocket, 4401)
         token, cookie_user = self.credentials(websocket.headers, websocket.cookies)
-        if not self._authorized(claim, token, cookie_user, user):
+        if not self._authorized(
+            claim, token, cookie_user, user, self.remote_user(websocket.headers)
+        ):
             return await self._ws_reject(websocket, 4401)
         if cookie_user is not None and not same_origin(websocket.headers):
             return await self._ws_reject(websocket, 4401)

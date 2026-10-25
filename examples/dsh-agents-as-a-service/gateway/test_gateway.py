@@ -62,6 +62,7 @@ class FakeK8s:
         self.created = []
         self.deleted = []
         self.patches = []
+        self.token_patches = []
         self.conflict_on_create = False
         self.get_claim_error = None
         self.patch_error = None
@@ -91,6 +92,17 @@ class FakeK8s:
         if self.patch_error is not None:
             raise self.patch_error
         self.patches.append((name, mode))
+
+    async def patch_token(self, user, token_hash):
+        if self.patch_error is not None:
+            raise self.patch_error
+        self.token_patches.append((user, token_hash))
+        claim = self.claims.get(user)
+        if claim is not None:
+            annotations = claim.setdefault("metadata", {}).setdefault(
+                "annotations", {}
+            )
+            annotations["aaas.example.com/token-sha256"] = token_hash
 
     async def get_pod(self, name):
         return self.pods.get(name)
@@ -431,6 +443,7 @@ def test_settings_from_env(monkeypatch):
     monkeypatch.setenv("COOKIE_MAX_AGE", "100")
     monkeypatch.setenv("MAX_BODY_MB", "2")
     monkeypatch.setenv("HTTP_TIMEOUT", "12.5")
+    monkeypatch.setenv("AUTH_PROXY_HEADER", "X-Forwarded-User")
     settings = Settings.from_env()
     assert settings.namespace == "ns-x"
     assert settings.pool == "pool-x"
@@ -443,6 +456,12 @@ def test_settings_from_env(monkeypatch):
     assert settings.cookie_max_age == 100
     assert settings.max_body_bytes == 2 * 1024 * 1024
     assert settings.http_timeout == 12.5
+    assert settings.auth_proxy_header == "X-Forwarded-User"
+
+
+def test_settings_auth_proxy_header_defaults_to_none(monkeypatch):
+    monkeypatch.delenv("AUTH_PROXY_HEADER", raising=False)
+    assert Settings.from_env().auth_proxy_header is None
 
 
 # --- Kubernetes adapter ----------------------------------------------------
@@ -1413,3 +1432,117 @@ async def test_sweeper_survives_transient_api_error(env):
 
     # The per-user maintenance flag must be released even on failure.
     assert env.gateway.state.maintenance["alice"] is False
+
+
+# --- SSO (reverse-proxy identity) ------------------------------------------
+
+
+def enable_sso(env, header="X-Forwarded-User"):
+    """Flip an env into SSO mode: the gateway trusts the named identity header."""
+    env.settings = Settings(**{**env.settings.__dict__, "auth_proxy_header": header})
+    env.gateway.settings = env.settings
+    return env
+
+
+def test_remote_user_none_when_sso_disabled(env):
+    assert env.gateway.remote_user({"X-Forwarded-User": "alice"}) is None
+
+
+def test_remote_user_returns_valid_and_rejects_invalid(env):
+    enable_sso(env)
+    g = env.gateway
+    assert g.remote_user({"X-Forwarded-User": "alice"}) == "alice"
+    assert g.remote_user({"X-Forwarded-User": "  bob "}) == "bob"
+    assert g.remote_user({"X-Forwarded-User": "UPPER"}) is None
+    assert g.remote_user({"X-Forwarded-User": "bad name"}) is None
+    assert g.remote_user({"X-Forwarded-User": ""}) is None
+    assert g.remote_user({}) is None
+
+
+@pytest.mark.asyncio
+async def test_sso_landing_provisions_new_user_and_redirects(env, monkeypatch):
+    enable_sso(env)
+
+    async def ready(user, timeout):
+        return {"metadata": {"name": f"dsh-{user}-sbx"}}
+
+    monkeypatch.setattr(env.gateway, "wait_ready", ready)
+    async with asgi_client(env) as client:
+        response = await client.get("/", headers={"X-Forwarded-User": "alice"})
+    assert response.status_code == 303
+    assert response.headers["location"] == "/u/alice/"
+    assert re_cookie_user(response.headers["set-cookie"]) == "alice"
+    assert [c[0] for c in env.k8s.created] == ["alice"]
+    assert env.k8s.token_patches == []
+
+
+@pytest.mark.asyncio
+async def test_sso_landing_reuses_valid_session_without_rotation(env):
+    enable_sso(env)
+    add_user(env.k8s)
+    async with asgi_client(
+        env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}
+    ) as client:
+        response = await client.get("/", headers={"X-Forwarded-User": "alice"})
+    assert response.status_code == 303
+    assert response.headers["location"] == "/u/alice/"
+    assert env.k8s.created == []
+    assert env.k8s.token_patches == []
+
+
+@pytest.mark.asyncio
+async def test_sso_landing_rotates_token_when_session_missing(env):
+    enable_sso(env)
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.get("/", headers={"X-Forwarded-User": "alice"})
+    assert response.status_code == 303
+    assert response.headers["location"] == "/u/alice/"
+    assert re_cookie_user(response.headers["set-cookie"]) == "alice"
+    assert [p[0] for p in env.k8s.token_patches] == ["alice"]
+    assert env.k8s.created == []
+
+
+@pytest.mark.asyncio
+async def test_sso_get_user_authorizes_via_header(env):
+    enable_sso(env)
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.get(
+            "/users/alice", headers={"X-Forwarded-User": "alice"}
+        )
+    assert response.status_code == 200
+    assert response.json()["user"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_sso_proxy_redirects_to_bootstrap_without_session(env):
+    enable_sso(env)
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.get(
+            "/u/alice/", headers={"X-Forwarded-User": "alice"}
+        )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+
+
+@pytest.mark.asyncio
+async def test_sso_proxy_redirects_to_bootstrap_when_claim_missing(env):
+    enable_sso(env)
+    async with asgi_client(env) as client:
+        response = await client.get(
+            "/u/alice/", headers={"X-Forwarded-User": "alice"}
+        )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+
+
+@pytest.mark.asyncio
+async def test_spoofed_header_ignored_when_sso_disabled(env):
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.get(
+            "/u/alice/", headers={"X-Forwarded-User": "alice"}
+        )
+    assert response.status_code == 401
