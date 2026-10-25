@@ -8,6 +8,8 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    commit-message:
+      prefix: "chore: "
 
   - package-ecosystem: pip
     directory: /examples/dsh-agents-as-a-service/gateway
@@ -16,13 +18,19 @@ updates:
     groups:
       gateway-python:
         patterns: ["*"]
+    commit-message:
+      prefix: "chore: "
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    commit-message:
+      prefix: "chore: "
 
   - package-ecosystem: docker
     directory: /examples/dsh-agents-as-a-service/gateway
     schedule:
       interval: weekly
+    commit-message:
+      prefix: "chore: "
