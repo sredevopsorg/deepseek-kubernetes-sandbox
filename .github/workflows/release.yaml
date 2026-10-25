@@ -57,11 +57,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set -a
+          # shellcheck disable=SC1091
+          source versions.env
+          set +a
           tag="${{ inputs.tag || github.ref_name }}"
-          while IFS= read -r line; do
-            case "$line" in ''|'#'*) continue ;; esac
-            echo "$line" >> "$GITHUB_ENV"
-          done < versions.env
           identity="$DSH_VERSION"
           [ -z "$RELEASE_REVISION" ] || identity="$DSH_VERSION-$RELEASE_REVISION"
           if [ "$tag" != "$identity" ]; then
