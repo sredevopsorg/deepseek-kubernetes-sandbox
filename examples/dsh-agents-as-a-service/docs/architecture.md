@@ -301,10 +301,11 @@ Notes and limits:
   `dsh-provider-keys-extra`). `manifests/optional/network-policy/` adds an opt-in sandbox
   NetworkPolicy, and gVisor/`nodeSelector` are opt-in PodSpec fields. Add per-tenant
   credentials before calling it multi-tenant-grade.
-- **Optional hardening is opt-in.** gVisor, node selection, the sandbox/exposure NetworkPolicies
-  and extra provider keys are documented in [optional hardening](optional-hardening.md). The
-  base manifests stay portable (no gVisor RuntimeClass, no active node labels, no
-  NetworkPolicy and no extra Secret required).
+- **Optional hardening is opt-in.** gVisor, node selection, the sandbox/exposure NetworkPolicies,
+  extra provider keys and failed-Pod recovery are documented in
+  [optional hardening](optional-hardening.md). The base manifests stay portable (no gVisor
+  RuntimeClass, no active node labels, no NetworkPolicy, no extra Secret required, and the
+  controller's default `failedPodPolicy: Retain`).
 - **No gateway rate limiting.** Signup can create claims until the cluster or warm pool is
   exhausted; put limits at the ingress for real deployments.
 
@@ -323,6 +324,7 @@ Notes and limits:
 | gVisor + `kubectl port-forward` | Forward refuses or returns nothing | Port-forward is incompatible with gVisor; use the gateway or a reachable Service |
 | Provider key added but missing in the pod | Requests still fail with `MISSING_CREDENTIAL` | Pod env is stamped at creation; recreate spares/pods. A stored credential wins over env |
 | `nodeSelector` matches no node | Pod `Pending`, `0/N nodes are available` | Fix the label, pool capacity or taint/toleration; RuntimeClass scheduling may also constrain it |
+| Sandbox Pod reaches phase `Failed` (node eviction, spot reclaim) | Sandbox reports `Finished=True`; the gateway keeps failing against a dead Pod | Set `failedPodPolicy: Recreate` (agent-sandbox v1.0.8+) so the controller replaces the Pod with the same identity and PVCs; otherwise delete the Pod by hand. See the hardening doc |
 
 ## Upstream feature request: remove log scraping
 

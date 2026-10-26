@@ -1,18 +1,19 @@
-# Optional hardening: gVisor, nodeSelector, NetworkPolicy and provider keys
+# Optional hardening: gVisor, nodeSelector, NetworkPolicy, provider keys and failed-Pod recovery
 
 The base example is deliberately portable: it runs on kind and GKE without a
 gVisor runtime, a tainted node pool or a NetworkPolicy-capable CNI, and it
 boots with only the required `dsh-provider-keys` Secret. This document covers
-four **opt-in** layers:
+four **opt-in** isolation layers, plus one availability setting:
 
-| Layer | Where it lives | What it changes |
+| Setting | Where it lives | What it changes |
 | --- | --- | --- |
 | gVisor | commented `runtimeClassName` in the SandboxTemplates and Deployments | puts DSH and/or the gateway in a userspace kernel |
 | nodeSelector | commented `nodeSelector` in the same files | pins pods to a chosen node pool |
 | NetworkPolicy | `manifests/optional/network-policy/`, `manifests/exposure/*/` | limits sandbox, gateway and proxy connectivity |
 | Provider keys | optional `dsh-provider-keys-extra` Secret | injects extra provider API keys into every sandbox |
+| Failed-Pod recovery | commented `failedPodPolicy` in the SandboxTemplates | replaces a Failed sandbox Pod instead of parking the sandbox |
 
-Each layer is independent. Enable only what the cluster supports and test the
+Each setting is independent. Enable only what the cluster supports and test the
 walkthrough after each change.
 
 ## 1. gVisor
@@ -473,7 +474,130 @@ kubectl -n dsh-demo exec "$POD" -- sh -c '
 - The optional Secret is created imperatively; the repository never contains a
   real key. Keep it out of Git and out of shell history where possible.
 
-## 5. Verification summary
+## 5. Failed-Pod recovery
+
+### What it changes
+
+When a sandbox Pod reaches phase `Failed`, the controller's default policy,
+`Retain`, leaves the Pod in place and surfaces `Finished=True` on the Sandbox.
+The Sandbox, its claim and its PVC survive, but nothing runs: the gateway keeps
+proxying to a dead Pod and every request fails until someone deletes the Pod or
+the claim.
+
+agent-sandbox v1.0.8 (the pin in [versions.env](../../../versions.env)) adds
+`spec.failedPodPolicy` to `Sandbox` and to `SandboxTemplate`:
+
+| Value | Behavior |
+| --- | --- |
+| `Retain` (default) | The Failed Pod stays and the Sandbox reports `Finished=True`; the evidence stays available for debugging. |
+| `Recreate` | The controller deletes the Failed Pod and starts a replacement; the Sandbox identity and its Sandbox-owned PVCs are retained. |
+
+Repeated failures back off like a Deployment - 5 s, doubling to 5 min between
+creations - so a crash loop cannot hammer the API server. The backoff resets
+once the replacement Pod has been continuously `Running` for 10 minutes, and it
+lives in memory only, so a controller restart clears it.
+
+The base templates ship it commented out, for two reasons:
+
+- A deterministic failure (bad image, bad Secret, a wrong probe) would recreate
+  forever while hiding the cause.
+- The templates use `restartPolicy: OnFailure`, so the kubelet restarts a
+  crashing container in place and the Pod does not reach phase `Failed` anyway.
+  This policy matters for terminal failures - most commonly node eviction
+  (`Evicted`), when a spot/preemptible node is reclaimed or the node hits memory
+  pressure.
+
+No gateway change is needed: the handshake cache is keyed by Pod UID, so a
+replacement Pod re-handshakes on the next request, and the existing `401` retry
+covers containers restarted in place.
+
+### Enable it
+
+```bash
+# 1. The blueprint for future sandboxes.
+kubectl -n dsh-demo patch sandboxtemplate dsh-web --type merge \
+  -p '{"spec":{"failedPodPolicy":"Recreate"}}'
+
+# 2. Warm-pool spares were stamped at creation: delete them and let the pool
+#    replenish from the updated template.
+kubectl -n dsh-demo delete sandboxes -l agents.x-k8s.io/warm-pool-sandbox
+
+# 3. Claimed sandboxes keep their own spec: patch them in place.
+for sb in $(kubectl -n dsh-demo get sandboxes \
+  -l '!agents.x-k8s.io/warm-pool-sandbox' -o jsonpath='{.items[*].metadata.name}'); do
+  kubectl -n dsh-demo patch sandbox "$sb" --type merge \
+    -p '{"spec":{"failedPodPolicy":"Recreate"}}'
+done
+```
+
+For a fresh install, uncomment `failedPodPolicy: Recreate` in the template
+instead.
+
+### Verify
+
+```bash
+SB=$(kubectl -n dsh-demo get sandboxclaim dsh-alice -o jsonpath='{.status.sandbox.name}')
+kubectl -n dsh-demo get sandbox "$SB" -o jsonpath='{.spec.failedPodPolicy}{"\n"}'
+# Recreate
+```
+
+A failure drill that never touches a user sandbox - a `Sandbox` with
+`restartPolicy: Never` and a container that exits non-zero (swap the image if
+Docker Hub is unreachable):
+
+```bash
+kubectl -n dsh-demo apply -f - <<'EOF'
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: failed-pod-drill
+spec:
+  failedPodPolicy: Recreate
+  podTemplate:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: drill
+          image: busybox:1.36
+          command: ["sh", "-c", "exit 1"]
+EOF
+
+kubectl -n dsh-demo get pods -w
+# The drill Pod reaches phase Failed; a replacement appears within ~5 s, then
+# 10 s, 20 s, ... as the container keeps exiting non-zero.
+kubectl -n dsh-demo delete sandbox failed-pod-drill
+```
+
+Repeat the drill with `failedPodPolicy: Retain` (or omit the field) to see the
+default: the Pod stays `Failed` and the Sandbox condition `Finished` becomes
+`True`.
+
+### Caveats
+
+- `Recreate` deletes the Failed Pod, so its logs go with it. Capture
+  `kubectl get events` or switch back to `Retain` when debugging.
+- The replacement is a cold start: DSH boots again and issues a new launch
+  token. The workspace comes back from the PVC; in-flight sessions do not.
+- The field needs agent-sandbox v1.0.8+. A v1.0.7 cluster rejects it as an
+  unknown field.
+- It applies to sandbox Pods only. The gateway and oauth2-proxy are plain
+  Deployments, and their ReplicaSets already replace Failed Pods.
+
+### Roll back
+
+```bash
+kubectl -n dsh-demo patch sandboxtemplate dsh-web --type merge \
+  -p '{"spec":{"failedPodPolicy":"Retain"}}'
+for sb in $(kubectl -n dsh-demo get sandboxes -o jsonpath='{.items[*].metadata.name}'); do
+  kubectl -n dsh-demo patch sandbox "$sb" --type merge \
+    -p '{"spec":{"failedPodPolicy":"Retain"}}'
+done
+```
+
+Warm-pool spares pick the default up as they are claimed and replenished, or
+delete them as in step 2 above.
+
+## 6. Verification summary
 
 Required locally for any change to this example:
 
@@ -497,8 +621,10 @@ Manual checks, on a cluster with the relevant CNI/runtime:
 - Exposure policies: browser path works; a non-proxy pod cannot reach the
   gateway; probes stay healthy.
 - Provider keys: set/unset output (never the values) and the refresh procedure.
+- Failed-Pod recovery: `spec.failedPodPolicy` on the Sandbox, and the drill
+  above replaces a `Failed` Pod while keeping the claim and PVC.
 
-## 6. Rollback summary
+## 7. Rollback summary
 
 | Layer | Rollback |
 | --- | --- |
@@ -507,6 +633,7 @@ Manual checks, on a cluster with the relevant CNI/runtime:
 | gVisor | patch `runtimeClassName: null`, recreate pods |
 | nodeSelector | patch `nodeSelector: null`, recreate pods |
 | Provider keys | delete the extra Secret or a key, recreate pods |
+| Failed-Pod recovery | patch `failedPodPolicy: Retain`, delete warm-pool spares |
 
 No PVC or workspace data is touched by any rollback. Deleting a `SandboxClaim`
 is different: it cascades to the Sandbox **and** its PVC, so do not use claim

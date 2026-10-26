@@ -29,6 +29,15 @@ spec:
   # be blocked. See docs/optional-hardening.md.
   networkPolicyManagement: Unmanaged
 
+  # OPTIONAL: replace a Failed sandbox Pod instead of parking the sandbox.
+  # The default, Retain, leaves the Failed Pod in place and surfaces
+  # Finished=True on the Sandbox until a human intervenes. Recreate deletes the
+  # Failed Pod and starts a replacement with the same Sandbox identity and
+  # Sandbox-owned PVCs, backing off (5s doubling to 5m) on repeated failures.
+  # Requires agent-sandbox v1.0.8+; existing Sandboxes keep their own stamped
+  # policy, so patch them separately. See docs/optional-hardening.md.
+  # failedPodPolicy: Recreate
+
   podTemplate:
     spec:
       # DSH Web is multi-arch (amd64 + arm64); no arch nodeSelector is needed.

@@ -26,6 +26,10 @@ spec:
   # quickstart reaches the sandbox through `kubectl port-forward`, which is
   # local to the pod. The multi-tenant example documents opt-in policies in
   # examples/dsh-agents-as-a-service/docs/optional-hardening.md.
+  #
+  # OPTIONAL: recreate a Failed sandbox Pod instead of retaining it
+  # (agent-sandbox v1.0.8+). Documented with the multi-tenant example.
+  # failedPodPolicy: Recreate
   podTemplate:
     spec:
       # OPTIONAL: run under gVisor. gVisor breaks `kubectl port-forward`, so

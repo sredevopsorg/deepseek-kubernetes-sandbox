@@ -30,6 +30,9 @@ These are configured in the main manifests or with an extra Secret:
 - **gVisor:** uncomment `runtimeClassName: gvisor` in the SandboxTemplate and
   the Deployments before applying, or patch an existing install.
 - **nodeSelector:** uncomment the field and replace the placeholder node label.
+- **Failed-Pod recovery:** uncomment `failedPodPolicy: Recreate` in the
+  SandboxTemplate (agent-sandbox v1.0.8+) so a Failed Pod is replaced instead
+  of parked.
 - **Provider keys:** create the optional `dsh-provider-keys-extra` Secret; the
   base `dsh-provider-keys` Secret remains the one required key.
 
