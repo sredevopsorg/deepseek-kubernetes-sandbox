@@ -60,8 +60,17 @@ jobs:
         run: |
           set -euo pipefail
           pair=$(printf '%s' "${{ matrix.platform }}" | tr '/' '-')
-          echo "PLATFORM_PAIR=$pair" >> "$GITHUB_ENV"
-          echo "CACHE_SCOPE=$(printf '%s' "$IMAGE" | tr '/' '-')" >> "$GITHUB_ENV"
+          # This reusable workflow runs once for the main image and once for the
+          # gateway in the same release run. Artifact names must include a
+          # unique token for the image: the repository path is a prefix of the
+          # gateway path, so a path-derived pattern would match both. Use a
+          # short hash of the full image name.
+          image_hash=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-12)
+          {
+            echo "PLATFORM_PAIR=$pair"
+            echo "CACHE_SCOPE=$(printf '%s' "$IMAGE" | tr '/' '-')"
+            echo "ARTIFACT_PREFIX=$image_hash"
+          } >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -101,7 +110,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: digests-${{ env.PLATFORM_PAIR }}
+          name: digests-${{ env.ARTIFACT_PREFIX }}-${{ env.PLATFORM_PAIR }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -112,11 +121,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Prepare environment
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          echo "ARTIFACT_PREFIX=$(printf '%s' "$IMAGE" | sha256sum | cut -c1-12)" >> "$GITHUB_ENV"
+
       - name: Download digests
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-${{ env.ARTIFACT_PREFIX }}-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
