@@ -83,7 +83,7 @@ What it demonstrates, feature by feature:
 - agent-sandbox with extensions installed:
 
   ```bash
-  VERSION=v1.0.7   # AGENT_SANDBOX_VERSION in versions.env
+  VERSION=v1.0.8   # AGENT_SANDBOX_VERSION in versions.env
   kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$VERSION/sandbox-with-extensions.yaml
   kubectl -n agent-sandbox-system rollout status deployment --timeout=180s
   ```

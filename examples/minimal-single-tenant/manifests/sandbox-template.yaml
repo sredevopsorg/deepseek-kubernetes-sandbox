@@ -13,7 +13,7 @@
 #   - Optional: Secret dsh-provider-keys-extra with additional provider keys
 #     (OPENROUTER_API_KEY, GEMINI_API_KEY, NVIDIA_API_KEY, ...). It is
 #     referenced with `optional: true`, so it may be absent.
-# The agent-sandbox controller (v1.0.7, API v1beta1) must be installed.
+# The agent-sandbox controller (v1.0.8, API v1beta1) must be installed.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
