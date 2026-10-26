@@ -541,8 +541,8 @@ gateway remains.
 
 ## Optional hardening
 
-The base walkthrough is deliberately portable. Four opt-in layers are documented
-in [optional hardening](docs/optional-hardening.md):
+The base walkthrough is deliberately portable. Four opt-in isolation layers are
+documented in [optional hardening](docs/optional-hardening.md):
 
 - **gVisor** — uncomment `runtimeClassName: gvisor` before applying, or patch an
   existing install. Requires a `gvisor` RuntimeClass and capable nodes.
@@ -554,6 +554,9 @@ in [optional hardening](docs/optional-hardening.md):
   `kubectl apply -f manifests/optional/network-policy/` allows only
   gateway→sandbox on `3080` and sandbox→DNS/public `443`.
 - **Provider keys** — create `dsh-provider-keys-extra` as shown in step 1.
+- **Failed-Pod recovery** — uncomment `failedPodPolicy: Recreate` so the
+  controller replaces a `Failed` sandbox Pod (node eviction) instead of parking
+  the sandbox at `Finished=True`. Requires agent-sandbox v1.0.8+.
 
 Apply each independently and re-run the walkthrough. `kubectl apply -f manifests/`
 is non-recursive, so the optional manifest is not applied by the base step.
@@ -586,6 +589,7 @@ is non-recursive, so the optional manifest is not applied by the base step.
 | Sandbox cannot reach a model API after applying the optional NetworkPolicy | The policy allows DNS and public TCP `443` only; a proxy, custom base URL, port `80` or non-443 endpoint needs an explicit egress rule |
 | Gateway cannot reach a sandbox after applying an exposure NetworkPolicy | Check that the CNI enforces NetworkPolicy and that the Traefik/oauth2-proxy pod labels match; kubelet probes may also need the node CIDR |
 | New provider key not visible in a sandbox | Pod env is stamped at creation: delete the warm-pool spares and recreate claimed pods. A key saved in DSH's credential store also wins over env |
+| Sandbox reports `Finished=True` and every gateway request fails | The sandbox Pod reached phase `Failed` (node eviction, spot reclaim) and the default `Retain` keeps it. Delete the Pod so the controller recreates it, or set `failedPodPolicy: Recreate` (agent-sandbox v1.0.8+; see optional hardening) |
 
 ## Limitations
 
@@ -649,4 +653,5 @@ delete the Secrets with the namespace and revoke the OAuth App in GitHub.
   security and RBAC, failure modes, evolution path.
 - [Exposure README](manifests/exposure/README.md) — the two variants in detail.
 - [Optional hardening](docs/optional-hardening.md) — gVisor, nodeSelector,
-  NetworkPolicy and extra provider keys, with verification and rollback.
+  NetworkPolicy, extra provider keys and failed-Pod recovery, with verification
+  and rollback.

@@ -20,6 +20,7 @@ events, then compare desired vs observed state. Keep output bounded. Never
 | Restart with mode-660 error | logs mention `.credentials.yaml` | kubelet fsGroup widened the file; suspend, `chmod 600` from a throwaway pod, patch `fsGroupChangePolicy: OnRootMismatch`, resume. |
 | PVC `Pending` | `kubectl describe pvc`, StorageClass | No default provisioner, access mode, zone binding. |
 | Launch token not found | `kubectl logs <pod> --tail=2000 | grep 'dsh web:'` | Pod not ready yet, or logs rotated. Do not guess tokens; wait for readiness. |
+| Sandbox reports `Finished=True` | pod phase, `kubectl get events` | The backing Pod reached `Failed` (eviction, spot reclaim) and `failedPodPolicy` defaults to `Retain`. Delete the Pod to force a replacement, or set `Recreate` (v1.0.8+) on the Sandbox/template; the claim and PVCs survive either way. |
 | Hand-applied sandbox disappeared | claim annotations, gateway logs | Idle sweeper only manages claims with `aaas.example.com/managed-by=dsh-gateway`; if it was managed, recreate/resume. |
 | Gateway 401 | gateway logs, cookie flags | Missing/expired cookie, DSH handshake failed, or `COOKIE_SECURE=true` over HTTP. |
 | Gateway 502/503 | sandbox Ready, gateway logs | Wake timeout, stale DNS, token not yet in logs; check `WAKE_TIMEOUT` and RBAC `pods/log`. |
