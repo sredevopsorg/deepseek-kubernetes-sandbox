@@ -72,6 +72,7 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 | --- | --- |
 | Documentation only | make check; verify relative links |
 | Example manifest | make check; kubectl apply --dry-run=server in CI |
+| Optional hardening (gVisor, nodeSelector, NetworkPolicy, provider keys) | make check; server dry-run in CI; manual verification on a capable cluster |
 | Gateway code | make test; make lint; add or update tests |
 | Dockerfile / versions.env | make check; make image (amd64) and a container smoke test |
 | Workflow | actionlint in CI; keep actions SHA-pinned; no hard-coded versions |
@@ -120,8 +121,11 @@ needs kind plus the agent-sandbox CRDs (see the example README).
   can spoof X-Forwarded-User.
 - The example gateway reads the DSH launch token from pod logs. Treat pod logs
   as sensitive and keep its RBAC namespace-scoped.
-- The example shares one DEEPSEEK_API_KEY across sandboxes; do not describe it
-  as tenant-isolated.
+- The example shares provider keys (dsh-provider-keys plus the optional
+  dsh-provider-keys-extra) across sandboxes; do not describe it as
+  tenant-isolated.
+- gVisor, nodeSelector and the NetworkPolicies are opt-in and are not active in
+  the base manifests; do not describe the base example as hardened.
 - TLS terminates outside the gateway; set COOKIE_SECURE=true for HTTPS and keep
   the base manifest safe for local HTTP.
 

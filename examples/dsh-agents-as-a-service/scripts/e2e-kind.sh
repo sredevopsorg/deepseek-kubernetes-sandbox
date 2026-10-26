@@ -49,6 +49,8 @@ kubectl apply -f manifests/00-prereqs.yaml
 kubectl -n "$NS" delete secret dsh-provider-keys --ignore-not-found >/dev/null
 kubectl -n "$NS" create secret generic dsh-provider-keys \
   --from-literal=DEEPSEEK_API_KEY="sk-test-$(openssl rand -hex 16)"
+# dsh-provider-keys-extra is intentionally absent: the template's optional
+# envFrom reference must not block the warm pool.
 kubectl apply -f manifests/10-sandboxtemplate.yaml -f manifests/20-sandboxwarmpool.yaml
 for _ in $(seq 1 120); do
   READY=$(kubectl -n "$NS" get sandboxes -l agents.x-k8s.io/warm-pool-sandbox \

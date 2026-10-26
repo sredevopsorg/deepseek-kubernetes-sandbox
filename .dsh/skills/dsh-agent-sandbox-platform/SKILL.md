@@ -129,6 +129,10 @@ Read `docs/examples.md` and the testing table in `AGENTS.md` before editing.
   `make check` and the e2e. Never mix a bump with an unrelated feature.
 - **MCP integration:** pin the build to the cluster's tag, least-privilege SA,
   ClusterIP + auth proxy, raised DSH timeout, no secrets in the repo.
+- **Optional hardening:** gVisor, `nodeSelector`, NetworkPolicy and extra
+  provider keys stay opt-in; the sandbox policy lives under
+  `manifests/optional/`. All four are documented in
+  `examples/dsh-agents-as-a-service/docs/optional-hardening.md`.
 - **Docs:** update the affected doc in the same change.
 
 Details and review checklist:

@@ -32,10 +32,14 @@ manifests/
 +-- 30-claim-alice.yaml          # one user
 +-- 40-claim-rejected.yaml       # negative demo: env injection rejected
 +-- 50-gateway.yaml              # Deployment/RBAC/Service for the gateway
++-- optional/
+|   +-- README.md                # opt-in manifests, applied by path
+|   +-- network-policy/10-sandbox-networkpolicy.yaml
 +-- exposure/
     +-- README.md                 # the two exposure variants, when to use which
     +-- ingress/60-ingress.yaml
-    +-- gateway-api-sso/70-gateway.yaml ... 74-tls-secret.yaml.example
+    +-- ingress/61-networkpolicy.yaml
+    +-- gateway-api-sso/70-gateway.yaml ... 75-networkpolicies.yaml
 ```
 
 What it demonstrates, feature by feature:
@@ -57,8 +61,10 @@ What it demonstrates, feature by feature:
   `kubernetes.io/arch: amd64` nodeSelector.
 - **Single port**: DSH Web serves everything on `3080`; the gateway proxies to one
   upstream instead of splitting `/v1/*` (API) from the dashboard.
-- **One shared secret**: only `DEEPSEEK_API_KEY` is injected (via `envFrom`); there
-  is no dashboard basic-auth, session-cookie secret, or API-server key.
+- **Shared provider keys**: `DEEPSEEK_API_KEY` plus any keys in the optional
+  `dsh-provider-keys-extra` Secret are injected via `envFrom` into every
+  sandbox. There is no per-tenant key, dashboard basic-auth, session-cookie
+  secret, or API-server key.
 - **Launch-token handshake**: DSH gates `/` behind a token it prints only in its
   logs. The gateway reads it, performs the handshake, and keeps the resulting
   auth cookie server-side; the browser authenticates to the gateway with its own
@@ -93,14 +99,39 @@ What it demonstrates, feature by feature:
 
 ## 1. Install the platform resources
 
-First the namespace, then the shared provider key. The key reaches **every**
+First the namespace, then the shared provider keys. The keys reach **every**
 tenant sandbox (a warm-pool constraint: pod env is stamped before any user
-exists), so it is **never committed** — generate a fresh value per install:
+exists), so they are **never committed** — generate fresh values per install.
+`00-prereqs.yaml` already creates the empty `dsh-provider-keys` Secret, so use
+an upsert:
 
 ```bash
 kubectl apply -f manifests/00-prereqs.yaml
 kubectl -n dsh-demo create secret generic dsh-provider-keys \
-  --from-literal=DEEPSEEK_API_KEY="sk-..."
+  --from-literal=DEEPSEEK_API_KEY="sk-..." \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Optional: additional providers (OpenRouter, Gemini, NVIDIA, OpenAI, Anthropic,
+...) go in a second Secret. It is referenced with `optional: true`, so the
+sandboxes start without it, and every key becomes an env var:
+
+```bash
+kubectl -n dsh-demo create secret generic dsh-provider-keys-extra \
+  --from-literal=OPENROUTER_API_KEY="sk-or-..." \
+  --from-literal=GEMINI_API_KEY="..." \
+  --from-literal=NVIDIA_API_KEY="nvapi-..." \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Create both Secrets **before** the template/warm pool. A later Secret change
+does not update running pods: delete the warm-pool spares and recreate claimed
+pods to pick up new keys. Keys are shared by all tenants; a key saved in DSH's
+credential store wins over env. See
+[optional hardening](docs/optional-hardening.md) for the full env-name list and
+the refresh procedure.
+
+```bash
 kubectl apply -f manifests/10-sandboxtemplate.yaml -f manifests/20-sandboxwarmpool.yaml
 ```
 
@@ -253,6 +284,12 @@ kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 > apply does not update them: patch each sandbox's
 > `spec.podTemplate.spec.securityContext.fsGroupChangePolicy` and
 > `chmod 600` its `.credentials.yaml`, or recreate it.
+>
+> The optional gVisor/`nodeSelector` fields are pod-spec changes too: existing
+> Sandboxes snapshot them, and warm-pool spares are not replaced by a template
+> edit. See [optional hardening](docs/optional-hardening.md) for the patch and
+> recreation commands. A provider-key Secret change likewise needs pod
+> recreation to take effect.
 
 ### Browser flow
 
@@ -388,6 +425,13 @@ not a stack. Details, commands and the switch procedure are in the
 > `kubectl apply -R`: it would apply both variants and create two paths to the
 > same gateway, which is unsafe once SSO is enabled.
 
+Both variants also ship NetworkPolicies: `ingress/61-networkpolicy.yaml` limits
+gateway ingress to Traefik pods, and `gateway-api-sso/75-networkpolicies.yaml`
+limits the gateway to oauth2-proxy and oauth2-proxy egress to DNS, public HTTPS
+and the gateway. They are part of the variant; see the
+[exposure README](manifests/exposure/README.md) and
+[optional hardening](docs/optional-hardening.md).
+
 ### Option A — plain Ingress (gateway's own session auth)
 
 ```bash
@@ -404,6 +448,10 @@ kubectl apply -f manifests/exposure/ingress/
    (The base manifest keeps `false` so the plain-HTTP port-forward demo works.)
 3. Verify: `curl -sI https://<host>/healthz` returns `200`; sign up in a browser
    at `https://<host>/`.
+4. `manifests/exposure/ingress/61-networkpolicy.yaml` is part of this variant:
+   it allows only Traefik pods to reach the gateway on `8080`. Adjust its
+   selector if your ingress controller uses a different pod label or
+   `hostNetwork`; if kubelet probes fail, see the hardening doc.
 
 Keep the router free of buffering/compression middlewares: they break WebSocket
 upgrades and streaming.
@@ -472,13 +520,16 @@ can be cleared at `/oauth2/sign_out`.
 
 > **SSO trust boundary — read this before enabling it.** After SSO is on, the
 > `dsh-gateway` Service must be reachable **only** through oauth2-proxy (it is
-> ClusterIP). Anyone who can reach `dsh-gateway:8080` directly can send
-> `X-Forwarded-User: <victim>` and be treated as that user. Never apply the
-> Ingress variant (or any other route to the Service) while SSO is enabled, and
-> do not expose the gateway Service with `kubectl port-forward` on a shared
-> machine while `AUTH_PROXY_HEADER` is set. To turn SSO off, remove the variable
-> (`kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER-`) and
-> delete the SSO variant; the gateway falls back to bearer-token/session auth.
+> ClusterIP). The variant's `75-networkpolicies.yaml` restricts pod traffic
+> accordingly: the gateway accepts traffic only from oauth2-proxy pods,
+> oauth2-proxy only from the Gateway implementation, and oauth2-proxy egress is
+> limited to DNS, public HTTPS and the gateway. Anyone who can reach
+> `dsh-gateway:8080` directly can still send `X-Forwarded-User: <victim>` and be
+> treated as that user, so never add a second path (the Ingress variant, a
+> shared-host port-forward, a permissive policy). To turn SSO off, remove the
+> variable (`kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER-`)
+> and delete the SSO variant; the gateway falls back to bearer-token/session
+> auth.
 
 ### Switching variants
 
@@ -487,6 +538,25 @@ Delete the variant you had before applying the other one
 `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, and verify with
 `kubectl -n dsh-demo get ingress,gateway,httproute` that exactly one path to the
 gateway remains.
+
+## Optional hardening
+
+The base walkthrough is deliberately portable. Four opt-in layers are documented
+in [optional hardening](docs/optional-hardening.md):
+
+- **gVisor** — uncomment `runtimeClassName: gvisor` before applying, or patch an
+  existing install. Requires a `gvisor` RuntimeClass and capable nodes.
+  `kubectl port-forward` does not work under gVisor; the gateway path does.
+- **nodeSelector** — uncomment and replace the placeholder node label to pin
+  sandboxes and the gateway to a dedicated pool; add a toleration for tainted
+  pools.
+- **Sandbox NetworkPolicy** —
+  `kubectl apply -f manifests/optional/network-policy/` allows only
+  gateway→sandbox on `3080` and sandbox→DNS/public `443`.
+- **Provider keys** — create `dsh-provider-keys-extra` as shown in step 1.
+
+Apply each independently and re-run the walkthrough. `kubectl apply -f manifests/`
+is non-recursive, so the optional manifest is not applied by the base step.
 
 ## Troubleshooting
 
@@ -511,6 +581,11 @@ gateway remains.
 | SSO: oauth2-proxy `cookie_secret must be 16, 24, or 32 bytes ... but is 44 bytes` | The cookie secret was generated as standard base64. Use URL-safe unpadded base64 (see `73-oauth2-proxy-secret.yaml.example`) |
 | SSO: redirect loop (`ERR_TOO_MANY_REDIRECTS`) | oauth2-proxy `--redirect-url` / callback does not match the public FQDN, or TLS is not terminating at the Gateway listener; fix the OAuth App URLs and the manifest placeholders |
 | SSO: DSH rejects the public host behind the proxy | Add the public hostname to `DSH_TRUSTED_HOSTS` in `manifests/10-sandboxtemplate.yaml`; the gateway forwards the browser's `Host` |
+| Pods `Pending` after setting `nodeSelector` | No node matches the label, the pool is full, or a tainted pool needs a toleration; inspect `kubectl describe pod` and the node labels |
+| gVisor: `kubectl port-forward` fails or the connection is refused | Port-forward is incompatible with gVisor; reach DSH through the gateway (or a reachable Service/Sandbox Router) |
+| Sandbox cannot reach a model API after applying the optional NetworkPolicy | The policy allows DNS and public TCP `443` only; a proxy, custom base URL, port `80` or non-443 endpoint needs an explicit egress rule |
+| Gateway cannot reach a sandbox after applying an exposure NetworkPolicy | Check that the CNI enforces NetworkPolicy and that the Traefik/oauth2-proxy pod labels match; kubelet probes may also need the node CIDR |
+| New provider key not visible in a sandbox | Pod env is stamped at creation: delete the warm-pool spares and recreate claimed pods. A key saved in DSH's credential store also wins over env |
 
 ## Limitations
 
@@ -522,13 +597,22 @@ Deliberately **not** production code:
 - **Log scraping.** The launch token is recovered from pod logs. Log rotation, a
   restarted pod, or a changed DSH log format can break the handshake until the
   next `401` refresh.
-- **Shared provider key.** `DEEPSEEK_API_KEY` is shared by all tenants via the
-  template. Real multi-tenancy needs per-tenant credentials or an egress proxy.
+- **Shared provider keys.** `DEEPSEEK_API_KEY` and any keys in the optional
+  `dsh-provider-keys-extra` Secret are shared by all tenants via the template.
+  Tenants can override a key through DSH's stored credential file on their PVC,
+  but the platform does not manage that. Real multi-tenancy needs per-tenant
+  credentials or an egress proxy.
 - **No TLS in the gateway.** Terminate TLS at an Ingress or Gateway and set
   `COOKIE_SECURE=true`.
-- **SSO trust is hop-based.** `AUTH_PROXY_HEADER` trusts whoever sets the header;
-  the only guarantee is that the gateway Service is not directly reachable.
-  There is no signature, mTLS, or NetworkPolicy enforcing that in this example.
+- **SSO trust is hop-based.** `AUTH_PROXY_HEADER` trusts whoever sets the header.
+  The SSO variant ships `75-networkpolicies.yaml`, which restricts the gateway
+  to oauth2-proxy and oauth2-proxy egress to the gateway/DNS/public HTTPS; a
+  custom exposure without that policy has no signature, mTLS or network
+  enforcement.
+- **Isolation is opt-in.** gVisor, the sandbox NetworkPolicy and the exposure
+  policies are opt-in; without them, sandboxes share the host kernel and can
+  reach the cluster network. The base example is a demo, not a hardened
+  multi-tenant platform.
 - **OAuth org is the only authorization.** Any GitHub user in the configured
   organization gets an auto-provisioned sandbox; there is no per-user allow-list,
   quota, or admin API.
@@ -564,3 +648,5 @@ delete the Secrets with the namespace and revoke the OAuth App in GitHub.
 - [Architecture](docs/architecture.md) — container/sequence diagrams, ADRs,
   security and RBAC, failure modes, evolution path.
 - [Exposure README](manifests/exposure/README.md) — the two variants in detail.
+- [Optional hardening](docs/optional-hardening.md) — gVisor, nodeSelector,
+  NetworkPolicy and extra provider keys, with verification and rollback.

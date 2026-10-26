@@ -84,6 +84,15 @@ spec:
         app: dsh-gateway
     spec:
       serviceAccountName: dsh-gateway
+      # OPTIONAL: run the gateway under gVisor. Requires a RuntimeClass named
+      # "gvisor" and nodes that can run it. See docs/optional-hardening.md.
+      # runtimeClassName: gvisor
+      #
+      # OPTIONAL: pin the gateway to a dedicated node pool. Replace the
+      # placeholder with a label your nodes carry; add a toleration for a
+      # tainted pool. Keep active cluster-specific scheduling in a local patch.
+      # nodeSelector:
+      #   dsh.example.com/node-pool: dsh
       securityContext:
         runAsNonRoot: true
         runAsUser: 10000 # matches USER in gateway/Dockerfile

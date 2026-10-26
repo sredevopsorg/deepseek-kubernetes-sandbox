@@ -29,6 +29,10 @@ for dir in examples/*/; do
     err "$name: manifests/exposure/ requires a README.md describing the variants"
   fi
 
+  if [ -d "${dir}manifests/optional" ] && [ ! -f "${dir}manifests/optional/README.md" ]; then
+    err "$name: manifests/optional/ requires a README.md describing the opt-in manifests"
+  fi
+
   for component in "$dir"*/; do
     [ -d "$component" ] || continue
     case "$(basename "$component")" in

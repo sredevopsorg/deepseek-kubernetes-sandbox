@@ -141,8 +141,13 @@ host. A resource-only install has no gateway: that is a warning, not a failure.
 
 ## 9. Security boundaries
 
-- One `DEEPSEEK_API_KEY` is shared by all sandboxes; the example is not
+- Provider keys (`dsh-provider-keys` plus the optional
+  `dsh-provider-keys-extra`) are shared by all sandboxes; the example is not
   tenant-isolated.
+- gVisor, `nodeSelector`, the sandbox/exposure NetworkPolicies and extra
+  provider keys are opt-in, not active by default. A NetworkPolicy only helps
+  with a CNI that enforces it; see
+  [optional hardening](../../../../examples/dsh-agents-as-a-service/docs/optional-hardening.md).
 - Secret data, kubeconfigs, and pod logs are sensitive; RBAC may allow Secret
   access, policy does not. Keep gateway RBAC namespace-scoped; it needs pod logs
   to find the launch token.

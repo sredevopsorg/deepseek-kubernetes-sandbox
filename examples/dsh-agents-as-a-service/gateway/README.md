@@ -110,7 +110,9 @@ user (creates their claim idempotently, mints a rotated session token) and
 redirects to `/u/<user>/`, and `POST /recreate` becomes available for a clean
 restart. The base manifests leave it unset on purpose; the
 [SSO exposure variant](../manifests/exposure/gateway-api-sso/) documents how to
-enable it on the Deployment (`kubectl set env`).
+enable it on the Deployment (`kubectl set env`). That variant also ships
+`75-networkpolicies.yaml`, which restricts the gateway to oauth2-proxy and
+oauth2-proxy's egress to the gateway, DNS and public HTTPS.
 
 > **Trust boundary — this is the security-critical part.** A trusted identity
 > header is only safe when **nothing else can reach the gateway**. The gateway
@@ -118,6 +120,8 @@ enable it on the Deployment (`kubectl set env`).
 > authenticating proxy; if a client can reach `dsh-gateway:8080` directly (a
 > second Ingress/Gateway/Route, a port-forward on a shared host, a broad
 > NetworkPolicy), it can send `X-Forwarded-User` itself and impersonate any user.
+> The variant's `75-networkpolicies.yaml` restricts pod traffic to the proxy; a
+> custom exposure without an equivalent policy has no network enforcement.
 > Treat `AUTH_PROXY_HEADER` as "the proxy already authenticated this request",
 > not as an authentication mechanism of its own. Disable SSO by removing the
 > variable: the header is then ignored and bearer-token/session auth applies
@@ -232,5 +236,6 @@ uvicorn's access log so bearer tokens in URLs are not logged.
 * **SSO trusts a header.** With `AUTH_PROXY_HEADER` set, any client that can
   reach the gateway Service directly can spoof the identity header. The gateway
   cannot enforce the trust boundary itself: keep the Service ClusterIP and
-  reachable only through the authenticating proxy. There is no mTLS or signed
-  identity assertion.
+  reachable only through the authenticating proxy. The SSO exposure variant
+  ships a NetworkPolicy that restricts pod traffic to the proxy; without it
+  there is no mTLS or signed identity assertion.

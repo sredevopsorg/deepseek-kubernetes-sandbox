@@ -25,10 +25,17 @@ disclosure once a fix is available.
 - **SSO header trust boundary.** AUTH_PROXY_HEADER makes the gateway trust an
   identity header (for example X-Forwarded-User). Enable it only when the
   gateway Service is reachable exclusively through the authenticating proxy;
-  otherwise any client can spoof the header.
-- **Shared provider key.** The example injects one DEEPSEEK_API_KEY into every
-  tenant sandbox (a warm-pool constraint). Treat tenants as mutually trusting
-  until per-tenant credentials or an egress proxy exist.
+  otherwise any client can spoof the header. The SSO exposure variant ships a
+  NetworkPolicy that restricts gateway access to oauth2-proxy pods; a custom
+  exposure needs an equivalent.
+- **Shared provider keys.** The example injects DEEPSEEK_API_KEY and any keys in
+  the optional dsh-provider-keys-extra Secret into every tenant sandbox (a
+  warm-pool constraint). Treat tenants as mutually trusting until per-tenant
+  credentials or an egress proxy exist.
+- **Optional isolation is opt-in.** gVisor, nodeSelector, the sandbox/exposure
+  NetworkPolicies and extra provider keys are opt-in. Without a
+  NetworkPolicy-capable CNI or a gVisor runtime, the base example is not
+  tenant-isolated; see examples/dsh-agents-as-a-service/docs/optional-hardening.md.
 - **TLS is external.** Terminate TLS at an Ingress or Gateway and set
   COOKIE_SECURE=true. Plain HTTP outside localhost exposes session cookies.
 - **No secrets in the repository.** The repository only ships empty Secret

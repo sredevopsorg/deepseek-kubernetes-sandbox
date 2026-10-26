@@ -1,6 +1,6 @@
 # The reusable DSH Web blueprint. Warm pools stamp pod env BEFORE any user
-# exists, so per-user secrets cannot live in pod env; the shared provider key
-# is injected via envFrom, and claims that would bypass the warm pool are
+# exists, so per-user secrets cannot live in pod env; the shared provider keys
+# are injected via envFrom, and claims that would bypass the warm pool are
 # rejected outright (see 40-claim-rejected.yaml).
 #
 # A stripped-down single-tenant variant of this template (no warm pool, no
@@ -21,16 +21,31 @@ spec:
   # The gateway routes each user to their DSH Web instance by this name.
   service: true
 
-  # The example gateway does not manage NetworkPolicy, so it is left
-  # unmanaged here. A production platform would use
-  # networkPolicyManagement: Managed and restrict ingress to its gateway on
-  # :3080 — with the shared provider key, that NetworkPolicy is the per-user
-  # isolation boundary.
+  # The example leaves NetworkPolicy to an optional, opt-in manifest
+  # (manifests/optional/network-policy/): the base walkthrough should not
+  # require a policy-capable CNI, and the controller's Managed secure default
+  # only allows the sandbox-router, which this example does not deploy. If you
+  # switch to Managed, define spec.networkPolicy explicitly or the gateway will
+  # be blocked. See docs/optional-hardening.md.
   networkPolicyManagement: Unmanaged
 
   podTemplate:
     spec:
-      # DSH Web is multi-arch (amd64 + arm64); no arch nodeSelector needed.
+      # DSH Web is multi-arch (amd64 + arm64); no arch nodeSelector is needed.
+      #
+      # OPTIONAL: run the sandbox under gVisor. Requires a RuntimeClass named
+      # "gvisor" and nodes that can run it; gVisor breaks `kubectl port-forward`
+      # into the sandbox (use the gateway). Existing Sandboxes snapshot their
+      # pod template, so enabling it later requires patching/recreating them.
+      # See docs/optional-hardening.md.
+      # runtimeClassName: gvisor
+      #
+      # OPTIONAL: pin sandboxes to a dedicated node pool (for example a gVisor
+      # pool). Replace this placeholder with a label your nodes actually carry;
+      # add a matching toleration if the pool is tainted. Active
+      # cluster-specific scheduling belongs in a local patch, not here.
+      # nodeSelector:
+      #   dsh.example.com/node-pool: dsh
       restartPolicy: "OnFailure"
       securityContext:
         runAsUser: 1000   # the 'node' user in the DSH image
@@ -57,6 +72,13 @@ spec:
           envFrom:
             - secretRef:
                 name: dsh-provider-keys
+            # Optional extra provider keys (OpenRouter, Gemini, NVIDIA, ...).
+            # The Secret may be absent; every key in it becomes an env var.
+            # Create it before the warm pool, because pod env is stamped at
+            # pod creation. See docs/optional-hardening.md.
+            - secretRef:
+                name: dsh-provider-keys-extra
+                optional: true
           env:
             # Empty => DSH derives links from the request Host, which the
             # gateway forwards (plus X-Forwarded-*). Point this at the

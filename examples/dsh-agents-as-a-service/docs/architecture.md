@@ -67,6 +67,13 @@ as that user. The gateway ignores the header unless `AUTH_PROXY_HEADER` is set. 
 [exposure README](../manifests/exposure/README.md) and the
 [gateway README](../gateway/README.md#sso-opt-in).
 
+Each variant also ships a NetworkPolicy: `ingress/61-networkpolicy.yaml` limits gateway ingress
+to Traefik pods, and `gateway-api-sso/75-networkpolicies.yaml` limits the gateway to
+oauth2-proxy, oauth2-proxy ingress to the Gateway implementation, and oauth2-proxy egress to
+DNS/public HTTPS/the gateway. The SSO policy turns the trust boundary into pod-traffic
+enforcement; the caveats (Traefik label, `hostNetwork`, kubelet probes) are in
+[optional hardening](optional-hardening.md).
+
 ## Flows
 
 ### Signup (browser)
@@ -290,8 +297,14 @@ Notes and limits:
 - **TLS is external.** The gateway serves plain HTTP; terminate TLS at the Ingress and set
   `COOKIE_SECURE=true`. Without TLS, session cookies are replayable on the network.
 - **Tenant isolation** is pod + PVC separation; all tenants share one namespace, one DSH binary,
-  and one `DEEPSEEK_API_KEY`. Add NetworkPolicies and per-tenant credentials before calling it
-  multi-tenant-grade.
+  and the shared provider keys (`dsh-provider-keys` plus the optional
+  `dsh-provider-keys-extra`). `manifests/optional/network-policy/` adds an opt-in sandbox
+  NetworkPolicy, and gVisor/`nodeSelector` are opt-in PodSpec fields. Add per-tenant
+  credentials before calling it multi-tenant-grade.
+- **Optional hardening is opt-in.** gVisor, node selection, the sandbox/exposure NetworkPolicies
+  and extra provider keys are documented in [optional hardening](optional-hardening.md). The
+  base manifests stay portable (no gVisor RuntimeClass, no active node labels, no
+  NetworkPolicy and no extra Secret required).
 - **No gateway rate limiting.** Signup can create claims until the cluster or warm pool is
   exhausted; put limits at the ingress for real deployments.
 
@@ -306,6 +319,10 @@ Notes and limits:
 | DSH auth cookie expired mid-session | Proxy `401` once, then recovers | Gateway refreshes the handshake once |
 | Upstream pod name changed after resume | Cached cookie keyed by old pod UID is useless | Cache is invalidated on suspend; next request re-handshakes |
 | Two gateway replicas | Double suspend/wake races | Keep `replicas: 1` until state is externalized |
+| Optional NetworkPolicy blocks DNS/probes | Sandbox 502/503, pod restarts, failed `getent` | Check the CNI, DNS selector/NodeLocal address and kubelet-probe traffic; see the hardening doc |
+| gVisor + `kubectl port-forward` | Forward refuses or returns nothing | Port-forward is incompatible with gVisor; use the gateway or a reachable Service |
+| Provider key added but missing in the pod | Requests still fail with `MISSING_CREDENTIAL` | Pod env is stamped at creation; recreate spares/pods. A stored credential wins over env |
+| `nodeSelector` matches no node | Pod `Pending`, `0/N nodes are available` | Fix the label, pool capacity or taint/toleration; RuntimeClass scheduling may also constrain it |
 
 ## Upstream feature request: remove log scraping
 

@@ -1,0 +1,120 @@
+# OPTIONAL with the SSO exposure variant: enforce the trust boundary at the
+# network layer.
+#
+# The chain is Traefik (Gateway API) -> oauth2-proxy -> dsh-gateway. These
+# policies make it the ONLY chain:
+#   - the gateway accepts traffic only from oauth2-proxy pods;
+#   - oauth2-proxy accepts traffic only from the Gateway implementation;
+#   - oauth2-proxy egress is limited to DNS, public HTTPS (GitHub) and the
+#     gateway.
+# The gateway's own egress (Kubernetes API, sandbox pods) is intentionally not
+# restricted here: the API-server endpoint is cluster-specific. See
+# ../../../docs/optional-hardening.md for that recipe.
+#
+# This manifest assumes Traefik, matching gatewayClassName: traefik in
+# 70-gateway.yaml. Adjust the app.kubernetes.io/name selector for another
+# implementation. NetworkPolicy enforcement of kubelet probes is CNI-dependent;
+# if the gateway or proxy fails its probes, allow the node CIDR on the probe
+# port or remove the ingress policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dsh-gateway-ingress
+  namespace: dsh-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: dsh-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: oauth2-proxy
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oauth2-proxy-ingress
+  namespace: dsh-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: oauth2-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 4180
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oauth2-proxy-egress
+  namespace: dsh-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: oauth2-proxy
+  policyTypes:
+    - Egress
+  egress:
+    # Cluster DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # NodeLocal DNSCache.
+    - to:
+        - ipBlock:
+            cidr: 169.254.20.10/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The gateway backend.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: dsh-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+    # GitHub OAuth endpoints are public HTTPS. Private ranges and the metadata
+    # server stay blocked.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+        - ipBlock:
+            cidr: "::/0"
+            except:
+              - "fc00::/7"
+              - "fe80::/10"
+      ports:
+        - protocol: TCP
+          port: 443
