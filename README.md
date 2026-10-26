@@ -132,6 +132,15 @@ The gateway is a component of the multi-tenant example and has its own
 [README](examples/dsh-agents-as-a-service/gateway/README.md) (API, configuration,
 auth/SSO, limitations).
 
+## Agent skills
+
+DSH discovers project skills from `.dsh/skills/<name>/SKILL.md`. The repository
+ships [`dsh-agent-sandbox-platform`](.dsh/skills/dsh-agent-sandbox-platform/SKILL.md),
+which covers operating and extending the platform, the optional
+[agent-sandbox MCP server](https://github.com/kubernetes-sigs/agent-sandbox/blob/main/clients/integrations/mcp-server/README.md),
+and a read-only cluster preflight. Runbooks, the MCP reference, the extension
+guide and troubleshooting notes live beside `SKILL.md`.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -144,6 +153,7 @@ auth/SSO, limitations).
 | [`examples/dsh-agents-as-a-service/`](examples/dsh-agents-as-a-service/) | Multi-tenant platform example: `manifests/`, `gateway/`, `docs/`, `scripts/`. |
 | [`examples/minimal-single-tenant/`](examples/minimal-single-tenant/) | Single-sandbox quickstart. |
 | [`scripts/`](scripts/) | Repository checks: versions, example layout, manifest YAML, version bump. |
+| [`.dsh/skills/`](.dsh/skills/) | Project-local DSH skills, auto-discovered from the git root. |
 | [`.github/`](.github/) | CI, release automation, dependency updates, PR/issue templates. |
 | [`.env.sample`](.env.sample) | Documented local configuration (copy to `.env`; never commit it). |
 

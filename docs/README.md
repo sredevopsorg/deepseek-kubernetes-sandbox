@@ -17,6 +17,15 @@ gets a DSH Web container running before anything else.
 | [gitflow.md](gitflow.md) | Branches, protected `main`, squash merges, Conventional PR titles, required CI checks, release branches, hotfixes and the one-time GitHub settings checklist. |
 | [versioning.md](versioning.md) | Release identity (`DSH ref` + optional `-rN`), why the current identity is `dsh-v0.2.1-rc.3-r3`, channels, compatibility matrix, bumping pins, the release checklist, rollback, git-cliff and digest pinning. |
 
+## Project skills
+
+DSH discovers project skills from `<git root>/.dsh/skills/<name>/SKILL.md`
+(the nearest `.git` ancestor). This repository ships one:
+
+| Skill | Read it for |
+| --- | --- |
+| [dsh-agent-sandbox-platform](../.dsh/skills/dsh-agent-sandbox-platform/SKILL.md) | Operating and extending the agents-as-a-service platform, agent-sandbox MCP limits and deployment, and a read-only preflight. |
+
 ## Example documentation
 
 | Document | Read it for |
