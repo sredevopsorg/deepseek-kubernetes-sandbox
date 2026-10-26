@@ -1,0 +1,80 @@
+# OPTIONAL, opt-in tenant network policy for the DSH sandboxes.
+#
+# It is NOT part of the top-level walkthrough. Apply and delete it explicitly:
+#   kubectl apply  -f manifests/optional/network-policy/
+#   kubectl delete -f manifests/optional/network-policy/
+#
+# The selector uses the agent-sandbox controller's pod tracking label, which is
+# present on every Sandbox pod (including warm-pool spares), so the policy
+# applies to existing sandboxes without recreating them. The SandboxTemplate
+# stays networkPolicyManagement: Unmanaged. Do not also switch it to Managed
+# unless you migrate these rules into spec.networkPolicy; NetworkPolicies are
+# additive and the two configurations would be confusing.
+#
+# Requires a CNI that enforces NetworkPolicy. See docs/optional-hardening.md
+# for the connectivity matrix, DNS variants, kubelet-probe caveat and rollback.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dsh-sandbox
+  namespace: dsh-demo
+spec:
+  podSelector:
+    matchExpressions:
+      - key: agents.x-k8s.io/sandbox-name-hash
+        operator: Exists
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The gateway is the only intended client of a sandbox (HTTP + WebSocket).
+    - from:
+        - podSelector:
+            matchLabels:
+              app: dsh-gateway
+      ports:
+        - protocol: TCP
+          port: 3080
+  egress:
+    # Cluster DNS. CoreDNS/kube-dns pods carry k8s-app=kube-dns.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # NodeLocal DNSCache, for clusters that do not send DNS to the kube-dns
+    # Service. 169.254.20.10 is its standard link-local address.
+    - to:
+        - ipBlock:
+            cidr: 169.254.20.10/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public HTTPS only: provider APIs, package mirrors, git-over-HTTPS.
+    # Private ranges, CGNAT and the metadata server stay blocked.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+        - ipBlock:
+            cidr: "::/0"
+            except:
+              - "fc00::/7"
+              - "fe80::/10"
+      ports:
+        - protocol: TCP
+          port: 443

@@ -72,6 +72,13 @@ docker run -d --name dsh-web -p 18081:3080 \
 | `DSH_TRUSTED_HOSTS` | empty | Extra trusted `Host`/`Origin` entries, comma/space separated. |
 | `DSH_HOME` | `/home/node/.dsh` | DSH state directory (mount a volume here). |
 
+DSH also resolves the standard per-provider environment names —
+`OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `NVIDIA_API_KEY`, `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`, `HF_TOKEN`, and others —
+through its packaged provider catalog. Inject them the same way; a key saved in
+DSH's credential store wins over the environment. See
+[provider credentials](docs/main-image.md#provider-credentials).
+
 Full contract, build args, probes, volumes and signals:
 [docs/main-image.md](docs/main-image.md).
 
@@ -125,12 +132,14 @@ Self-contained implementations that consume the image. Index and contract:
 
 | Example | What it demonstrates |
 | --- | --- |
-| [`examples/dsh-agents-as-a-service/`](examples/dsh-agents-as-a-service/) | Full multi-tenant platform: SandboxTemplate with per-user PVCs, warm pool, one claim per user, suspend-when-idle, wake-on-return, browser gateway with signup + `HttpOnly` sessions + HTTP/WebSocket proxy, Ingress or Gateway API + GitHub SSO exposure. Start with the [walkthrough](examples/dsh-agents-as-a-service/README.md) and the [architecture](examples/dsh-agents-as-a-service/docs/architecture.md). |
+| [`examples/dsh-agents-as-a-service/`](examples/dsh-agents-as-a-service/) | Full multi-tenant platform: SandboxTemplate with per-user PVCs, warm pool, one claim per user, suspend-when-idle, wake-on-return, browser gateway with signup + `HttpOnly` sessions + HTTP/WebSocket proxy, Ingress or Gateway API + GitHub SSO exposure, and opt-in gVisor/NetworkPolicy/provider-key hardening. Start with the [walkthrough](examples/dsh-agents-as-a-service/README.md) and the [architecture](examples/dsh-agents-as-a-service/docs/architecture.md). |
 | [`examples/minimal-single-tenant/`](examples/minimal-single-tenant/) | The smallest useful setup: one `SandboxTemplate` and one `SandboxClaim`, reached through `kubectl port-forward` + the launch-token URL. Manifest: [`manifests/sandbox-template.yaml`](examples/minimal-single-tenant/manifests/sandbox-template.yaml). |
 
 The gateway is a component of the multi-tenant example and has its own
 [README](examples/dsh-agents-as-a-service/gateway/README.md) (API, configuration,
-auth/SSO, limitations).
+auth/SSO, limitations). The example also documents opt-in gVisor,
+`nodeSelector`, NetworkPolicy and extra provider-key hardening in
+[optional hardening](examples/dsh-agents-as-a-service/docs/optional-hardening.md).
 
 ## Agent skills
 

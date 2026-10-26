@@ -25,6 +25,7 @@ implementation is a self-contained example under `examples/<name>/`, and
 | --- | --- | --- |
 | Documentation only | `*.md`, `docs/` | `make check`; relative links resolve |
 | Example manifest | `examples/<name>/manifests/NN-*.yaml`, README step | `make check`; server-side dry-run in CI |
+| Optional hardening | `manifests/optional/`, exposure NPs, example `docs/optional-hardening.md` | `make check`; manual verification on a capable cluster |
 | Gateway behavior/route | `gateway/gateway.py`, `gateway/test_gateway.py`, gateway README, architecture | `make test`, `make lint`; update tests and API docs |
 | Exposure variant | `manifests/exposure/<variant>/`, exposure README, example README | `make check`; apply exactly one variant |
 | New example | full `examples/<name>/` layout, `examples/README.md` | `make check`; CI dry-run; optional e2e |

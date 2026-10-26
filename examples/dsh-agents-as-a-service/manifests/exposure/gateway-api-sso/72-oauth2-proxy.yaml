@@ -16,6 +16,12 @@
 #      apply ../ingress/ (or anything else that reaches the gateway). A
 #      client that can reach dsh-gateway:8080 can spoof X-Forwarded-User and
 #      impersonate any user.
+#
+# 75-networkpolicies.yaml enforces that boundary at the network layer: the
+# gateway accepts traffic only from oauth2-proxy pods, oauth2-proxy only from
+# the Gateway implementation, and oauth2-proxy egress is limited to DNS,
+# public HTTPS and the gateway. Apply it with this variant.
+#
 # TLS terminates at the Gateway listener (70-gateway.yaml); keep
 # --cookie-secure=true and COOKIE_SECURE=true on the gateway.
 #
@@ -42,6 +48,11 @@ spec:
         app: oauth2-proxy
         app.kubernetes.io/part-of: dsh-demo
     spec:
+      # OPTIONAL: run the proxy under gVisor and/or pin it to a node pool.
+      # See ../../../docs/optional-hardening.md.
+      # runtimeClassName: gvisor
+      # nodeSelector:
+      #   dsh.example.com/node-pool: dsh
       securityContext:
         runAsNonRoot: true
         runAsUser: 2000

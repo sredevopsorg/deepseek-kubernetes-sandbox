@@ -18,6 +18,9 @@ examples/<name>/
 |                                 #   ordered steps, troubleshooting, cleanup
 +-- manifests/                    # required
 |   +-- NN-*.yaml                 #   numbered top-level manifests, plain kubectl
+|   +-- optional/                 #   optional opt-in manifests, applied by path
+|       +-- README.md             #     required when optional/ exists
+|       +-- <feature>/NN-*.yaml   #     e.g. network-policy/
 |   +-- exposure/                 #   optional exposure variants
 |       +-- README.md             #     required when exposure/ exists
 |       +-- <variant>/NN-*.yaml   #     e.g. ingress/, gateway-api-sso/
@@ -41,6 +44,8 @@ examples/<name>/
 - a `*.yaml` file sits at the example root instead of under `manifests/`;
 - `manifests/exposure/` exists without a `manifests/exposure/README.md` describing
   the variants;
+- `manifests/optional/` exists without a `manifests/optional/README.md`
+  describing the opt-in manifests;
 - a subdirectory with a `Dockerfile` has no `README.md`;
 - a file in `scripts/` is not executable.
 
@@ -68,7 +73,12 @@ make check
   command; real values are generated per install.
 - **Cluster-specific state stays out.** Node affinity, replica counts tuned for a
   cluster, and similar fields belong in a local patch, not in the shipped
-  manifest.
+  manifest. Optional scheduler/runtime hints may ship **commented out** with
+  placeholder labels; they must not be active.
+- **Optional manifests are opt-in.** Put them under
+  `manifests/optional/<feature>/`, document them in
+  `manifests/optional/README.md`, and apply them by path. The top-level
+  `kubectl apply -f manifests/` is non-recursive and does not apply them.
 - **Placeholders are explicit.** Hostnames, GitHub orgs and TLS material use
   values like `dsh.example.com` / `your-github-org` with a TODO comment.
 

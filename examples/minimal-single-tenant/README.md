@@ -25,18 +25,27 @@ This example deliberately has no gateway: you reach DSH through a
   ```
 
 - A DeepSeek API key for real model calls. The pod starts without one; only
-  model requests fail.
+  model requests fail. Optionally create `dsh-provider-keys-extra` for
+  OpenRouter, Gemini, NVIDIA or other provider keys (the template references it
+  with `optional: true`).
 
 ## Quickstart
 
 Run these from this example's directory (`examples/minimal-single-tenant/`).
 
 ```bash
-# 1. Namespace + shared provider key. The key is injected into the sandbox via
-#    envFrom and is never committed.
+# 1. Namespace + shared provider keys. They are injected into the sandbox via
+#    envFrom and are never committed.
 kubectl create namespace dsh-demo
 kubectl -n dsh-demo create secret generic dsh-provider-keys \
   --from-literal=DEEPSEEK_API_KEY="sk-..."
+
+# Optional: extra providers, injected through a second Secret. Create it before
+# the warm pool so the pods are stamped with the keys.
+kubectl -n dsh-demo create secret generic dsh-provider-keys-extra \
+  --from-literal=OPENROUTER_API_KEY="sk-or-..." \
+  --from-literal=GEMINI_API_KEY="..." \
+  --from-literal=NVIDIA_API_KEY="nvapi-..."
 
 # 2. The template itself (image pinned in the manifest).
 kubectl apply -f manifests/sandbox-template.yaml
@@ -86,6 +95,22 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 > use on your workstation, forward to another local port (here `18081`), never
 > `3080`. `localhost` is always in DSH's trusted-host list, so the forwarded
 > request is accepted.
+>
+> **gVisor caveat:** if you uncomment `runtimeClassName: gvisor` in the
+> template, `kubectl port-forward` no longer works. Use the multi-tenant gateway
+> example or a reachable Service instead; see
+> [optional hardening](../dsh-agents-as-a-service/docs/optional-hardening.md).
+
+## Network policy and optional hardening
+
+The template omits `networkPolicyManagement`, so the agent-sandbox controller
+uses its Managed secure default: ingress only from the sandbox-router, public
+egress, and no internal cluster DNS. `kubectl port-forward` is local to the pod
+and still works (except under gVisor).
+
+gVisor, an optional `nodeSelector`, extra provider keys and a stricter sandbox
+NetworkPolicy are documented in
+[optional hardening](../dsh-agents-as-a-service/docs/optional-hardening.md).
 
 ## Probes and trusted hosts
 

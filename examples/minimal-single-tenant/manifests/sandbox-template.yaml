@@ -10,6 +10,9 @@
 #   - Namespace dsh-demo.
 #   - Secret dsh-provider-keys in dsh-demo with key DEEPSEEK_API_KEY
 #     (injected via envFrom; the pod starts without it, only model calls fail).
+#   - Optional: Secret dsh-provider-keys-extra with additional provider keys
+#     (OPENROUTER_API_KEY, GEMINI_API_KEY, NVIDIA_API_KEY, ...). It is
+#     referenced with `optional: true`, so it may be absent.
 # The agent-sandbox controller (v1.0.7, API v1beta1) must be installed.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
@@ -18,8 +21,22 @@ metadata:
   namespace: dsh-demo
 spec:
   service: true # headless Service per Sandbox -> stable DNS (status.serviceFQDN)
+  # networkPolicyManagement is omitted, so the controller uses its Managed
+  # secure default (ingress only from the sandbox-router, public egress). This
+  # quickstart reaches the sandbox through `kubectl port-forward`, which is
+  # local to the pod. The multi-tenant example documents opt-in policies in
+  # examples/dsh-agents-as-a-service/docs/optional-hardening.md.
   podTemplate:
     spec:
+      # OPTIONAL: run under gVisor. gVisor breaks `kubectl port-forward`, so
+      # this quickstart's only access path will not work; use the multi-tenant
+      # gateway example or a Service/NodePort instead.
+      # runtimeClassName: gvisor
+      #
+      # OPTIONAL: pin to a dedicated node pool. Replace the placeholder with a
+      # node label; add a matching toleration if the pool is tainted.
+      # nodeSelector:
+      #   dsh.example.com/node-pool: dsh
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000 # Matches the UID of the 'node' user
@@ -43,6 +60,10 @@ spec:
           envFrom:
             - secretRef:
                 name: dsh-provider-keys # Secret with key DEEPSEEK_API_KEY
+            # Optional extra provider keys; an absent Secret is safe.
+            - secretRef:
+                name: dsh-provider-keys-extra
+                optional: true
           env:
             # Empty => DSH derives links from the request Host. Keep it empty
             # when fronting the sandbox with a proxy/gateway.

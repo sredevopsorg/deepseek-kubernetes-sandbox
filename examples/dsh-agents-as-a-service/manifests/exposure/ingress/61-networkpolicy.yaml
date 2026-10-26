@@ -1,0 +1,31 @@
+# OPTIONAL with the Ingress exposure variant: restrict the gateway's ingress
+# to the ingress controller.
+#
+# This manifest assumes Traefik, matching this variant's
+# `ingressClassName: traefik`. Traefik's Helm chart labels its pods
+# app.kubernetes.io/name=traefik; adjust the selector for another controller or
+# for a hostNetwork install (where the source is the node IP, not a pod IP).
+#
+# NetworkPolicy enforcement of kubelet probe traffic is CNI-dependent. If the
+# gateway starts failing its /healthz probes, allow the node CIDR on port 8080
+# or remove this policy. See ../../../docs/optional-hardening.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dsh-gateway-ingress
+  namespace: dsh-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: dsh-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080

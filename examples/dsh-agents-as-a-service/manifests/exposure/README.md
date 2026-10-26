@@ -16,6 +16,19 @@ Applying both gives the gateway two entry points, and the SSO variant is only
 safe when the gateway is reachable **exclusively** through oauth2-proxy. Do not
 mix them.
 
+Each variant also ships a NetworkPolicy, applied by the same directory apply:
+
+- `ingress/61-networkpolicy.yaml` allows only Traefik pods to reach the gateway
+  on `8080`.
+- `gateway-api-sso/75-networkpolicies.yaml` allows only oauth2-proxy to reach
+  the gateway, only the Gateway implementation (Traefik) to reach oauth2-proxy,
+  and limits oauth2-proxy egress to DNS, public HTTPS (GitHub) and the gateway.
+
+The policies assume Traefik's `app.kubernetes.io/name: traefik` pod label.
+Adjust the selector for another implementation or a `hostNetwork` install; see
+[optional hardening](../../docs/optional-hardening.md) for the probe caveat and
+verification commands.
+
 ## Applying a variant
 
 Run these commands from the example root
@@ -62,6 +75,9 @@ Secrets imperatively (commands below) before applying the directory.
    `Secure` cookie is never sent over HTTP, which silently breaks login.
 4. Do not attach buffering or compression middlewares to this router: they
    break WebSocket upgrades and streaming.
+5. `61-networkpolicy.yaml` is part of this variant: it allows only Traefik pods
+   to reach the gateway on `8080`. Adjust its selector for another ingress
+   controller or `hostNetwork`; if kubelet probes fail, see the hardening doc.
 
 Verify: `curl -sI https://<host>/healthz` returns `200`.
 
@@ -70,6 +86,7 @@ Verify: `curl -sI https://<host>/healthz` returns `200`.
 `70-gateway.yaml` defines the TLS `Gateway`, `71-httproute.yaml` sends every
 request to oauth2-proxy, and `72-oauth2-proxy.yaml` authenticates the browser
 against GitHub and proxies to the gateway with `X-Forwarded-User` set.
+`75-networkpolicies.yaml` makes this the only network path to the gateway.
 
 Prerequisites:
 
@@ -111,7 +128,7 @@ kubectl apply -f manifests/exposure/gateway-api-sso/
 
 `AUTH_PROXY_HEADER` is opt-in and deliberately unset in the base gateway
 manifest: the gateway ignores identity headers until it is set. Enabling SSO
-takes **both** sides:
+takes all of these:
 
 1. `AUTH_PROXY_HEADER=X-Forwarded-User` on `deploy/dsh-gateway` (step 3
    above). Without it, oauth2-proxy's login has no effect on the gateway and
@@ -122,6 +139,10 @@ takes **both** sides:
    other path to the Service) while SSO is enabled. A client that can reach
    `dsh-gateway:8080` directly can set `X-Forwarded-User` itself and
    impersonate any user.
+3. Keep `75-networkpolicies.yaml` with the variant. It enforces the boundary in
+   the network layer (gateway ← oauth2-proxy ← Traefik, and limited oauth2-proxy
+   egress). A custom exposure without an equivalent policy has no network
+   enforcement.
 
 Also terminate TLS in front of the gateway (the Gateway listener does) and
 leave `COOKIE_SECURE=true` so the session cookie never travels in clear text.

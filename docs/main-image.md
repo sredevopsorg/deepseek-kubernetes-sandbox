@@ -80,6 +80,28 @@ The entrypoint is `tini -- /usr/local/bin/dsh-entrypoint`:
 The image also sets `NODE_ENV=production`, `HOME=/home/node`, and a `PATH` that
 includes `/app/node_modules/.bin`.
 
+### Provider credentials
+
+DSH resolves provider API keys from the environment when no stored credential
+exists. The packaged provider catalog maps each provider to its standard
+environment name. Commonly used names:
+
+`DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `NVIDIA_API_KEY`,
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `XAI_API_KEY`,
+`MISTRAL_API_KEY`, `TOGETHER_API_KEY`, `CEREBRAS_API_KEY`,
+`AI_GATEWAY_API_KEY`, `HF_TOKEN`.
+
+Use `GEMINI_API_KEY` for Google Gemini (not `GOOGLE_API_KEY`), `HF_TOKEN` for
+Hugging Face, and `AI_GATEWAY_API_KEY` for the Vercel AI Gateway. Inject keys
+with `-e`/`--env-file` in Docker or a Secret + `envFrom` in Kubernetes; never
+bake them into the image.
+
+A key saved through DSH's credential store (`$DSH_HOME/.credentials.yaml`) wins
+over the environment. The
+[agents-as-a-service example](../examples/dsh-agents-as-a-service/docs/optional-hardening.md)
+documents the optional `dsh-provider-keys-extra` Secret and the pod-refresh
+procedure.
+
 ### Ports, volumes and signals
 
 | Item | Value | Notes |

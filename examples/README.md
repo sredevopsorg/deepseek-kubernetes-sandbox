@@ -10,6 +10,10 @@ reference material, not libraries.
 | [`examples/dsh-agents-as-a-service/`](dsh-agents-as-a-service/) | The full multi-tenant platform pattern: one `SandboxTemplate` with per-user PVCs, a warm pool, one ~10-line `SandboxClaim` per user, suspend-when-idle / wake-on-return, and a browser gateway with signup, `HttpOnly` sessions, an HTTP + WebSocket proxy and two exposure variants (Ingress, or Gateway API + GitHub SSO). | agent-sandbox with extensions; kind for the e2e script. |
 | [`examples/minimal-single-tenant/`](minimal-single-tenant/) | The smallest useful setup: a single `SandboxTemplate` and one `SandboxClaim`, no gateway — reach DSH Web with a launch-token URL through `kubectl port-forward`. | agent-sandbox with extensions. |
 
+The multi-tenant example also documents opt-in gVisor, `nodeSelector`,
+NetworkPolicy and extra provider-key hardening in
+[optional hardening](dsh-agents-as-a-service/docs/optional-hardening.md).
+
 ## The example contract (short version)
 
 Full rules: [docs/examples.md](../docs/examples.md). `scripts/check-examples.sh`
@@ -19,6 +23,8 @@ enforces the layout, and `make check` runs it.
 examples/<name>/
 +-- README.md                  # walkthrough: prerequisites, steps, troubleshooting, cleanup
 +-- manifests/                 # NN-*.yaml, applied with plain kubectl
+|   +-- optional/<feature>/    # optional opt-in manifests...
+|   +-- optional/README.md     # ...required whenever optional/ exists
 |   +-- exposure/<variant>/    # optional per-variant manifests...
 |   +-- exposure/README.md     # ...required whenever exposure/ exists
 +-- scripts/                   # optional executable, idempotent, self-cleaning *.sh
@@ -44,4 +50,6 @@ kubectl apply -f examples/dsh-agents-as-a-service/manifests/
 examples/dsh-agents-as-a-service/scripts/e2e-kind.sh
 ```
 
-Each example README has the exact prerequisites, exposure options and teardown.
+`kubectl apply -f manifests/` is non-recursive: `optional/` and `exposure/`
+subdirectories are applied explicitly. Each example README has the exact
+prerequisites, optional hardening, exposure options and teardown.

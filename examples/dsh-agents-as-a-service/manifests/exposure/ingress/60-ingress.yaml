@@ -23,6 +23,10 @@
 # middlewares (e.g. compress, buffering) to this router — they break streaming
 # and upgrades. `path: /` Prefix covers the landing page and every per-user
 # proxy path, so no per-sandbox Ingress is needed.
+#
+# 61-networkpolicy.yaml is part of this variant: it restricts the gateway's
+# ingress to Traefik pods. Adjust its selector if your ingress controller uses
+# a different label or hostNetwork.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
