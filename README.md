@@ -20,7 +20,7 @@ docker run -d --name dsh-web \
   -p 3080:3080 \
   -v dsh-home:/home/node/.dsh \
   -e DEEPSEEK_API_KEY \
-  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r3
+  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r4
 ```
 
 DSH Web is **not usable at a bare `/`**. Without its launch-token cookie it
@@ -45,7 +45,7 @@ docker run -d --name dsh-web -p 18081:3080 \
   -e DSH_PUBLIC_URL=http://localhost:18081 \
   -v dsh-home:/home/node/.dsh \
   -e DEEPSEEK_API_KEY \
-  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r3
+  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r4
 # then open http://localhost:18081/?token=...
 ```
 
@@ -94,21 +94,21 @@ ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway
 
 | Tag | Contents | Meaning |
 | --- | --- | --- |
-| `dsh-v0.2.1-rc.3-r3` | DSH Web, port `3080` | **Current release identity.** Immutable: once published it never moves. |
+| `dsh-v0.2.1-rc.3-r4` | DSH Web, port `3080` | **Current release identity.** Immutable: once published it never moves. |
 | `latest` | DSH Web | Most recent release; same digest as the current identity. |
 | `main` | DSH Web | Development channel rebuilt from every push to `main`. Not a release; not for production. |
-| `dsh-v0.2.1-rc.3` | DSH Web | **Legacy tag** published before the release-identity scheme. It is not updated. New deployments use `dsh-v0.2.1-rc.3-r3`. |
+| `dsh-v0.2.1-rc.3` | DSH Web | **Legacy tag** published before the release-identity scheme. It is not updated. New deployments use `dsh-v0.2.1-rc.3-r4`. |
 
 The example gateway is published under its nested path with the same release
 identity, e.g.
-`ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway:dsh-v0.2.1-rc.3-r3`.
+`ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway:dsh-v0.2.1-rc.3-r4`.
 
 Release identities, channels and rollback rules are explained in
 [docs/versioning.md](docs/versioning.md). Production deployments should pin a
 digest:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r3
+docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r4
 # image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
 ```
 
@@ -189,7 +189,7 @@ required checks and releases: [docs/gitflow.md](docs/gitflow.md).
 
 The release identity is the upstream DSH ref plus an optional repository
 revision: `DSH_VERSION` and `RELEASE_REVISION` in [versions.env](versions.env).
-The current identity is **`dsh-v0.2.1-rc.3-r3`** — the first release under the
+The current identity is **`dsh-v0.2.1-rc.3-r4`** — the first release under the
 mirrored-DSH scheme at the same upstream DSH ref as the legacy
 `dsh-v0.2.1-rc.3` tag. Tags are immutable; a broken release is fixed by
 publishing `-r(N+1)`, never by re-tagging.
