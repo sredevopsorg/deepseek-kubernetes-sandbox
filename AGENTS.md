@@ -48,6 +48,7 @@ before changing anything; it encodes the conventions the CI enforces.
 | examples/dsh-agents-as-a-service/ | The multi-tenant platform example (manifests, gateway, docs, scripts) |
 | examples/minimal-single-tenant/ | The just-one-DSH-Web quickstart |
 | scripts/ | check-versions.sh, check-examples.sh, check-manifests.py, set-version.sh |
+| .dsh/skills/ | Project-local DSH skills (auto-discovered); dsh-agent-sandbox-platform covers platform operation, MCP limits and extension recipes |
 | .github/workflows/ | ci.yaml, reusable _build-image.yaml, build-*, release.yaml, e2e-kind.yaml, pr-title.yaml, codeql.yml |
 
 ## Commands
@@ -75,6 +76,7 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 | Dockerfile / versions.env | make check; make image (amd64) and a container smoke test |
 | Workflow | actionlint in CI; keep actions SHA-pinned; no hard-coded versions |
 | New example | make check; all files described in docs/examples.md |
+| Project skill (.dsh/skills/) | make check; frontmatter and size check; shellcheck skill scripts; load it with the skill tool |
 
 ## Versioning and releases
 
@@ -136,5 +138,6 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 - [docs/examples.md](docs/examples.md) - example authoring rules
 - [docs/gitflow.md](docs/gitflow.md) - branches, PRs, required checks
 - [docs/versioning.md](docs/versioning.md) - versioning, changelog, releases
+- [.dsh/skills/dsh-agent-sandbox-platform/SKILL.md](.dsh/skills/dsh-agent-sandbox-platform/SKILL.md) - platform operations, MCP limits, extension recipes
 - [CONTRIBUTING.md](CONTRIBUTING.md) - development setup
 - [SECURITY.md](SECURITY.md) - vulnerability reporting and threat notes
