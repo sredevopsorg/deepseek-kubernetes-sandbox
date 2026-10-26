@@ -6,7 +6,7 @@ Kubernetes, and DSH Web fit together, and why the design looks the way it does.
 
 Scope: one Kubernetes namespace (`dsh-demo`), one shared DSH Web image, one gateway deployment,
 and one DSH Web pod + PVC per user. The cluster is assumed to run
-[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) v1.0.7 with the extensions
+[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) v1.0.8 with the extensions
 (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`).
 
 ## Container view
