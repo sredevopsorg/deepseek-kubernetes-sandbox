@@ -104,10 +104,12 @@ spec:
               value: ""
             # DSH confines every bash command with its own file sandbox
             # (bubblewrap, else Landlock). Neither backend is usable inside this
-            # pod: bwrap needs CAP_SYS_ADMIN (the container drops ALL), and the
-            # runtime/kernel surface here exposes no Landlock runner, so the
-            # executor fails closed with SANDBOX_UNAVAILABLE and every command
-            # fails. The pod is the isolation boundary in this example (one pod
+            # pod: bubblewrap ships in the image but is unsetuid, so it needs an
+            # unprivileged user namespace that the pod's RuntimeDefault seccomp
+            # and dropped capabilities do not grant, and the runtime/kernel
+            # surface here exposes no Landlock runner. The executor therefore
+            # fails closed with SANDBOX_UNAVAILABLE and every command fails. The
+            # pod is the isolation boundary in this example (one pod
             # per user, non-root, capabilities dropped, seccomp RuntimeDefault,
             # a private PVC), so trade DSH's inner file policy for a working
             # agent. Set this to workspace-write (or read-only) on hosts where a

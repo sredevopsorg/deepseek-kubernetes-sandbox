@@ -79,6 +79,11 @@ ENV NODE_ENV=production \
 
 # git/ripgrep/jq/yq/curl/gh are deliberate agent tooling parity: a sandboxed DSH
 # instance expects the usual developer CLI. tini reaps signals for a clean stop.
+# bubblewrap is DSH's first-choice command-sandbox runner on Linux. It ships
+# unsetuid, so it needs unprivileged user namespaces plus the namespace/mount
+# syscalls; a hardened pod (all capabilities dropped, RuntimeDefault seccomp)
+# usually cannot create one, which is why DSH then falls back to Landlock and,
+# when that is unavailable too, to DSH_PERMISSION_MODE=danger-full-access.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
@@ -90,6 +95,7 @@ RUN apt-get update \
       wget \
       tini \
       gh \
+      bubblewrap \
  && rm -rf /var/lib/apt/lists/* \
  && curl -LsSf https://astral.sh/uv/install.sh | sh \
      && install -d -o node -g node -m 0755 /workspace "$DSH_HOME" \

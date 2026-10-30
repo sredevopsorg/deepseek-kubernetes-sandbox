@@ -18,7 +18,8 @@ The Dockerfile is a two-stage build:
    CLI with `pnpm pack`, and installs its production dependencies with npm.
 2. **Runtime stage** (`node:24-trixie-slim`) copies `/opt/dsh` to `/app`, adds the
    CLI tools DSH agents commonly use (`git`, `ripgrep`, `jq`, `yq`, `curl`, `wget`,
-   `gh`, `tini`, `uv`), and starts `dsh web` through a small entrypoint.
+   `gh`, `tini`, `uv`), installs `bubblewrap` as DSH's preferred command-sandbox
+   runner, and starts `dsh web` through a small entrypoint.
 
 ## Build it
 
@@ -83,13 +84,16 @@ includes `/app/node_modules/.bin`.
 
 DSH confines bash commands itself (a second layer inside whatever container
 sandbox you already run). Its Linux runners are `bubblewrap` and then Landlock,
-and it fails closed rather than running unconfined. A hardened pod — non-root,
-`capabilities.drop: ["ALL"]`, `seccompProfile: RuntimeDefault` — has no usable
-`bubblewrap` (it needs `CAP_SYS_ADMIN`) and may expose no Landlock runner, in
-which case every command fails with `SANDBOX_UNAVAILABLE`. Set
+and it fails closed rather than running unconfined. The image ships
+`bubblewrap`, but Debian's binary is unsetuid: it needs **unprivileged user
+namespaces** plus the namespace/mount syscalls. A hardened pod — non-root,
+`capabilities.drop: ["ALL"]`, `seccompProfile: RuntimeDefault` — usually cannot
+create one, and it may expose no Landlock runner either, in which case every
+command fails with `SANDBOX_UNAVAILABLE`. Set
 `DSH_PERMISSION_MODE=danger-full-access` only when the surrounding pod or VM is
 the isolation boundary you rely on; keep the confined modes when the host
-provides a working runner.
+provides a working runner (check `grep -o landlock /sys/kernel/security/lsm` and
+`bwrap --ro-bind / / true` inside the container first).
 
 ### Provider credentials
 
