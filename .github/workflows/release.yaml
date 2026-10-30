@@ -266,6 +266,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IDENTITY: ${{ needs.meta.outputs.identity }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
