@@ -62,7 +62,7 @@ from kubernetes import config as k8s_config
 from kubernetes.client.exceptions import ApiException
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
-from starlette.requests import Request
+from starlette.requests import ClientDisconnect, Request
 from starlette.responses import (
     HTMLResponse,
     JSONResponse,
@@ -142,6 +142,11 @@ class SandboxUnavailable(Exception):
 
 class UpstreamError(Exception):
     """The upstream DSH connection failed."""
+
+
+# nginx's "client closed request": the peer went away before it could be
+# answered, so no status is ever delivered.
+CLIENT_CLOSED_REQUEST = 499
 
 
 # --- Pure helpers (unit-testable without an app) --------------------------
@@ -682,9 +687,14 @@ class Gateway:
             await asyncio.sleep(0.1)
 
     async def _release(self, user: str) -> None:
-        async with self.state.lock:
-            self.state.in_flight[user] = max(self.state.in_flight.get(user, 1) - 1, 0)
-            self.state.last_activity[user] = time.time()
+        # Deliberately await-free: this runs from ``finally`` blocks, and the
+        # slot must be freed even when a client disconnect cancels the request
+        # mid-stream.  Awaiting the lock there can be interrupted before the
+        # decrement, stranding the slot (the user's sandbox would then never
+        # look idle again).  A plain dict update is atomic because the event
+        # loop cannot switch tasks between two synchronous statements.
+        self.state.in_flight[user] = max(self.state.in_flight.get(user, 1) - 1, 0)
+        self.state.last_activity[user] = time.time()
 
     # -- sandbox / handshake helpers --------------------------------------
 
@@ -1238,9 +1248,17 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 print(f"stream for {user} ended early: {exc!r}", flush=True)
                 return
         finally:
-            with contextlib.suppress(Exception):
-                await upstream.aclose()
-            await self._release(user)
+            # The slot must be freed even when this ``finally`` runs inside a
+            # cancelled task: on a client disconnect Starlette cancels the
+            # streaming task through an anyio cancel scope, and CancelledError
+            # is a BaseException, so ``suppress(Exception)`` would let a close
+            # that awaits abort the whole block before ``_release`` ran.  A
+            # stranded slot keeps the user's sandbox looking busy forever.
+            try:
+                with contextlib.suppress(Exception):
+                    await upstream.aclose()
+            finally:
+                await self._release(user)
 
     # -- WebSocket proxy ---------------------------------------------------
 
@@ -1439,6 +1457,20 @@ def _lifespan(gateway: Gateway, close_http_client: httpx.AsyncClient | None = No
     return lifespan
 
 
+async def client_gone(request: Request, exc: ClientDisconnect) -> Response:
+    """Answer a client that vanished mid-request instead of logging a traceback.
+
+    Reading a request body raises ``ClientDisconnect`` when a browser reload, a
+    back navigation or an ingress timeout aborts the upload.  The request never
+    reached DSH, and nothing can be delivered to the peer that left, so the
+    honest outcome is 499 (nginx's "client closed request").  Letting it escape
+    would make Starlette's ``ServerErrorMiddleware`` log one ERROR traceback per
+    aborted request, which buries real faults.  It also covers the control
+    routes that read a body (signup and login), not just the proxy.
+    """
+    return Response(status_code=CLIENT_CLOSED_REQUEST)
+
+
 def create_app(
     settings: Settings | None = None,
     k8s=None,
@@ -1471,6 +1503,7 @@ def create_app(
     ]
     app = Starlette(
         routes=routes,
+        exception_handlers={ClientDisconnect: client_gone},
         lifespan=_lifespan(gateway, http_client if owns_http_client else None),
     )
     app.state.gateway = gateway

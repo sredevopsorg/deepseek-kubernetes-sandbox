@@ -135,6 +135,8 @@ oauth2-proxy's egress to the gateway, DNS and public HTTPS.
 | Missing or invalid credentials | `401` |
 | Cross-origin cookie mutation | `403` |
 | Request body over `MAX_BODY_MB` | `413` |
+| Client aborts mid-body, before the response starts | `499` (`CLIENT_CLOSED_REQUEST`). Nothing is forwarded to DSH and nothing can be delivered; it is not an error, so no traceback is logged. Covers the body-reading control routes (`POST /users`, `POST /login`) as well as the proxy. |
+| Client aborts mid-stream (SSE, long response) | The response already started, so its upstream status stands (typically `200`); the stream simply ends. No traceback, and the in-flight slot is released as the relay unwinds. |
 | Sandbox not provisioned, wake timeout, handshake failure | `503` + `Retry-After: 10` |
 | Upstream connection/protocol failure | `502` |
 | WS auth failure (unknown user, bad token, cross-origin) | accept, then close `4401` |
@@ -143,6 +145,12 @@ oauth2-proxy's egress to the gateway, DNS and public HTTPS.
 A close code can only be delivered after the WebSocket upgrade is accepted;
 Starlette would turn an early close into an HTTP 403, which is why WS auth
 failures are `101`, then close `4401`.
+
+An aborted request is deliberately silent: uvicorn runs with `--no-access-log`,
+and the `499` cannot reach a peer that has already left (uvicorn's `send()` is
+a no-op once the socket is closed). Sandbox resolution, the wake and the DSH
+handshake run before the body is read, so an aborted upload can cost a wake or
+a handshake but never reaches DSH.
 
 ## Configuration
 
