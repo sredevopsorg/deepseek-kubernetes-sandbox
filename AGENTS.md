@@ -83,10 +83,10 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 
 - Release identity = DSH_VERSION, optionally with a repository revision suffix
   for re-releases at the same DSH ref (current identity:
-  dsh-v0.2.1-rc.3-r4).
-- The current identity is dsh-v0.2.1-rc.3-r4 (stored in versions.env). The
-  dsh-v0.2.1-rc.3 image tag already exists and tags are immutable, which is why
-  the first release under this scheme carries -r2.
+  dsh-v0.2.1-rc.5).
+- The current identity is dsh-v0.2.1-rc.5 (stored in versions.env). It is the
+  first release at this DSH ref, so it carries no revision suffix; a
+  repository-only change at the same ref publishes -r2.
 - Channels: release tags are immutable; latest follows the newest release;
   main is the development channel for both image packages.
 - A broken release is fixed by publishing -r(N+1), never by re-tagging.

@@ -15,34 +15,35 @@ release identity = DSH_VERSION + optional "-" + RELEASE_REVISION
 
 | Piece | Meaning |
 | --- | --- |
-| `DSH_VERSION` | The upstream DeepSeek Harness git ref being packaged, e.g. `dsh-v0.2.1-rc.3`. It mirrors upstream's own tag, which is what "mirrored-DSH scheme" means. |
+| `DSH_VERSION` | The upstream DeepSeek Harness git ref being packaged, e.g. `dsh-v0.2.1-rc.5`. It mirrors upstream's own tag, which is what "mirrored-DSH scheme" means. |
 | `RELEASE_REVISION` | An optional repository revision at that DSH ref: empty for the first release, `rN` (`N >= 2`) for a repository-only re-release. |
 
 Examples:
 
-- `DSH_VERSION=dsh-v0.2.1-rc.3`, `RELEASE_REVISION=` → identity `dsh-v0.2.1-rc.3`
+- `DSH_VERSION=dsh-v0.2.1-rc.5`, `RELEASE_REVISION=` → identity `dsh-v0.2.1-rc.5`
   (first release at that upstream ref).
-- `DSH_VERSION=dsh-v0.2.1-rc.3`, `RELEASE_REVISION=r4` → identity
-  `dsh-v0.2.1-rc.3-r4` (documentation, CI or gateway changes on top of the same
-  upstream DSH; no DSH upgrade).
+- `DSH_VERSION=<ref>`, `RELEASE_REVISION=rN` → identity `<ref>-rN` (for example
+  documentation, CI or gateway changes on top of an already-released ref; no DSH
+  upgrade). Use `r2` for the first re-release: revision 1 is the plain tag.
 
 A DSH upgrade produces a new base identity (for example the next upstream ref
 with an empty revision); a repository-only change at the same DSH ref increments
 `rN`.
 
-## Why the current identity is `dsh-v0.2.1-rc.3-r4`
+## Why release identities are immutable
 
-The image tag `dsh-v0.2.1-rc.3` was already published to GHCR for an earlier
-repository state. **Container tags are immutable** in this project: re-pushing a
-tag would silently change what an existing deployment runs. The mirrored-DSH
-scheme therefore starts its first identity at `-r2`: the plain tag is
-conceptually revision 1 and is taken, so the first publishable repository
-revision at the same upstream ref is `r2`.
+**Container tags are immutable** in this project: re-pushing a tag would silently
+change what an existing deployment runs. A DSH upgrade therefore produces a new
+base identity with an empty revision; a repository-only change at an
+already-released ref publishes `-rN`, where `r2` is the first re-release (the
+plain tag is conceptually revision 1 and is taken).
 
-The identity is stored in [versions.env](../versions.env) and consumed everywhere:
-the Dockerfile label, the example manifests, the Makefile and the release
-workflow. The legacy `dsh-v0.2.1-rc.3` tag remains published but is not updated;
-new deployments use `dsh-v0.2.1-rc.3-r4`.
+The current identity is `dsh-v0.2.1-rc.5`, the first release at this upstream
+ref, so it carries no revision suffix. The identity is stored in
+[versions.env](../versions.env) and consumed everywhere: the Dockerfile label,
+the example manifests, the Makefile and the release workflow. Tags published
+before the release-identity scheme remain published but are not updated; new
+deployments use the current identity.
 
 The gateway image moved from the repository-level `:gateway` tag to a nested
 package (`<repository>/dsh-agents-as-a-service/gateway`). The release workflow
@@ -54,7 +55,7 @@ should pin the nested package.
 
 | Channel | Image tag | Meaning |
 | --- | --- | --- |
-| Release | `dsh-v0.2.1-rc.3-r4` | The current immutable release identity. What production should pin (preferably by digest). |
+| Release | `dsh-v0.2.1-rc.5` | The current immutable release identity. What production should pin (preferably by digest). |
 | `latest` | `latest` | Alias for the most recent release; moves only when a new release is published. |
 | `main` | `main` | Development channel, rebuilt from every push to `main`. Never treat it as a release; it exists so `main` can be tested. |
 
@@ -68,8 +69,8 @@ Values from [versions.env](../versions.env) at the current identity:
 | Component | Pin | Source |
 | --- | --- | --- |
 | Upstream DSH source | `DSH_REPO` | [versions.env](../versions.env) |
-| DSH ref | `dsh-v0.2.1-rc.3` | `DSH_VERSION` |
-| Repository revision | `r4` | `RELEASE_REVISION` |
+| DSH ref | `dsh-v0.2.1-rc.5` | `DSH_VERSION` |
+| Repository revision | `(empty)` | `RELEASE_REVISION` |
 | pnpm | `11.28.5` | `PNPM_VERSION` |
 | agent-sandbox (CRDs) | `v1.0.8` | `AGENT_SANDBOX_VERSION`, used by the examples and CI dry-run |
 | Kubernetes Gateway API | `v1.2.1` | `GATEWAY_API_VERSION`, used by the SSO exposure variant |
@@ -153,7 +154,7 @@ Release identities are mutable only in theory; deployments should still pin the
 resolved digest for reproducibility and supply-chain safety:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r4
+docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5
 # then, in the deployment:
 #   image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
 ```
