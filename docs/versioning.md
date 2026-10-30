@@ -15,7 +15,7 @@ release identity = DSH_VERSION + optional "-" + RELEASE_REVISION
 
 | Piece | Meaning |
 | --- | --- |
-| `DSH_VERSION` | The upstream DeepSeek Harness git ref being packaged, e.g. `dsh-v0.2.1-rc.5`. It mirrors upstream's own tag, which is what "mirrored-DSH scheme" means. |
+| `DSH_VERSION` | The upstream DeepSeek Harness git ref being packaged, e.g. `dsh-v0.2.1-rc.5`. It mirrors upstream's own tag. |
 | `RELEASE_REVISION` | An optional repository revision at that DSH ref: empty for the first release, `rN` (`N >= 2`) for a repository-only re-release. |
 
 Examples:
@@ -33,23 +33,14 @@ with an empty revision); a repository-only change at the same DSH ref increments
 ## Why release identities are immutable
 
 **Container tags are immutable** in this project: re-pushing a tag would silently
-change what an existing deployment runs. A DSH upgrade therefore produces a new
-base identity with an empty revision; a repository-only change at an
-already-released ref publishes `-rN`, where `r2` is the first re-release (the
-plain tag is conceptually revision 1 and is taken).
+change what an existing deployment runs. A fix therefore publishes a new identity;
+see the rules above.
 
 The current identity is `dsh-v0.2.1-rc.5`, the first release at this upstream
 ref, so it carries no revision suffix. The identity is stored in
-[versions.env](../versions.env) and consumed everywhere: the Dockerfile label,
-the example manifests, the Makefile and the release workflow. Tags published
-before the release-identity scheme remain published but are not updated; new
-deployments use the current identity.
-
-The gateway image moved from the repository-level `:gateway` tag to a nested
-package (`<repository>/dsh-agents-as-a-service/gateway`). The release workflow
-also republishes the legacy `<repository>:gateway` tag as a deprecated
-compatibility alias; it may be removed in a later release, so deployments
-should pin the nested package.
+[versions.env](../versions.env) and consumed everywhere: the Dockerfile labels
+(version and revision), the example manifests, the Makefile and the release
+workflow.
 
 ## Channels
 
@@ -57,7 +48,7 @@ should pin the nested package.
 | --- | --- | --- |
 | Release | `dsh-v0.2.1-rc.5` | The current immutable release identity. What production should pin (preferably by digest). |
 | `latest` | `latest` | Alias for the most recent release; moves only when a new release is published. |
-| `main` | `main` | Development channel, rebuilt from every push to `main`. Never treat it as a release; it exists so `main` can be tested. |
+| `main` | `main` | Development channel, rebuilt when image or gateway sources change on `main`. Never treat it as a release; it exists so `main` can be tested. |
 
 The same channels exist for every published package, including the nested
 example component image.
@@ -110,11 +101,12 @@ workflows with a literal version.
    matches [versions.env](../versions.env).
 6. The workflow builds and pushes multi-arch images for the main image and the
    example components (the identity tag plus `latest`), creates the GitHub
-   Release from the git-cliff notes, records the published digests, and opens a
-   `chore(changelog)` PR that refreshes `CHANGELOG.md` on `main`.
+   Release from the git-cliff notes, and opens a `chore(changelog)` PR that
+   refreshes `CHANGELOG.md` on `main`. The publish log shows each image manifest
+   and digest.
 7. Merge the changelog PR. Verify:
-   `docker buildx imagetools inspect <image>:<identity>` shows both platforms,
-   and the GitHub Release references the tag and the digest.
+   `docker buildx imagetools inspect <image>:<identity>` shows both platforms;
+   the GitHub Release references the tag, and the workflow log shows the digest.
 8. Announce the identity and the digest; deployments pin the digest.
 
 ## Rollback

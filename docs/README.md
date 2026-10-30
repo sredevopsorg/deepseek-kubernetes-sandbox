@@ -2,8 +2,7 @@
 
 Repository-wide documentation lives here. Example-specific material lives with
 its example under [`examples/<name>/docs/`](../examples/) — see the
-[agents-as-a-service architecture](../examples/dsh-agents-as-a-service/docs/architecture.md)
-for the deep-dive that used to live in this directory.
+[agents-as-a-service architecture](../examples/dsh-agents-as-a-service/docs/architecture.md).
 
 If you are new, read the [root README](../README.md) first: it is image-first and
 gets a DSH Web container running before anything else.
@@ -34,6 +33,8 @@ DSH discovers project skills from `<git root>/.dsh/skills/<name>/SKILL.md`
 | [dsh-agents-as-a-service README](../examples/dsh-agents-as-a-service/README.md) | The multi-tenant platform walkthrough: warm pool, claims, suspend/resume, gateway, exposure and troubleshooting. |
 | [dsh-agents-as-a-service architecture](../examples/dsh-agents-as-a-service/docs/architecture.md) | Container/sequence diagrams, ADRs, security and RBAC, failure modes and the evolution path. |
 | [gateway README](../examples/dsh-agents-as-a-service/gateway/README.md) | The gateway's HTTP/WebSocket API, configuration, auth (including SSO), and limitations. |
+| [optional hardening](../examples/dsh-agents-as-a-service/docs/optional-hardening.md) | Opt-in gVisor, nodeSelector, NetworkPolicy, provider keys and failed-Pod recovery. |
+| [exposure variants](../examples/dsh-agents-as-a-service/manifests/exposure/README.md) | The mutually exclusive Ingress and Gateway API + SSO exposure paths. |
 
 ## Project policies
 

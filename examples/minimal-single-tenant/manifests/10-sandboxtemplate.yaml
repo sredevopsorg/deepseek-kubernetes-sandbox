@@ -107,6 +107,14 @@ spec:
           volumeMounts:
             - name: dsh-home
               mountPath: /home/node/.dsh # DSH_HOME
+            # The agent workspace (the image's WORKDIR) is the same PVC under
+            # its own subPath, so DSH state - including .credentials.yaml -
+            # never shows up as workspace data. Kubelet creates workspace/ on
+            # first mount with the volume's fsGroup permissions; no init
+            # container is needed. See the multi-tenant template for details.
+            - name: dsh-home
+              mountPath: /workspace
+              subPath: workspace
           # / is behind DSH's launch-token cookie (401 without it); use an
           # unauthenticated path for probes. The startup probe gives a cold
           # start (plugin activation on a small node, or the first resume of a

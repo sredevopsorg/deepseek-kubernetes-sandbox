@@ -22,7 +22,7 @@ It does four things:
 The DSH version pin lives in [`versions.env`](../../../versions.env)
 (`DSH_VERSION` plus the optional repository `RELEASE_REVISION`); the example
 manifests and published images use the release identity built from it (currently
-`dsh-v0.2.1-rc.5`). DSH binds `:3080`, serves `/`, gates `/api` behind a
+`dsh-v0.2.1-rc.5`). DSH binds `:3080`, gates the UI and `/api` behind a
 `dsh-auth-*` cookie and requires a WebSocket at `/api/remote.mux`.
 
 ## Flow
@@ -174,13 +174,17 @@ can also be injected into `create_app` for tests.
 | `SWEEP_INTERVAL` | `15` | Seconds between idle sweeps. |
 | `AUTH_PROXY_HEADER` | unset | Opt-in SSO: name of the trusted identity header set by an authenticating reverse proxy (e.g. `X-Forwarded-User`). Unset disables SSO and the header is never trusted. Enable only when the Service is reachable exclusively through that proxy (see [SSO](#sso-opt-in)). |
 
+The shipped `manifests/50-gateway.yaml` sets `IDLE_TIMEOUT=360` and
+`WAKE_TIMEOUT=240` for the demo; the e2e script overrides them to 60/120 so the
+smoke test does not wait minutes for the sweeper.
+
 ### Required RBAC
 
 The gateway's ServiceAccount needs, in its namespace:
 
 * `sandboxclaims` (`extensions.agents.x-k8s.io`): get, list, create, delete
-* `sandboxes` (`agents.x-k8s.io`): get, patch
-* `pods`: get
+* `sandboxes` (`agents.x-k8s.io`): get, list, patch
+* `pods`: get, list
 * `pods/log`: get
 
 ## Running locally

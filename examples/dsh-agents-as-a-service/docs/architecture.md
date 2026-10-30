@@ -6,7 +6,8 @@ Kubernetes, and DSH Web fit together, and why the design looks the way it does.
 
 Scope: one Kubernetes namespace (`dsh-demo`), one shared DSH Web image, one gateway deployment,
 and one DSH Web pod + PVC per user. The cluster is assumed to run
-[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) v1.0.8 with the extensions
+[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) with the pinned
+`AGENT_SANDBOX_VERSION` from [`versions.env`](../../../versions.env) and the extensions
 (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`).
 
 ## Container view
@@ -340,7 +341,7 @@ Notes and limits:
 | Probe on `/` | Pod `CrashLoopBackOff`, `401` in probe logs | Use `/favicon.svg` for readiness/liveness (shipped templates do) |
 | Warm pool exhausted | JSON signup returns `202` (state `Waking`); form signup is slow | Increase `replicas` in the warm pool |
 | Gateway restart | Idle sandboxes stop suspending; handshake cache lost | Rebuilt lazily on next request; consider a shared store for production |
-| Browser aborts a request (tab reload, back navigation) during a slow wake or handshake | No response reaches the client; nothing appears in the access log | If the abort lands before the response starts, the body read raises `ClientDisconnect` and the app answers `499` (`CLIENT_CLOSED_REQUEST`), which cannot reach the departed peer. Nothing reached DSH, no ERROR traceback is logged, and the in-flight slot is released. A request already streaming ends with its upstream status. Before the fix every mid-body abort logged a `ClientDisconnect` traceback |
+| Browser aborts a request (tab reload, back navigation) during a slow wake or handshake | No response reaches the client; nothing appears in the access log | If the abort lands before the response starts, the body read raises `ClientDisconnect` and the app answers `499` (`CLIENT_CLOSED_REQUEST`), which cannot reach the departed peer. Nothing reached DSH, no ERROR traceback is logged, and the in-flight slot is released. A request already streaming ends with its upstream status. |
 | DSH auth cookie expired mid-session | Proxy `401` once, then recovers | Gateway refreshes the handshake once |
 | Upstream pod name changed after resume | Cached cookie keyed by old pod UID is useless | Cache is invalidated on suspend; next request re-handshakes |
 | Two gateway replicas | Double suspend/wake races | Keep `replicas: 1` until state is externalized |

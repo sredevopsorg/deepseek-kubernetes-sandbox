@@ -1,7 +1,8 @@
 # Manifest shape validation and server-side dry-run. Split from ci.yaml so this
 # job can use native on.pull_request.paths filtering and skip PRs that do not
-# touch manifests, scripts or versions.env. The job name is the required
-# branch-protection check `manifests`.
+# touch manifests, scripts or versions.env. The job name is `manifests`; because
+# it is path-filtered it is an on-demand check, not a required branch-protection
+# check (see docs/gitflow.md).
 name: CI (manifests)
 
 on:

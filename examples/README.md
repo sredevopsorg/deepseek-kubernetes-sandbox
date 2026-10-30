@@ -11,7 +11,7 @@ reference material, not libraries.
 | [`examples/minimal-single-tenant/`](minimal-single-tenant/) | The smallest useful setup: a single `SandboxTemplate` and one `SandboxClaim`, no gateway — reach DSH Web with a launch-token URL through `kubectl port-forward`. | agent-sandbox with extensions. |
 
 The multi-tenant example also documents opt-in gVisor, `nodeSelector`,
-NetworkPolicy and extra provider-key hardening in
+NetworkPolicy, extra provider-key hardening and failed-Pod recovery in
 [optional hardening](dsh-agents-as-a-service/docs/optional-hardening.md).
 
 ## The example contract (short version)
@@ -19,37 +19,26 @@ NetworkPolicy and extra provider-key hardening in
 Full rules: [docs/examples.md](../docs/examples.md). `scripts/check-examples.sh`
 enforces the layout, and `make check` runs it.
 
-```
-examples/<name>/
-+-- README.md                  # walkthrough: prerequisites, steps, troubleshooting, cleanup
-+-- manifests/                 # NN-*.yaml, applied with plain kubectl
-|   +-- optional/<feature>/    # optional opt-in manifests...
-|   +-- optional/README.md     # ...required whenever optional/ exists
-|   +-- exposure/<variant>/    # optional per-variant manifests...
-|   +-- exposure/README.md     # ...required whenever exposure/ exists
-+-- scripts/                   # optional executable, idempotent, self-cleaning *.sh
-+-- docs/                      # optional architecture/ADR material
-+-- <component>/               # optional component with Dockerfile + README + tests
-```
-
-- Secrets never ship populated: use `*.yaml.example` files with placeholders.
-- Manifests are numbered (`00-`, `10-`, ...) and read as an ordered walkthrough.
-- Component images are published nested below the main image:
-  `<registry>/<owner>/<repo>/<example>/<component>`.
-- Every example must be listed above with its literal `examples/<name>/` path.
-- Scripts under `scripts/` must be executable, idempotent and clean up after
-  themselves.
+- `README.md` is the walkthrough; `manifests/NN-*.yaml` is applied with plain
+  kubectl and read in order.
+- Optional `manifests/optional/<feature>/` and `manifests/exposure/<variant>/`
+  each ship a README; exposure variants are mutually exclusive.
+- Optional `scripts/` must be executable, idempotent and self-cleaning; `docs/`
+  holds deeper material.
+- Components with a Dockerfile need a README and tests; images are published
+  nested below the main image (`<registry>/<owner>/<repo>/<example>/<component>`).
+- Secrets are `*.yaml.example` with placeholders; every example is listed above
+  with its literal `examples/<name>/` path.
 
 ## Running an example
 
-```bash
-# e.g. the multi-tenant platform example
-kubectl apply -f examples/dsh-agents-as-a-service/manifests/
+Each example README has the exact prerequisites, commands, optional hardening,
+exposure options and teardown. The multi-tenant example also has a full kind
+walkthrough that cleans up after itself:
 
-# or run the whole walkthrough (kind + agent-sandbox required) and let it clean up
+```bash
 examples/dsh-agents-as-a-service/scripts/e2e-kind.sh
 ```
 
 `kubectl apply -f manifests/` is non-recursive: `optional/` and `exposure/`
-subdirectories are applied explicitly. Each example README has the exact
-prerequisites, optional hardening, exposure options and teardown.
+subdirectories are applied explicitly.

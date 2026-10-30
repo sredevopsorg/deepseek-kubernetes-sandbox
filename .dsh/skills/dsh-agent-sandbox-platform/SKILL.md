@@ -126,13 +126,14 @@ Read `docs/examples.md` and the testing table in `AGENTS.md` before editing.
   alternatives, never a stack.
 - **New example:** follow `docs/examples.md`, add the index entry, keep scripts
   executable/idempotent/self-cleaning, run `make check`.
-- **Version bump:** edit `versions.env` only, update prerequisites, run
-  `make check` and the e2e. Never mix a bump with an unrelated feature.
+- **Version bump:** use `make set-version`; never edit pins by hand. Update
+  prerequisites, run `make check` and the e2e on a cluster. Never mix a bump
+  with an unrelated feature.
 - **MCP integration:** pin the build to the cluster's tag, least-privilege SA,
   ClusterIP + auth proxy, raised DSH timeout, no secrets in the repo.
-- **Optional hardening:** gVisor, `nodeSelector`, NetworkPolicy and extra
-  provider keys stay opt-in; the sandbox policy lives under
-  `manifests/optional/`. All four are documented in
+- **Optional hardening:** gVisor, `nodeSelector`, NetworkPolicy, extra
+  provider keys and failed-Pod recovery stay opt-in; the sandbox policy lives
+  under `manifests/optional/`. All of them are documented in
   `examples/dsh-agents-as-a-service/docs/optional-hardening.md`.
 - **Docs:** update the affected doc in the same change.
 

@@ -96,10 +96,7 @@ ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway
 | --- | --- | --- |
 | `dsh-v0.2.1-rc.5` | DSH Web, port `3080` | **Current release identity.** Immutable: once published it never moves. |
 | `latest` | DSH Web | Most recent release; same digest as the current identity. |
-| `main` | DSH Web | Development channel rebuilt from every push to `main`. Not a release; not for production. |
-
-Tags published before the release-identity scheme remain on GHCR but are not
-updated; new deployments use the current identity.
+| `main` | DSH Web | Development channel rebuilt when image-definition files change on `main`. Not a release; not for production. |
 
 The example gateway is published under its nested path with the same release
 identity, e.g.
@@ -134,8 +131,8 @@ Self-contained implementations that consume the image. Index and contract:
 
 | Example | What it demonstrates |
 | --- | --- |
-| [`examples/dsh-agents-as-a-service/`](examples/dsh-agents-as-a-service/) | Full multi-tenant platform: SandboxTemplate with per-user PVCs, warm pool, one claim per user, suspend-when-idle, wake-on-return, browser gateway with signup + `HttpOnly` sessions + HTTP/WebSocket proxy, Ingress or Gateway API + GitHub SSO exposure, and opt-in gVisor/NetworkPolicy/provider-key hardening. Start with the [walkthrough](examples/dsh-agents-as-a-service/README.md) and the [architecture](examples/dsh-agents-as-a-service/docs/architecture.md). |
-| [`examples/minimal-single-tenant/`](examples/minimal-single-tenant/) | The smallest useful setup: one `SandboxTemplate` and one `SandboxClaim`, reached through `kubectl port-forward` + the launch-token URL. Manifest: [`manifests/sandbox-template.yaml`](examples/minimal-single-tenant/manifests/sandbox-template.yaml). |
+| [`examples/dsh-agents-as-a-service/`](examples/dsh-agents-as-a-service/) | Full multi-tenant platform: SandboxTemplate with per-user PVCs, warm pool, one claim per user, suspend-when-idle, wake-on-return, browser gateway with signup + `HttpOnly` sessions + HTTP/WebSocket proxy, Ingress or Gateway API + GitHub SSO exposure, and opt-in gVisor/NetworkPolicy/provider-key hardening and failed-Pod recovery. Start with the [walkthrough](examples/dsh-agents-as-a-service/README.md) and the [architecture](examples/dsh-agents-as-a-service/docs/architecture.md). |
+| [`examples/minimal-single-tenant/`](examples/minimal-single-tenant/) | The smallest useful setup: one `SandboxTemplate` and one `SandboxClaim`, reached through `kubectl port-forward` + the launch-token URL. Manifest: [`manifests/10-sandboxtemplate.yaml`](examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml). |
 
 The gateway is a component of the multi-tenant example and has its own
 [README](examples/dsh-agents-as-a-service/gateway/README.md) (API, configuration,
@@ -166,7 +163,7 @@ guide and troubleshooting notes live beside `SKILL.md`.
 | [`scripts/`](scripts/) | Repository checks: versions, example layout, manifest YAML, version bump. |
 | [`.dsh/skills/`](.dsh/skills/) | Project-local DSH skills, auto-discovered from the git root. |
 | [`.github/`](.github/) | CI, release automation, dependency updates, PR/issue templates. |
-| [`.env.sample`](.env.sample) | Documented local configuration (copy to `.env`; never commit it). |
+| [`.env.sample`](.env.sample) | Reference environment names for local runs; nothing reads it automatically. Never commit a real key. |
 
 ## Development
 
@@ -199,24 +196,6 @@ broken release is fixed by publishing `-r(N+1)`, never by re-tagging.
 Conventional Commits and is never edited by hand. See
 [`CHANGELOG.md`](CHANGELOG.md), [docs/versioning.md](docs/versioning.md) and
 [cliff.toml](cliff.toml).
-
-## Migrating from the previous layout
-
-If you are coming from an older checkout, these paths moved. Nothing else changed
-semantically; the content was split into the example it belongs to.
-
-| Old path | New path |
-| --- | --- |
-| `gateway-api/dsh-demo/` (Gateway API + oauth2-proxy / GitHub SSO) | `examples/dsh-agents-as-a-service/manifests/exposure/gateway-api-sso/` (now `70-gateway.yaml` ... `74-tls-secret.yaml.example`) |
-| `examples/dsh-agents-as-a-service/60-ingress.yaml` | `examples/dsh-agents-as-a-service/manifests/exposure/ingress/60-ingress.yaml` |
-| `examples/dsh-agents-as-a-service/NN-*.yaml` (`00-` ... `50-`) | `examples/dsh-agents-as-a-service/manifests/NN-*.yaml` |
-| `examples/dsh-agents-as-a-service/run-test-kind.sh` | `examples/dsh-agents-as-a-service/scripts/e2e-kind.sh` |
-| `deploy/k8s/sandbox-template.yaml` | `examples/minimal-single-tenant/manifests/sandbox-template.yaml` |
-| `docs/architecture.md` | `examples/dsh-agents-as-a-service/docs/architecture.md` |
-
-The SSO walkthrough that lived in `gateway-api/dsh-demo/README.md` is merged
-into the [multi-tenant example README](examples/dsh-agents-as-a-service/README.md)
-(step 9) and the [exposure README](examples/dsh-agents-as-a-service/manifests/exposure/README.md).
 
 ## Contributing
 

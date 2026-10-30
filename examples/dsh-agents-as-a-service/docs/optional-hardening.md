@@ -3,7 +3,7 @@
 The base example is deliberately portable: it runs on kind and GKE without a
 gVisor runtime, a tainted node pool or a NetworkPolicy-capable CNI, and it
 boots with only the required `dsh-provider-keys` Secret. This document covers
-four **opt-in** isolation layers, plus one availability setting:
+four **opt-in** controls plus failed-Pod recovery:
 
 | Setting | Where it lives | What it changes |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ PodSpec; no CRD change is involved.
 - [`manifests/50-gateway.yaml`](../manifests/50-gateway.yaml)
 - [`manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml`](../manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml)
   (only with the SSO variant)
-- [minimal sandbox-template.yaml](../../minimal-single-tenant/manifests/sandbox-template.yaml)
+- [minimal template](../../minimal-single-tenant/manifests/10-sandboxtemplate.yaml)
 
 **Existing install:** a template edit does not update existing Sandboxes, and
 warm-pool spares use `OnReplenish`, so patch explicitly. Plan a maintenance
@@ -604,7 +604,7 @@ Required locally for any change to this example:
 ```bash
 make check          # versions, example layout, manifest YAML shape
 yamllint .
-make test           # gateway unit tests (gateway code is untouched)
+make test           # only when the gateway code changed
 ```
 
 CI additionally parses every manifest and runs `kubectl apply
