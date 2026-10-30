@@ -49,7 +49,7 @@ before changing anything; it encodes the conventions the CI enforces.
 | examples/minimal-single-tenant/ | The just-one-DSH-Web quickstart |
 | scripts/ | check-versions.sh, check-examples.sh, check-manifests.py, set-version.sh |
 | .dsh/skills/ | Project-local DSH skills (auto-discovered); dsh-agent-sandbox-platform covers platform operation, MCP limits and extension recipes |
-| .github/workflows/ | ci.yaml (lint, dependency-review), ci-python.yaml, ci-manifests.yaml, reusable _build-image.yaml, build-*, release.yaml, e2e-kind.yaml, pr-title.yaml, codeql.yml |
+| .github/workflows/ | ci.yaml (lint, dependency-review), ci-python.yaml, ci-manifests.yaml, ci-image.yaml (amd64 build + smoke test on Dockerfile/versions.env changes), reusable _build-image.yaml, build-*, release.yaml, e2e-kind.yaml, pr-title.yaml, codeql.yml |
 
 ## Commands
 
@@ -74,7 +74,7 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 | Example manifest | make check; kubectl apply --dry-run=server in CI |
 | Optional hardening (gVisor, nodeSelector, NetworkPolicy, provider keys) | make check; server dry-run in CI; manual verification on a capable cluster |
 | Gateway code | make test; make lint; add or update tests |
-| Dockerfile / versions.env | make check; make image (amd64) and a container smoke test |
+| Dockerfile / versions.env | make check; the CI `build-amd64` job (`ci-image.yaml`) builds and smoke-tests the image on the PR; run `make image` locally only when you need the image |
 | Workflow | actionlint in CI; keep actions SHA-pinned; no hard-coded versions |
 | New example | make check; all files described in docs/examples.md |
 | Project skill (.dsh/skills/) | make check; frontmatter and size check; shellcheck skill scripts; load it with the skill tool |

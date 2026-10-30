@@ -49,16 +49,25 @@ branch; the PR is squash-merged, so individual branch commits are never part of
 | `CodeQL` | `codeql.yml` | Static analysis for Python and GitHub Actions. |
 | `dependency-review` | `ci.yaml` | Dependency changes introduced by the PR (job `dependency-review`; runs on pull requests only). |
 
-`python` and `manifests` use native `on.pull_request.paths` filtering, so PRs that
-do not touch the gateway or the manifests skip them. The gateway image build and
-`/healthz` are no longer smoke-tested in a dedicated job: `/healthz` is covered by
-the gateway unit tests, the Dockerfile is linted by `lint` (hadolint), and the
-multi-arch image build is published by `build-gateway.yaml` on merge.
+`python`, `manifests` and `build-amd64` use native `on.pull_request.paths`
+filtering, so PRs that do not touch the gateway, the manifests or the image
+definition skip them. The gateway image build and `/healthz` are no longer
+smoke-tested in a dedicated job: `/healthz` is covered by the gateway unit tests,
+the Dockerfile is linted by `lint` (hadolint), and the multi-arch image build is
+published by `build-gateway.yaml` on merge.
+
+`ci-image.yaml` (`build-amd64`) is the PR-side check for the main image: when
+`Dockerfile`, `.dockerignore` or `versions.env` change it builds `linux/amd64`
+with the pins from `versions.env` — no registry login, no push — and smoke-tests
+the result (`--version`, non-root UID, `/workspace` + `DSH_HOME`, the
+`bubblewrap` runner, the version label, and `/favicon.svg` served from a running
+container). The published multi-arch build still happens only in
+`build-main.yaml` on merge.
 
 Because a skipped path-filtered check is not a passing check, only the always-on
 checks (`lint`, `pr-title`, `CodeQL`, `dependency-review`) should be enforced as
-required status checks; `python` and `manifests` are on-demand checks that skip
-when unrelated to the change.
+required status checks; `python`, `manifests` and `build-amd64` are on-demand
+checks that skip when unrelated to the change.
 
 The image build workflows (`_build-image.yaml`, `build-main.yaml`,
 `build-gateway.yaml`) and `e2e-kind.yaml` are **not** required on every PR: the
