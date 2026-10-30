@@ -309,6 +309,11 @@ Notes and limits:
   `dsh-provider-keys-extra`). `manifests/optional/network-policy/` adds an opt-in sandbox
   NetworkPolicy, and gVisor/`nodeSelector` are opt-in PodSpec fields. Add per-tenant
   credentials before calling it multi-tenant-grade.
+- **DSH's inner file sandbox is disabled by deployment override.** The template sets
+  `DSH_PERMISSION_MODE=danger-full-access` because the in-container backends (bubblewrap, then
+  Landlock) are unusable under the pod's dropped capabilities and runtime surface; the confined
+  executor would otherwise fail closed on every command. The pod remains the boundary, so an
+  agent can read its own `DSH_HOME`. Hosts with a working backend can keep a confined mode.
 - **Optional hardening is opt-in.** gVisor, node selection, the sandbox/exposure NetworkPolicies,
   extra provider keys and failed-Pod recovery are documented in
   [optional hardening](optional-hardening.md). The base manifests stay portable (no gVisor

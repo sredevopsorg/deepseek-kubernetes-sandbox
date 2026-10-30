@@ -81,6 +81,13 @@ spec:
             # examples/dsh-agents-as-a-service/manifests/exposure/README.md.
             - name: DSH_TRUSTED_HOSTS
               value: ""
+            # DSH's own bash file sandbox (bubblewrap, else Landlock) cannot be
+            # enforced in this hardened pod, and fails closed with
+            # SANDBOX_UNAVAILABLE. The pod is the boundary here; keep the
+            # deployment override in sync with the multi-tenant example and see
+            # its README troubleshooting row to restore a confined mode.
+            - name: DSH_PERMISSION_MODE
+              value: danger-full-access
           volumeMounts:
             - name: dsh-home
               mountPath: /home/node/.dsh # DSH_HOME

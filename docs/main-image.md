@@ -76,9 +76,20 @@ The entrypoint is `tini -- /usr/local/bin/dsh-entrypoint`:
 | `DSH_TRUSTED_HOSTS` | empty | Extra `Host`/`Origin` allow-list entries, comma- or space-separated. `localhost`/`127.0.0.1` are always trusted. Required when a proxy forwards the browser's `Host`. |
 | `DEEPSEEK_API_KEY` | empty | Provider credential read by DSH. Inject it with `-e`/`envFrom`; never bake it into the image. Only model calls fail when it is missing. |
 | `DSH_HOME` | `/home/node/.dsh` | DSH state directory (conversations, sessions, config, credentials). Mount a volume here to persist it. |
+| `DSH_PERMISSION_MODE` | `workspace-write` | Deployment default for DSH's file policy: `read-only`, `workspace-write`, or `danger-full-access` (which also turns approval prompts off). The confined modes need `bubblewrap` or Landlock inside the container; where neither is usable every bash command fails closed with `SANDBOX_UNAVAILABLE`. See the note below. |
 
 The image also sets `NODE_ENV=production`, `HOME=/home/node`, and a `PATH` that
 includes `/app/node_modules/.bin`.
+
+DSH confines bash commands itself (a second layer inside whatever container
+sandbox you already run). Its Linux runners are `bubblewrap` and then Landlock,
+and it fails closed rather than running unconfined. A hardened pod — non-root,
+`capabilities.drop: ["ALL"]`, `seccompProfile: RuntimeDefault` — has no usable
+`bubblewrap` (it needs `CAP_SYS_ADMIN`) and may expose no Landlock runner, in
+which case every command fails with `SANDBOX_UNAVAILABLE`. Set
+`DSH_PERMISSION_MODE=danger-full-access` only when the surrounding pod or VM is
+the isolation boundary you rely on; keep the confined modes when the host
+provides a working runner.
 
 ### Provider credentials
 
