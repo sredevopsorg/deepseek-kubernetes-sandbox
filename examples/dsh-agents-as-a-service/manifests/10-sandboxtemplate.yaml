@@ -135,7 +135,8 @@ spec:
             periodSeconds: 15
             failureThreshold: 3
           # The container only needs to serve HTTP; drop every capability and
-          # disallow privilege escalation. DSH writes only to DSH_HOME (PVC).
+          # disallow privilege escalation. DSH writes only to its PVC-backed
+          # directories (DSH_HOME and the agent workspace).
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -148,6 +149,16 @@ spec:
           volumeMounts:
             - name: dsh-home
               mountPath: /home/node/.dsh # DSH_HOME: sessions, config, state
+            # The agent workspace (the image's WORKDIR) is PVC-backed too, but
+            # under its own subPath so DSH state - including .credentials.yaml -
+            # never shows up as workspace data. Kubelet creates workspace/ on
+            # first mount with the volume's fsGroup permissions (0775, setgid
+            # inherited from the volume root), so UID 1000 can write; no init
+            # container is needed. If the kubelet is killed mid-creation the
+            # directory stays 0755: see Troubleshooting in the README.
+            - name: dsh-home
+              mountPath: /workspace
+              subPath: workspace
   volumeClaimTemplates:
     - metadata:
         name: dsh-home

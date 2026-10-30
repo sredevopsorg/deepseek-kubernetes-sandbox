@@ -73,7 +73,13 @@ pass "claim Ready in ${ELAPSED}s, adopted $SB"
 echo "=== 3. write state on the PVC"
 POD="$SB"
 kubectl -n "$NS" exec "$POD" -- sh -c 'echo "remember me" > /home/node/.dsh/marker.txt'
-pass "marker written in $POD"
+pass "state marker written in $POD"
+# The agent workspace must be the dsh-home PVC's workspace/ subPath, writable
+# as UID 1000 without an init container.
+SUBPATH=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{range .spec.containers[0].volumeMounts[?(@.mountPath=="/workspace")]}{.subPath}{end}')
+[ "$SUBPATH" = "workspace" ] || fail "/workspace is not mounted from the dsh-home PVC subPath"
+kubectl -n "$NS" exec "$POD" -- sh -c 'echo "remember me too" > /workspace/marker.txt'
+pass "workspace marker written in $POD (subPath=$SUBPATH)"
 
 echo "=== 4. suspend (pod deleted, PVC + Service retained)"
 kubectl -n "$NS" patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Suspended"}}'
@@ -87,8 +93,11 @@ kubectl -n "$NS" patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"
 kubectl -n "$NS" wait sandbox "$SB" --for=condition=Ready --timeout=180s
 POD="$SB"
 MARKER=$(kubectl -n "$NS" exec "$POD" -- cat /home/node/.dsh/marker.txt)
-[ "$MARKER" = "remember me" ] || fail "marker did not survive suspend/resume"
-pass "resumed: state survived on the reattached PVC"
+[ "$MARKER" = "remember me" ] || fail "state marker did not survive suspend/resume"
+pass "resumed: DSH state survived on the reattached PVC"
+WS_MARKER=$(kubectl -n "$NS" exec "$POD" -- cat /workspace/marker.txt)
+[ "$WS_MARKER" = "remember me too" ] || fail "workspace marker did not survive suspend/resume"
+pass "resumed: agent workspace survived on the PVC subPath"
 
 echo "=== 6. injection policy rejects env-carrying claims"
 kubectl apply -f manifests/40-claim-rejected.yaml

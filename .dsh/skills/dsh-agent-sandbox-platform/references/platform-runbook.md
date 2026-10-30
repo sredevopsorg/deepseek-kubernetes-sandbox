@@ -28,8 +28,8 @@ a missing CRD is a prerequisite failure, not an application bug.
 | `SandboxWarmPool` | Pre-warmed spares from one template | `spec.replicas`, `sandboxTemplateRef` |
 | `SandboxClaim` | One tenant/user request; adopts a spare | `spec.warmPoolRef`, `additionalPodMetadata`, `status.sandbox.name` |
 | `Sandbox` | Adopted or directly created pod + Service + PVC | `spec.operatingMode`, `status.conditions`, `status.serviceFQDN`, `status.podIPs` |
-| `Pod` | The DSH Web process | `:3080`, PVC at `/home/node/.dsh` |
-| `PersistentVolumeClaim` | Per-sandbox state | `dsh-home-<sandbox>` |
+| `Pod` | The DSH Web process | `:3080`, PVC at `/home/node/.dsh` and `/workspace` (`subPath: workspace`) |
+| `PersistentVolumeClaim` | Per-sandbox DSH state + agent workspace | `dsh-home-<sandbox>` |
 | `Service` | Stable per-sandbox DNS | `<sandbox>`, `status.serviceFQDN` |
 
 Delete a claim to cascade-delete its sandbox and PVC (account deletion). Never

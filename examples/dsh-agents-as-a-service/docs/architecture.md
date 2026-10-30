@@ -24,7 +24,7 @@ flowchart LR
         sb["Sandbox dsh-pool-xxxx<br/>spec.operatingMode"]
         svc["Headless Service<br/>status.serviceFQDN"]
         pod["DSH Web pod<br/>node process :3080"]
-        pvc[("PVC dsh-home-SANDBOX<br/>/home/node/.dsh")]
+        pvc[("PVC dsh-home-SANDBOX<br/>/home/node/.dsh + /workspace (subPath)")]
     end
 
     browser -->|"HTTP + WebSocket<br/>/u/USER/**"| gw
@@ -46,7 +46,7 @@ Responsibilities:
 | **Gateway** | Signup/login, session auth, `SandboxClaim` lifecycle, wake-on-connect, idle sweeper, HTTP/SSE/WebSocket reverse proxy, DSH launch-token handshake. |
 | **Kubernetes API** | Source of truth for claims, sandboxes, and pods; also the log source for the DSH launch token. |
 | **agent-sandbox controller** | Adopts warm spares on claim, flips `operatingMode` (Running/Suspended), garbage-collects sandbox + PVC on claim delete. |
-| **DSH Web pod** | One `dsh web` process per user, state on the per-user PVC, listening on `3080`. |
+| **DSH Web pod** | One `dsh web` process per user, DSH state and the agent workspace on the per-user PVC (`/home/node/.dsh` + `/workspace`), listening on `3080`. |
 | **Warm pool** | Keeps `N` Ready sandboxes so signup is a label flip instead of a cold start. |
 
 ## Exposure variants
@@ -159,8 +159,12 @@ sequenceDiagram
     G-->>B: request held, then served
 ```
 
-Suspend deletes only the pod. The PVC keeps conversations, sessions, and config, so resume
-reattaches exactly the same state.
+Suspend deletes only the pod. The PVC keeps conversations, sessions, config **and the agent
+workspace**, so resume reattaches exactly the same state. Both trees live on one PVC: DSH state at
+`/home/node/.dsh` (the volume root) and the workspace at `/workspace` (a second mount of the same
+volume with `subPath: workspace`, which keeps `.credentials.yaml` out of the agent-visible tree).
+The idle sweeper never touches the volume; deleting the claim still garbage-collects it, so
+`POST /recreate` wipes state and workspace together.
 
 **Ownership boundary.** The gateway shares its namespace with claims created outside it — the
 example's resource-layer walkthrough applies `dsh-alice` by hand, and every claim is named
