@@ -33,7 +33,7 @@ expect .env.sample "RELEASE_REVISION=$RELEASE_REVISION"
 # Image references in the example manifests
 for f in \
   examples/dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml \
-  examples/minimal-single-tenant/manifests/sandbox-template.yaml; do
+  examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml; do
   expect "$f" "image: $GHCR_IMAGE:$IDENTITY"
 done
 expect examples/dsh-agents-as-a-service/manifests/50-gateway.yaml "image: $GATEWAY_IMAGE:$IDENTITY"

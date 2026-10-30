@@ -41,6 +41,7 @@ examples/<name>/
   example directory;
 - an example has no `README.md` or no `manifests/` directory;
 - `manifests/` contains no top-level `*.yaml` files;
+- a top-level `manifests/*.yaml` is not named `NN-*.yaml`;
 - a `*.yaml` file sits at the example root instead of under `manifests/`;
 - `manifests/exposure/` exists without a `manifests/exposure/README.md` describing
   the variants;

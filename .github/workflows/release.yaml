@@ -16,11 +16,6 @@ on:
         description: Existing tag to release (must match versions.env)
         required: true
         type: string
-      publish_legacy_gateway_alias:
-        description: Also publish the legacy :gateway alias (one release only)
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: write
@@ -192,28 +187,6 @@ jobs:
       tags: |
         ${{ needs.meta.outputs.gateway_image }}:${{ needs.meta.outputs.identity }}
         ${{ needs.meta.outputs.gateway_image }}:latest
-
-  legacy-gateway-alias:
-    name: Publish legacy :gateway alias (temporary)
-    needs: [meta, build-gateway]
-    if: github.event_name != 'workflow_dispatch' || inputs.publish_legacy_gateway_alias
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Retag gateway as the legacy package tag
-        env:
-          SOURCE: ${{ needs.meta.outputs.gateway_image }}:${{ needs.meta.outputs.identity }}
-          LEGACY: ${{ needs.meta.outputs.ghcr_image }}:gateway
-        run: |
-          set -euo pipefail
-          docker buildx imagetools create -t "$LEGACY" "$SOURCE"
-          echo "Deprecated alias $LEGACY now points at $SOURCE" >> "$GITHUB_STEP_SUMMARY"
 
   publish-release:
     name: Changelog and GitHub Release

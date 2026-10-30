@@ -48,7 +48,7 @@ kubectl -n dsh-demo create secret generic dsh-provider-keys-extra \
   --from-literal=NVIDIA_API_KEY="nvapi-..."
 
 # 2. The template itself (image pinned in the manifest).
-kubectl apply -f manifests/sandbox-template.yaml
+kubectl apply -f manifests/10-sandboxtemplate.yaml
 
 # 3. A template only describes pods; a warm pool turns it into running
 #    Sandboxes and a claim adopts one. One replica is enough here.
@@ -103,16 +103,19 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 
 ## Folder picker and the workspace
 
-The template sets `HOME=/workspace`. DSH's directory picker (the folder explorer
-used to choose a workspace) has no start-path setting: it lists `$HOME` when it
-opens, so with the image default (`/home/node`) it would start on a directory that
-is not persisted. Pointing `HOME` at the PVC-backed workspace makes the picker
-open there (labelled *Home* in its breadcrumbs) and makes `~` in agent commands
-resolve to `/workspace`. The trade-off is that `$HOME`-relative tool caches and
-config (`.cache`, `.config`, `.local`, `.npm`, `.agents`) are written into the
-workspace on the PVC. DSH state is unaffected: `DSH_HOME` stays
+The template mounts the `dsh-home` PVC's `workspace/` subPath at
+`/workspace` and sets `HOME=/workspace`. DSH's directory picker (the folder
+explorer used to choose a workspace) has no start-path setting: it lists `$HOME`
+when it opens, so with the image default (`/home/node`) it would start on a
+directory that is not persisted. Pointing `HOME` at the PVC-backed workspace makes
+the picker open there (labelled *Home* in its breadcrumbs) and makes `~` in agent
+commands resolve to `/workspace`. The trade-off is that `$HOME`-relative tool
+caches and config (`.cache`, `.config`, `.local`, `.npm`, `.agents`) are written
+into the workspace on the PVC. DSH state is unaffected: `DSH_HOME` stays
 `/home/node/.dsh`. The rationale and the list of affected paths are in
 [`10-sandboxtemplate.yaml`](../dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml).
+Pod specs are stamped at creation, so an existing sandbox keeps its old mounts and
+`HOME` until it is recreated; the PVC retains DSH state and workspace data.
 
 Verify inside a running sandbox:
 
@@ -133,7 +136,7 @@ NetworkPolicy are documented in
 
 ## Probes and trusted hosts
 
-Two settings in `manifests/sandbox-template.yaml` are easy to get wrong:
+Two settings in `manifests/10-sandboxtemplate.yaml` are easy to get wrong:
 
 - **Probe path.** `/` returns `401` without the launch-token cookie, so a probe
   there crash-loops the pod. The template probes `/favicon.svg` (served

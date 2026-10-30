@@ -1,6 +1,7 @@
 # Gateway unit tests and lint. Split from ci.yaml so this job can use native
 # on.pull_request.paths filtering and skip PRs that do not touch the gateway.
-# The job name is the required branch-protection check `python`.
+# The job name is `python`; because it is path-filtered it is an on-demand check,
+# not a required branch-protection check (see docs/gitflow.md).
 name: CI (python)
 
 on:

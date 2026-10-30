@@ -9,8 +9,8 @@ before changing anything; it encodes the conventions the CI enforces.
   Harness Web (dsh web) as a slim, non-root, multi-arch image. Everything else
   exists to support it or to demonstrate an implementation on top of it.
 - **Every implementation is a self-contained example** under examples/<name>/.
-  There is exactly one example for the agents-as-a-service platform; do not
-  split it into parallel directories.
+  The multi-tenant platform lives in exactly one directory; do not split it into
+  parallel examples.
 - **versions.env is the single source of truth** for the DSH ref, pnpm, the
   control-plane versions and the image names.
 - **Docs describe the shipped behavior**, not intentions. If you change a
@@ -43,7 +43,7 @@ before changing anything; it encodes the conventions the CI enforces.
 | versions.env | Every pinned version and image name |
 | Makefile | Canonical local entrypoint |
 | build.sh | Deprecated shim that forwards to make |
-| docs/ | main-image.md, examples.md, gitflow.md, versioning.md |
+| docs/ | main-image.md, examples.md, gitflow.md, versioning.md (index: README.md) |
 | examples/ | One implementation per directory (contract in docs/examples.md) |
 | examples/dsh-agents-as-a-service/ | The multi-tenant platform example (manifests, gateway, docs, scripts) |
 | examples/minimal-single-tenant/ | The just-one-DSH-Web quickstart |
@@ -54,7 +54,7 @@ before changing anything; it encodes the conventions the CI enforces.
 ## Commands
 
     make check        # versions, example layout and manifest YAML (run before every commit)
-    make test         # gateway unit tests (109+ tests)
+    make test         # gateway unit tests (pytest)
     make lint         # ruff + shellcheck (+ yamllint/actionlint when installed)
     make image        # build the main DSH Web image (slow: clones and builds DSH)
     make gateway      # build the example gateway image (fast)
@@ -72,21 +72,18 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 | --- | --- |
 | Documentation only | make check; verify relative links |
 | Example manifest | make check; kubectl apply --dry-run=server in CI |
-| Optional hardening (gVisor, nodeSelector, NetworkPolicy, provider keys) | make check; server dry-run in CI; manual verification on a capable cluster |
+| Optional hardening (gVisor, nodeSelector, NetworkPolicy, provider keys, failed-Pod recovery) | make check; server dry-run in CI; manual verification on a capable cluster |
 | Gateway code | make test; make lint; add or update tests |
 | Dockerfile / versions.env | make check; the CI `build-amd64` job (`ci-image.yaml`) builds and smoke-tests the image on the PR; run `make image` locally only when you need the image |
 | Workflow | actionlint in CI; keep actions SHA-pinned; no hard-coded versions |
 | New example | make check; all files described in docs/examples.md |
-| Project skill (.dsh/skills/) | make check; frontmatter and size check; shellcheck skill scripts; load it with the skill tool |
+| Project skill (.dsh/skills/) | make check; validate frontmatter; keep SKILL.md under ~8 KB; shellcheck skill scripts; load it with the skill tool |
 
 ## Versioning and releases
 
-- Release identity = DSH_VERSION, optionally with a repository revision suffix
-  for re-releases at the same DSH ref (current identity:
-  dsh-v0.2.1-rc.5).
-- The current identity is dsh-v0.2.1-rc.5 (stored in versions.env). It is the
-  first release at this DSH ref, so it carries no revision suffix; a
-  repository-only change at the same ref publishes -r2.
+- Release identity = DSH_VERSION plus an optional -rN repository revision.
+  The current identity is dsh-v0.2.1-rc.5 (first release at this DSH ref, so no
+  suffix); a repository-only change at the same ref publishes -r2.
 - Channels: release tags are immutable; latest follows the newest release;
   main is the development channel for both image packages.
 - A broken release is fixed by publishing -r(N+1), never by re-tagging.
@@ -99,7 +96,9 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 - Branch names: feat/, fix/, docs/, chore/, refactor/, test/.
 - Conventional Commit subjects and PR titles (feat(scope): ..., fix(scope): ...).
 - PRs are squash-merged; main stays linear and protected.
-- Required checks: lint, python, manifests, pr-title, CodeQL, dependency-review.
+- Required on every PR: lint, pr-title, CodeQL (both Analyze jobs) and
+  dependency-review. python, manifests and build-amd64 are path-filtered
+  on-demand checks; run them when the change touches their scope.
 - Keep diffs scoped; update docs with the code; never mix a version bump with
   unrelated changes.
 
@@ -107,9 +106,9 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 
 1. Read docs/examples.md and examples/README.md.
 2. Create examples/<name>/ with README.md, manifests/NN-*.yaml, optional
-   manifests/exposure/<variant>/ (plus README), optional components with their
-   own Dockerfile/README/tests, and scripts/ (executable, idempotent,
-   self-cleaning).
+   manifests/optional/<feature>/ or manifests/exposure/<variant>/ (each with a
+   README), optional components with their own Dockerfile/README/tests, and
+   scripts/ (executable, idempotent, self-cleaning).
 3. Publish component images under <registry>/<owner>/<repo>/<example>/<component>.
 4. Add the example to examples/README.md; scripts/check-examples.sh enforces
    the layout.
@@ -124,8 +123,9 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 - The example shares provider keys (dsh-provider-keys plus the optional
   dsh-provider-keys-extra) across sandboxes; do not describe it as
   tenant-isolated.
-- gVisor, nodeSelector and the NetworkPolicies are opt-in and are not active in
-  the base manifests; do not describe the base example as hardened.
+- gVisor, nodeSelector, the NetworkPolicies, extra provider keys and failed-Pod
+  recovery are opt-in and are not active in the base manifests; do not describe
+  the base example as hardened.
 - TLS terminates outside the gateway; set COOKIE_SECURE=true for HTTPS and keep
   the base manifest safe for local HTTP.
 

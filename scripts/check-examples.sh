@@ -20,6 +20,13 @@ for dir in examples/*/; do
   if [ -d "${dir}manifests" ]; then
     count=$(find "${dir}manifests" -maxdepth 1 -type f -name '*.yaml' | wc -l | tr -d ' ')
     [ "$count" -gt 0 ] || err "$name: manifests/ has no top-level *.yaml files"
+    for manifest in "${dir}"manifests/*.yaml; do
+      [ -e "$manifest" ] || continue
+      case "$(basename "$manifest")" in
+        [0-9][0-9]-*.yaml) ;;
+        *) err "$name: top-level manifest $(basename "$manifest") must be named NN-*.yaml" ;;
+      esac
+    done
   fi
 
   stray=$(find "$dir" -maxdepth 1 -type f -name '*.yaml' | wc -l | tr -d ' ')

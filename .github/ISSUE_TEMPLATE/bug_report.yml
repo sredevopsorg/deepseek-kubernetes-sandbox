@@ -28,7 +28,7 @@ body:
     id: image-tag
     attributes:
       label: Image or release
-      description: The pinned tag or digest, for example dsh-v0.2.1-rc.5.
+      description: The tag or digest you deployed (from the manifest or release metadata).
   - type: input
     id: cluster
     attributes:

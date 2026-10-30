@@ -43,8 +43,10 @@ Install the gateway dev dependencies once:
 - Use a Conventional Commit title, for example feat(gateway): add wake metrics
   or docs(examples): clarify SSO trust boundary. PR titles are linted.
 - Keep the diff scoped. Squash merge into main; history stays linear.
-- Required checks: lint, python, manifests, pr-title, CodeQL, and
-  dependency-review. Branch protection is described in docs/gitflow.md.
+- Required on every PR: lint, pr-title, CodeQL (both Analyze jobs) and
+  dependency-review. python, manifests and build-amd64 are path-filtered
+  on-demand checks; run them when the change touches their scope. Branch
+  protection is described in docs/gitflow.md.
 - Update the docs that the change affects; docs are part of the change, not a
   follow-up.
 - Never commit a real secret. Secret-shaped YAML belongs in a *.yaml.example
@@ -60,16 +62,12 @@ it by hand; the release workflow regenerates it.
 
 ## Adding an example
 
-Read docs/examples.md, then add examples/<name>/ with:
-
-- README.md (what it demonstrates, prerequisites, steps, teardown)
-- manifests/NN-*.yaml (numbered, plain kubectl)
-- optional manifests/exposure/<variant>/ with its own README.md
-- optional components (a Dockerfile plus README and tests per component)
-- scripts/ with executable, idempotent, self-cleaning scripts
-- docs/ for deeper material
-
-List it in examples/README.md. scripts/check-examples.sh enforces this layout.
+Read docs/examples.md, then add examples/<name>/ with a README.md,
+numbered manifests/NN-*.yaml, optional manifests/optional/<feature>/ or
+manifests/exposure/<variant>/ (each with a README), optional components (a
+Dockerfile plus README and tests), and executable, idempotent, self-cleaning
+scripts. Add the literal examples/<name>/ entry to examples/README.md;
+scripts/check-examples.sh enforces the layout.
 
 ## Documentation
 

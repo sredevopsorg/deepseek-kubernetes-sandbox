@@ -8,6 +8,8 @@ personal, long-lived DSH Web instance that is **provisioned in ~2 seconds from a
 warm pool, suspended when idle to save cost, and woken transparently when the
 user returns** — with all state (conversations, sessions, config, and the agent
 workspace) surviving on the per-user PVC at `/home/node/.dsh` + `/workspace`.
+Suspend-when-idle plus the warm pool keep cost proportional to use: a return
+after absence pays a short cold-start pause, not an always-on instance.
 
 It ships in three layers:
 
@@ -79,12 +81,14 @@ What it demonstrates, feature by feature:
 
 ## Prerequisites
 
+Run the walkthrough from this example's directory (`examples/dsh-agents-as-a-service/`).
+
 - A Kubernetes cluster with a default StorageClass (kind and GKE both work as-is).
 - agent-sandbox with extensions installed:
 
   ```bash
-  VERSION=v1.0.8   # AGENT_SANDBOX_VERSION in versions.env
-  kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$VERSION/sandbox-with-extensions.yaml
+  . ../../versions.env
+  kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/sandbox-with-extensions.yaml"
   kubectl -n agent-sandbox-system rollout status deployment --timeout=180s
   ```
 
@@ -243,12 +247,9 @@ kubectl -n dsh-demo exec "$SB" -- cat /home/node/.dsh/marker.txt   # "remember m
 kubectl -n dsh-demo exec "$SB" -- cat /workspace/marker.txt        # "remember me too"
 ```
 
-> **Why resume works:** the pod template sets `fsGroupChangePolicy: OnRootMismatch`.
-> DSH requires its `.credentials.yaml` to be `0600`, while the kubelet's default
-> fsGroup policy widens every file to `0660` on each pod start — a resumed sandbox
-> would crash-loop. See [Troubleshooting](#troubleshooting) for the one-time fix
-> on sandboxes created before this setting existed. The `/workspace` mount does not
-> change that: `subPath` is a separate directory, and only the volume root is walked.
+> **Why resume works:** the pod template sets `fsGroupChangePolicy: OnRootMismatch`;
+> without it the kubelet widens `.credentials.yaml` to `0660` and DSH crash-loops.
+> See [Troubleshooting](#troubleshooting) for the one-time fix on older sandboxes.
 
 ## 7. Injection policy rejects env-carrying claims
 
@@ -273,7 +274,7 @@ kind load docker-image "$GW" --name <kind-cluster>
 
 # ... or build it locally and tag it exactly as manifests/50-gateway.yaml
 # expects (make gateway builds dsh-aaas-gateway:dev):
-make gateway
+make -C ../.. gateway
 docker tag dsh-aaas-gateway:dev "$GW"
 kind load docker-image "$GW" --name <kind-cluster>
 
@@ -351,44 +352,21 @@ API clients that prefer bearer tokens can use `POST /users` with a JSON body
 (`{"user":"bob"}`) and the returned one-time token, `POST /login` to exchange a
 token for a cookie, and `Authorization: Bearer <token>` on subsequent calls.
 
-### Gateway API
+### Gateway routes
 
-| Route | Purpose |
-| --- | --- |
-| `GET /healthz` | Liveness/readiness; no cluster access |
-| `GET /` | Landing page: signup, token login, logout. With SSO it auto-provisions and connects instead. |
-| `POST /users` | Signup. JSON or form; `201` (JSON), `202` (waking), `303` (browser redirect), `409` if user exists; sets the session cookie |
-| `POST /login` | Exchange a bearer token for the session cookie |
-| `POST /logout` | Clear the session cookie |
-| `POST /recreate` | SSO only: delete the authenticated user's claim (wiping workspace data) and provision a fresh one; `303` to `/u/{user}/`. Cookie-authenticated calls must be same-origin. |
-| `GET /users/{user}` | Derived state (`Ready`/`Waking`/`Suspended`) |
-| `DELETE /users/{user}` | Delete claim (cascades sandbox + PVC) |
-| `GET /u/{user}` | `308` redirect to `/u/{user}/` |
-| `GET /u/{user}/**` | HTTP/SSE proxy to the user's DSH Web |
-| `WS /u/{user}/**` | WebSocket proxy to the user's DSH Web |
-
-The full API reference, configuration table, auth semantics and failure matrix
-live in the [gateway README](gateway/README.md).
+The browser flow above uses the gateway's main routes. The full route table,
+status codes, configuration and failure matrix live in the
+[gateway README](gateway/README.md).
 
 ### How the DSH handshake works
 
-DSH does not expose an API for its launch token; it prints a URL containing
-`?token=…` in the pod logs. For each `(user, pod UID, Host)` the gateway:
-
-1. resolves the claim → sandbox → pod (annotation `agents.x-k8s.io/pod-name`, or
-   the sandbox name as pod name),
-2. reads the pod's logs (last `DSH_LOG_TAIL_LINES` lines) and parses the most
-   recent `dsh web: …?token=…` line,
-3. requests `http://<serviceFQDN>:3080/?token=…` with the browser's `Host`,
-4. captures DSH's `dsh-auth-*` `Set-Cookie` response and caches it,
-5. injects that cookie (and strips the browser's `Cookie`/`Authorization` and any
-   `?token=`) on every proxied HTTP and WebSocket request,
-6. refreshes the handshake once if DSH answers `401`, and drops the cached cookie
-   when the sandbox suspends or is deleted.
-
-This is why the gateway's RBAC includes `pods` `get`/`list` and `pods/log`
-`get`. It is also the most fragile part of the design; see
-[Limitations](#limitations).
+DSH prints its launch token only in pod logs. The gateway resolves
+claim → sandbox → pod, reads the pod-log tail, performs the `?token=` handshake
+under the browser's `Host`, caches `dsh-auth-*` per `(user, pod UID, Host)`, and
+refreshes once on a `401`. That is why its RBAC includes `pods` `get`/`list` and
+`pods/log` `get`; it is also the most fragile part of the design (see
+[Limitations](#limitations) and the
+[architecture ADR](docs/architecture.md#adr-3-server-side-launch-token-handshake-instead-of-exposing-the-token)).
 
 ### DSH_TRUSTED_HOSTS
 
@@ -407,27 +385,18 @@ The same applies to a local `docker run`: the printed token URL uses
 
 ### WebSocket
 
-The gateway is a Starlette ASGI app and proxies WebSocket upgrades with a
-bidirectional pump, so the DSH web GUI is fully interactive. Requirements:
+The gateway proxies WebSocket upgrades with a bidirectional pump, so the DSH web
+GUI is fully interactive. The entry point must pass `Upgrade`/`Connection`
+headers; [`manifests/exposure/ingress/60-ingress.yaml`](manifests/exposure/ingress/60-ingress.yaml)
+is a starting point (Traefik handles upgrades by default). Idle suspension is
+disabled while a proxied request or socket is in flight, so a long-running turn is
+not cut off.
 
-- the ingress/load balancer in front of the gateway must pass `Upgrade`/`Connection`
-  headers; [`manifests/exposure/ingress/60-ingress.yaml`](manifests/exposure/ingress/60-ingress.yaml)
-  is a starting point (Traefik handles upgrades by default),
-- idle suspension is disabled for users with in-flight proxied requests or open
-  WebSockets, so a long-running chat stream is not cut off mid-turn,
-- the upstream upgrade dials the sandbox **pod IP**, forwards no `Host`/`Origin`,
-  and performs the launch-token handshake under that same `pod-IP:3080` authority.
-  DSH fences on `Host` (only its bind address, loopback, or an allow-listed host
-  passes) and binds its auth cookie to the request authority
-  (`payload.authority === authority`), while `websockets` derives `Host` from the
-  URI and cannot be overridden. A browser-host cookie or forwarded origin makes
-  the upgrade fail (`401`/`403`, surfaced as close `1011`), which the client
-  retries forever as `[connection] connection lost, retry #N`,
-- missing/invalid gateway auth is rejected right after the upgrade with close code
-  `4401` (WebSocket auth has no HTTP `401` path); cross-origin or Origin-less
-  upgrades with the cookie are rejected the same way (CSWSH protection), so
-  clients must send a matching `Origin`; upstream bridging failures close with
-  `1011`.
+The upstream upgrade dials the sandbox **pod IP**, forwards no `Host`/`Origin`,
+and performs the launch-token handshake under the same `pod-IP:3080` authority.
+Missing or cross-origin auth closes with `4401`; upstream bridging failures close
+with `1011`. See the [gateway README](gateway/README.md#proxy-failure-semantics)
+for the full matrix.
 
 ### Path routing
 
@@ -457,27 +426,18 @@ and the gateway. They are part of the variant; see the
 
 ### Option A — plain Ingress (gateway's own session auth)
 
-```bash
-# Replace the dsh.example.com host and TLS Secret (or drop the tls: block for
-# plain HTTP), then:
-kubectl apply -f manifests/exposure/ingress/
-```
-
-1. Set `DSH_TRUSTED_HOSTS` in `manifests/10-sandboxtemplate.yaml` to the same
-   public host (the gateway forwards the browser's `Host`) and re-apply the
-   template.
-2. Set `COOKIE_SECURE=true` on the gateway once the Ingress serves HTTPS:
+1. Set the Ingress host/TLS (or drop the `tls:` block), and set
+   `DSH_TRUSTED_HOSTS` in `manifests/10-sandboxtemplate.yaml` to the same public
+   host; re-apply the template.
+2. Set `COOKIE_SECURE=true` once the Ingress serves HTTPS:
    `kubectl -n dsh-demo set env deploy/dsh-gateway COOKIE_SECURE=true`.
-   (The base manifest keeps `false` so the plain-HTTP port-forward demo works.)
-3. Verify: `curl -sI https://<host>/healthz` returns `200`; sign up in a browser
-   at `https://<host>/`.
-4. `manifests/exposure/ingress/61-networkpolicy.yaml` is part of this variant:
-   it allows only Traefik pods to reach the gateway on `8080`. Adjust its
-   selector if your ingress controller uses a different pod label or
-   `hostNetwork`; if kubelet probes fail, see the hardening doc.
+3. `kubectl apply -f manifests/exposure/ingress/`; verify
+   `curl -sI https://<host>/healthz` returns `200`.
 
 Keep the router free of buffering/compression middlewares: they break WebSocket
-upgrades and streaming.
+upgrades and streaming. The variant's `61-networkpolicy.yaml` allows only Traefik
+pods to reach the gateway; see the [exposure README](manifests/exposure/README.md)
+for selector and probe caveats.
 
 ### Option B — Gateway API + GitHub SSO (oauth2-proxy)
 
@@ -487,84 +447,41 @@ front of **oauth2-proxy**, which authenticates the browser against GitHub
 `X-Forwarded-User` set. The gateway trusts that header only when
 `AUTH_PROXY_HEADER` is set (SSO is **opt-in**).
 
-Prerequisites:
-
-- Gateway API CRDs and a Gateway implementation; the manifests assume
-  `gatewayClassName: traefik` (the CRD version is pinned as
-  `GATEWAY_API_VERSION` in `versions.env`).
-- A GitHub OAuth App whose homepage/callback match the public FQDN
-  (`https://<host>/` and `https://<host>/oauth2/callback`).
-- The oauth2-proxy credentials Secret (template:
-  `73-oauth2-proxy-secret.yaml.example`) and a TLS Secret for the Gateway
-  listener (template: `74-tls-secret.yaml.example`).
-
-Steps:
-
-```bash
-# 1. Real Secrets; the committed *.yaml.example files are templates only.
-kubectl -n dsh-demo create secret generic oauth2-proxy \
-  --from-literal=client-id='<GitHub OAuth App client ID>' \
-  --from-literal=client-secret='<GitHub OAuth App client secret>' \
-  --from-literal=cookie-secret="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-kubectl -n dsh-demo create secret tls dsh-demo-tls --cert=tls.crt --key=tls.key
-
-# 2. Replace dsh-demo.example.com (70/71/72) and your-github-org (72).
-
-# 3. Enable SSO on the gateway and trust the public host in the template.
-kubectl -n dsh-demo set env deploy/dsh-gateway \
-  AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true
-#    ... and set DSH_TRUSTED_HOSTS=dsh-demo.example.com in
-#    manifests/10-sandboxtemplate.yaml, then re-apply the template.
-
-# 4. Apply the variant.
-kubectl apply -f manifests/exposure/gateway-api-sso/
-```
-
-Verification:
-
-```bash
-kubectl get gateway dsh-gateway -n dsh-demo -o yaml        # Programmed=True
-kubectl get httproute -n dsh-demo -o wide                  # backend oauth2-proxy:4180, Accepted
-kubectl get deploy oauth2-proxy -n dsh-demo                # 1/1 Ready
-kubectl get endpoints oauth2-proxy -n dsh-demo             # backend present
-kubectl -n dsh-demo logs deploy/oauth2-proxy --tail=50     # no config errors
-```
-
-Browser check: open `https://<host>/` — you are redirected to GitHub, and after
-signing in as a member of the allowed organization the gateway auto-provisions
-your sandbox (the first page can show `Provisioning`) and connects you. A
-non-member is denied before reaching the gateway. GitHub logins are lowercase
-DNS-1123 labels, so they map 1:1 onto the gateway's `user` validation. The SSO
-landing page also offers **Recreate sandbox** (`POST /recreate`), which deletes
-the claim — wiping the workspace PVC — and provisions a fresh one.
-
-Sign-out: the gateway `/logout` clears `dsh_gw_session`; oauth2-proxy's session
-can be cleared at `/oauth2/sign_out`.
+1. Install Gateway API CRDs and a Gateway implementation; the manifests assume
+   `gatewayClassName: traefik` (the CRD version is `GATEWAY_API_VERSION` in
+   `versions.env`).
+2. Create a GitHub OAuth App whose homepage/callback match the public FQDN, and
+   create the oauth2-proxy and TLS Secrets from
+   `73-oauth2-proxy-secret.yaml.example` and `74-tls-secret.yaml.example`.
+3. Replace `dsh-demo.example.com` and `your-github-org`, set
+   `DSH_TRUSTED_HOSTS` in the template, and enable SSO:
+   `kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true`.
+4. `kubectl apply -f manifests/exposure/gateway-api-sso/`; verify the Gateway,
+   HTTPRoute, oauth2-proxy Deployment and endpoints as shown in the
+   [exposure README](manifests/exposure/README.md).
 
 > **SSO trust boundary — read this before enabling it.** After SSO is on, the
 > `dsh-gateway` Service must be reachable **only** through oauth2-proxy (it is
 > ClusterIP). The variant's `75-networkpolicies.yaml` restricts pod traffic
 > accordingly: the gateway accepts traffic only from oauth2-proxy pods,
-> oauth2-proxy only from the Gateway implementation, and oauth2-proxy egress is
-> limited to DNS, public HTTPS and the gateway. Anyone who can reach
-> `dsh-gateway:8080` directly can still send `X-Forwarded-User: <victim>` and be
-> treated as that user, so never add a second path (the Ingress variant, a
-> shared-host port-forward, a permissive policy). To turn SSO off, remove the
-> variable (`kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER-`)
-> and delete the SSO variant; the gateway falls back to bearer-token/session
-> auth.
+> oauth2-proxy only from the Gateway implementation, and its egress only to DNS,
+> public HTTPS and the gateway. Anyone who can reach `dsh-gateway:8080` directly
+> can send `X-Forwarded-User: <victim>`, so never add a second path. To turn SSO
+> off, remove the variable
+> (`kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER-`) and
+> delete the SSO variant.
 
 ### Switching variants
 
-Delete the variant you had before applying the other one
-(`kubectl delete -f manifests/exposure/ingress/`), revert
+Delete the variant you had before applying the other one, revert
 `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, and verify with
 `kubectl -n dsh-demo get ingress,gateway,httproute` that exactly one path to the
-gateway remains.
+gateway remains. Full commands and verification are in the
+[exposure README](manifests/exposure/README.md).
 
 ## Optional hardening
 
-The base walkthrough is deliberately portable. Four opt-in isolation layers are
+The base walkthrough is deliberately portable. Five opt-in settings are
 documented in [optional hardening](docs/optional-hardening.md):
 
 - **gVisor** — uncomment `runtimeClassName: gvisor` before applying, or patch an
@@ -582,7 +499,7 @@ documented in [optional hardening](docs/optional-hardening.md):
   the sandbox at `Finished=True`. Requires agent-sandbox v1.0.8+.
 
 Apply each independently and re-run the walkthrough. `kubectl apply -f manifests/`
-is non-recursive, so the optional manifest is not applied by the base step.
+is non-recursive, so the optional manifests are not applied by the base step.
 
 ## Troubleshooting
 
@@ -599,7 +516,7 @@ is non-recursive, so the optional manifest is not applied by the base step.
 | `manifest.webmanifest` returns `401` in the console | Browsers fetch the Web App Manifest without credentials, so the gateway's session cookie is absent and the request fails closed. The UI is unaffected; only the PWA install prompt is lost |
 | Signup is slow / `202` then `Waking` | Warm pool exhausted (`kubectl get sandboxes -l agents.x-k8s.io/warm-pool-sandbox`); scale the pool |
 | `403` from the Kubernetes API in gateway logs | The gateway ServiceAccount is missing claim/sandbox/pod-log verbs (see `manifests/50-gateway.yaml`) |
-| Gateway pod `ErrImagePull` / `ImagePullBackOff` (especially on kind) | The manifest uses `imagePullPolicy: IfNotPresent` with the release identity. Build with `make gateway`, retag to exactly the manifest's image, `kind load docker-image <that-ref>`, or set the Deployment image to your local tag / pinned digest. On a real cluster, make sure the GHCR package is readable (public or a pull secret) |
+| Gateway pod `ErrImagePull` / `ImagePullBackOff` (especially on kind) | The manifest uses `imagePullPolicy: IfNotPresent` with the release identity. Build with `make -C ../.. gateway`, retag to exactly the manifest's image, `kind load docker-image <that-ref>`, or set the Deployment image to your local tag / pinned digest. On a real cluster, make sure the GHCR package is readable (public or a pull secret) |
 | Step 3: `pod "$SB" not found` after deploying the gateway | The claim was suspended by the idle sweeper. Claims created by the gateway carry `aaas.example.com/managed-by=dsh-gateway`; hand-applied claims (steps 1–7) do not and are never swept. Resume the sandbox: `kubectl -n dsh-demo patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Running"}}'` |
 | Resume crash-loops: `credentials-local: … is readable beyond its owner (mode 660)` | The pod template lacks `fsGroupChangePolicy: OnRootMismatch`, so the kubelet's default fsGroup policy rewrote `.credentials.yaml` to `0660`; DSH requires `0600` and refuses to start. New installs get the policy from the template. For an existing sandbox: suspend it, run a throwaway pod on `dsh-home-$SB` to `chmod 600 /home/node/.dsh/.credentials.yaml`, patch the sandbox's `podTemplate` with the policy, then resume |
 | Agents get `Permission denied` writing to `/workspace` on a fresh or resumed pod | The `/workspace` mount is the `dsh-home` PVC's `workspace/` subPath, and the kubelet is known to leave a `subPath` directory at `0755` if it is interrupted between creating and chmodding it ([kubernetes#142464](https://github.com/kubernetes/kubernetes/issues/142464)); later mounts never correct it. Suspend the sandbox, run a throwaway pod on `dsh-home-$SB` mounted at `/data`, `chmod 2775 /data/workspace` (do **not** chown/chmod recursively — that rewrites `.credentials.yaml`), then resume. If you recreate the sandbox instead, its current `/workspace` contents go with the PVC |
@@ -665,12 +582,6 @@ Deliberately **not** production code:
   hashes in claim annotations.
 - **Bearer tokens in URLs.** Avoid putting the signup token in a URL/log; the
   browser flow uses the `HttpOnly` cookie instead.
-
-## Cost model
-
-The same economics as the upstream pattern: suspend-when-idle plus warm pools turn
-an always-on instance into a sub-second cold-start pause per return-after-absence,
-at a fraction of the cost.
 
 ## Cleanup
 

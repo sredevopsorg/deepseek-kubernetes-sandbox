@@ -30,7 +30,7 @@ branch; the PR is squash-merged, so individual branch commits are never part of
    `docs(scope): ...`, `build: ...`, `ci: ...`, `refactor: ...`, `test: ...`,
    `chore: ...`. Breaking changes use `feat(scope)!: ...` or a
    `BREAKING CHANGE:` footer.
-3. **CI must be green.** All required checks below must pass before merge.
+3. **CI must be green.** All applicable checks below must pass before merge.
 4. **Squash merge only.** `main` stays linear and protected; merged PRs are one
    commit each.
 5. **No direct pushes to `main`** or to a release branch. Both are protected.
@@ -40,21 +40,20 @@ branch; the PR is squash-merged, so individual branch commits are never part of
 
 ## Required checks
 
-| Check | Workflow / job | What it verifies |
-| --- | --- | --- |
-| `lint` | `ci.yaml` | `scripts/check-versions.sh` (version pins and markdown tokens), `scripts/check-examples.sh` (example layout), shellcheck, actionlint, yamllint, hadolint and documentation links. |
-| `python` | `ci-python.yaml` | Gateway ruff check/format and unit tests (`pytest` with coverage). Runs only when the gateway or this workflow changes. |
-| `manifests` | `ci-manifests.yaml` | `scripts/check-manifests.py` (manifest shape) and a server-side dry-run of every example manifest against the agent-sandbox CRDs. Runs only when manifests, check scripts or `versions.env` change. |
-| `pr-title` | `pr-title.yaml` | Conventional Commit PR title. |
-| `CodeQL` | `codeql.yml` | Static analysis for Python and GitHub Actions. |
-| `dependency-review` | `ci.yaml` | Dependency changes introduced by the PR (job `dependency-review`; runs on pull requests only). |
+| Check | Workflow / job | Required on every PR? | What it verifies |
+| --- | --- | --- | --- |
+| `lint` | `ci.yaml` | yes | `scripts/check-versions.sh` (version pins and markdown tokens), `scripts/check-examples.sh` (example layout and numbered manifests), shellcheck, actionlint, yamllint, hadolint and documentation links. |
+| `python` | `ci-python.yaml` | no (path-filtered) | Gateway ruff check/format and unit tests (`pytest` with coverage). Runs only when the gateway or this workflow changes. |
+| `manifests` | `ci-manifests.yaml` | no (path-filtered) | `scripts/check-manifests.py` (manifest shape) and a server-side dry-run of every example manifest against the agent-sandbox CRDs. Runs when manifest files, `scripts/check-manifests.py` or `versions.env` change. |
+| `pr-title` | `pr-title.yaml` | yes | Conventional Commit PR title. |
+| `Analyze (python)`, `Analyze (actions)` | `codeql.yml` | yes (both jobs) | CodeQL static analysis for Python and GitHub Actions. |
+| `dependency-review` | `ci.yaml` | yes | Dependency changes introduced by the PR (job `dependency-review`; runs on pull requests only). |
 
 `python`, `manifests` and `build-amd64` use native `on.pull_request.paths`
 filtering, so PRs that do not touch the gateway, the manifests or the image
-definition skip them. The gateway image build and `/healthz` are no longer
-smoke-tested in a dedicated job: `/healthz` is covered by the gateway unit tests,
-the Dockerfile is linted by `lint` (hadolint), and the multi-arch image build is
-published by `build-gateway.yaml` on merge.
+definition skip them. The gateway image is built and published by
+`build-gateway.yaml` on merge; `/healthz` is covered by the gateway unit tests and
+the Dockerfile is linted by `lint` (hadolint).
 
 `ci-image.yaml` (`build-amd64`) is the PR-side check for the main image: when
 `Dockerfile`, `.dockerignore` or `versions.env` change it builds `linux/amd64`
@@ -64,9 +63,9 @@ the result (`--version`, non-root UID, `/workspace` + `DSH_HOME`, the
 container). The published multi-arch build still happens only in
 `build-main.yaml` on merge.
 
-Because a skipped path-filtered check is not a passing check, only the always-on
-checks (`lint`, `pr-title`, `CodeQL`, `dependency-review`) should be enforced as
-required status checks; `python`, `manifests` and `build-amd64` are on-demand
+Because a skipped path-filtered check is not a passing check, require only the
+always-on set: `lint`, `pr-title`, both CodeQL `Analyze` jobs and
+`dependency-review`. Keep `python`, `manifests` and `build-amd64` as on-demand
 checks that skip when unrelated to the change.
 
 The image build workflows (`_build-image.yaml`, `build-main.yaml`,
@@ -109,7 +108,8 @@ Rollback is also a re-release, never a retag: see
 
 ## Tag protection
 
-All release tags match `dsh-*` and are protected:
+Release tags follow `dsh-*` and are protected (the pre-scheme `v0.0.1` tag is
+historical and unmaintained):
 
 - only maintainers (the release workflow) may create them;
 - they cannot be deleted or force-updated;
@@ -123,11 +123,12 @@ respectively.
 
 Configure these on the repository before relying on the workflow:
 
-- [ ] **Branches → main**: require a pull request; require the checks `lint`,
-      `python`, `manifests`, `pr-title`, `CodeQL`, `dependency-review`; require
-      branches to be up to date; require conversation resolution; restrict direct
-      pushes; allow only squash merges and enable "Automatically delete head
-      branches".
+- [ ] **Branches → main**: require a pull request; require the always-on checks
+      `lint`, `pr-title`, both CodeQL `Analyze` jobs and `dependency-review`
+      (`python`, `manifests` and `build-amd64` are path-filtered and must not be
+      required); require branches to be up to date; require conversation
+      resolution; restrict direct pushes; allow only squash merges and enable
+      "Automatically delete head branches".
 - [ ] **Branches → release/***: same protections, plus allow the release workflow
       to push tags.
 - [ ] **Tags → dsh-***: restrict creation/update/deletion to maintainers; a tag

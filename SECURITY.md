@@ -21,7 +21,7 @@ disclosure once a fix is available.
   from pod logs (pods/log). Anyone with access to those logs can impersonate a
   tenant. Keep the gateway's RBAC namespace-scoped and treat pod logs as
   sensitive. Replacing log scraping with an upstream token API is tracked in
-  the example architecture document.
+  the [example architecture document](examples/dsh-agents-as-a-service/docs/architecture.md#upstream-feature-request-remove-log-scraping).
 - **SSO header trust boundary.** AUTH_PROXY_HEADER makes the gateway trust an
   identity header (for example X-Forwarded-User). Enable it only when the
   gateway Service is reachable exclusively through the authenticating proxy;

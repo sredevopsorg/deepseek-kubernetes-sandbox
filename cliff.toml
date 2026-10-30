@@ -44,6 +44,6 @@ commit_parsers = [
 ]
 protect_breaking_commits = false
 filter_commits = false
-# Release tags are dsh-vX.Y.Z[-rN]; the single legacy pre-scheme tag is v0.0.1.
+# Release tags are dsh-vX.Y.Z[-rN]; the single pre-scheme tag is v0.0.1.
 tag_pattern = "^(v|dsh-v).*$"
 sort_commits = "oldest"

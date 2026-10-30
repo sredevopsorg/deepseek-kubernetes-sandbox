@@ -47,8 +47,8 @@ docker build \
 | Arg | Default / source | Purpose |
 | --- | --- | --- |
 | `DSH_REPO` | `https://github.com/deepseek-ai/deepseek-harness.git` | Upstream DSH repository to clone. |
-| `DSH_VERSION` | `DSH_VERSION` in [versions.env](../versions.env) | Upstream DSH git tag/ref to package; recorded as `org.opencontainers.image.version`. |
-| `RELEASE_REVISION` | `RELEASE_REVISION` in [versions.env](../versions.env) | Repository revision suffix (`rN`); the release identity is `DSH_VERSION-RELEASE_REVISION`, recorded in the `io.sredevopsorg.release.revision` label. See [versioning](versioning.md). |
+| `DSH_VERSION` | `DSH_VERSION` in [versions.env](../versions.env) | Upstream DSH git tag/ref to package. The Dockerfile records it as `io.sredevopsorg.dsh.version` and (for local builds) `org.opencontainers.image.version`; published builds set the version label to the full release identity. |
+| `RELEASE_REVISION` | `RELEASE_REVISION` in [versions.env](../versions.env) | Repository revision suffix (`rN`), recorded in `io.sredevopsorg.release.revision`. The release identity is `DSH_VERSION` plus `-RELEASE_REVISION` when set. See [versioning](versioning.md). |
 | `PNPM_VERSION` | `PNPM_VERSION` in [versions.env](../versions.env) | pnpm version activated with corepack in both stages. |
 | `VCS_REF` | `git rev-parse --short HEAD` (via `make image`) | Source revision recorded for traceability. |
 | `NODE_BUILD_IMAGE` | `docker.io/node:24-trixie` | Build-stage base image. |
@@ -90,9 +90,10 @@ includes `/app/node_modules/.bin`.
 the picker's browse backend lists `$HOME` when the dialog opens and labels that
 listing *Home*. With the image default (`/home/node`) that listing is outside a
 mounted volume; the example sandbox templates
-([minimal](../examples/minimal-single-tenant/manifests/sandbox-template.yaml),
+([minimal](../examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml),
 [agents as a service](../examples/dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml))
-set `HOME=/workspace` so the picker opens on the persisted agent workspace. `~`
+mount the same PVC's `workspace` subPath at `/workspace` and set `HOME=/workspace`
+so the picker opens on the persisted agent workspace. `~`
 and every tool that keeps caches or config under `$HOME` (`npm`/`pnpm`, `uv`,
 `git`, `gh`, DSH's global `~/.agents` instructions and skills) follow, so those
 dotfiles then live on the workspace volume too. `DSH_HOME` is separate and stays
@@ -141,7 +142,7 @@ procedure.
 | --- | --- | --- |
 | Exposed port | `3080/tcp` | `EXPOSE 3080`; one port serves the UI, assets, API, SSE and WebSocket traffic. |
 | State volume | `/home/node/.dsh` | Declared with `VOLUME`; use a named volume (Docker) or PVC (Kubernetes). |
-| Working directory | `/workspace` | The agent workspace. Mount a volume here if agents should keep files; the agents-as-a-service example mounts the same PVC's `workspace` subPath here and points `HOME` at it, so DSH's folder picker opens on it. |
+| Working directory | `/workspace` | The agent workspace. Mount a volume here if agents should keep files; the shipped example templates mount the same PVC's `workspace` subPath here and point `HOME` at it, so DSH's folder picker opens on it. |
 | Stop signal | `SIGTERM` | `tini` forwards it to `dsh web`; allow a graceful shutdown period. |
 | User | `node`, UID/GID `1000` | The process is non-root. A PVC mounted at `DSH_HOME` must be writable by UID 1000. |
 
@@ -164,8 +165,8 @@ livenessProbe:
   periodSeconds: 15
 ```
 
-The shipped templates use exactly this shape; see
-[`examples/minimal-single-tenant/manifests/sandbox-template.yaml`](../examples/minimal-single-tenant/manifests/sandbox-template.yaml).
+The shipped templates use the same path and startup budget; see
+[`examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml`](../examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml).
 A `startupProbe` is important because plugin activation (or the first start of a
 large sandbox) can exceed a default liveness budget.
 
@@ -199,10 +200,7 @@ GitHub Container Registry:
 | --- | --- |
 | `dsh-v0.2.1-rc.5` | Current release identity. **Immutable**: once published it never moves. |
 | `latest` | Most recent release; points at the same digest as the current identity. |
-| `main` | Development channel rebuilt from every push to `main`; not a release, not for production. |
-
-Tags published before the release-identity scheme remain published but are not
-updated; new deployments use the current identity.
+| `main` | Development channel rebuilt when image-definition files change on `main`; not a release, not for production. |
 
 Release identities, channels and rollback rules are defined in
 [versioning](versioning.md). Tags are immutable, so production deployments should
@@ -220,6 +218,7 @@ docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbo
 docker inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5 \
   --format '{{json .Config.Labels}}'
 # org.opencontainers.image.title / .version / .source
+# io.sredevopsorg.dsh.version / io.sredevopsorg.release.revision
 ```
 
 Release builds also publish SBOM and provenance attestations from the release
