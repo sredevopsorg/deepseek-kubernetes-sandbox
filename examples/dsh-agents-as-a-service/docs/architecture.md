@@ -166,6 +166,15 @@ volume with `subPath: workspace`, which keeps `.credentials.yaml` out of the age
 The idle sweeper never touches the volume; deleting the claim still garbage-collects it, so
 `POST /recreate` wipes state and workspace together.
 
+**Workspace as home.** The template sets `HOME=/workspace`. DSH has no start-path setting for its
+directory picker: the browse backend lists `$HOME` when the dialog opens, so with the image default
+(`/home/node`, off the PVC) the picker would start on a throwaway directory. The override makes the
+picker open on the persisted workspace and makes `~` resolve there; the cost is that tool caches
+and config kept under `$HOME` (`npm`/`pnpm`, `uv`, `git`, `gh`, and DSH's global `~/.agents`
+instructions and skills) become dotfiles in the workspace. `DSH_HOME` stays `/home/node/.dsh`, so
+sessions, config and credentials remain outside the agent-visible tree. Pod env is stamped when a
+sandbox is created, so an existing sandbox keeps the old `HOME` until it is recreated.
+
 **Ownership boundary.** The gateway shares its namespace with claims created outside it — the
 example's resource-layer walkthrough applies `dsh-alice` by hand, and every claim is named
 `dsh-<user>`. Claims the gateway creates carry `aaas.example.com/managed-by=dsh-gateway`; the

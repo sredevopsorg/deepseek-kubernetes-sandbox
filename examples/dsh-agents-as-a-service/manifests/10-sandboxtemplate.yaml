@@ -89,6 +89,23 @@ spec:
                 name: dsh-provider-keys-extra
                 optional: true
           env:
+            # Point the OS home at the persisted agent workspace. DSH's
+            # directory picker (the folder explorer used to choose a workspace)
+            # has no start-path setting: when it opens it lists $HOME, and
+            # os.homedir() follows this variable. The image default is
+            # /home/node, which is not on a volume, so the picker would open on
+            # a throwaway directory; /workspace is the PVC-backed WORKDIR. `~`
+            # in agent commands resolves here too. Trade-off: tools that keep
+            # caches/config under $HOME (npm/pnpm, uv, git, gh, and DSH's global
+            # ~/.agents instructions and skills) now write dotfiles onto the PVC
+            # inside the agent workspace, so they are visible to the agent and
+            # in the file explorer. DSH_HOME is explicit (/home/node/.dsh), so
+            # sessions, config and credentials are unaffected. Existing
+            # sandboxes stamp pod env at creation and keep the old HOME until
+            # recreated. Keep in sync with the minimal variant:
+            # examples/minimal-single-tenant/manifests/sandbox-template.yaml.
+            - name: HOME
+              value: /workspace
             # Empty => DSH derives links from the request Host, which the
             # gateway forwards (plus X-Forwarded-*). Point this at the
             # gateway base URL if you want hard-coded absolute links instead.
