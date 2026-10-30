@@ -63,7 +63,7 @@ Values from [versions.env](../versions.env) at the current identity:
 | DSH ref | `dsh-v0.2.1-rc.5` | `DSH_VERSION` |
 | Repository revision | `(empty)` | `RELEASE_REVISION` |
 | pnpm | `11.28.5` | `PNPM_VERSION` |
-| agent-sandbox (CRDs) | `v1.0.8` | `AGENT_SANDBOX_VERSION`, used by the examples and CI dry-run |
+| agent-sandbox (CRDs) | `v1.0.9` | `AGENT_SANDBOX_VERSION`, used by the examples and CI dry-run |
 | Kubernetes Gateway API | `v1.2.1` | `GATEWAY_API_VERSION`, used by the SSO exposure variant |
 | oauth2-proxy | `quay.io/oauth2-proxy/oauth2-proxy:v7.15.5` | `OAUTH2_PROXY_IMAGE` |
 | Main image | `ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox` | `GHCR_IMAGE` |
