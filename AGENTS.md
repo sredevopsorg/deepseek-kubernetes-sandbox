@@ -49,7 +49,7 @@ before changing anything; it encodes the conventions the CI enforces.
 | examples/minimal-single-tenant/ | The just-one-DSH-Web quickstart |
 | scripts/ | check-versions.sh, check-examples.sh, check-manifests.py, set-version.sh |
 | .dsh/skills/ | Project-local DSH skills (auto-discovered); dsh-agent-sandbox-platform covers platform operation, MCP limits and extension recipes |
-| .github/workflows/ | ci.yaml, reusable _build-image.yaml, build-*, release.yaml, e2e-kind.yaml, pr-title.yaml, codeql.yml |
+| .github/workflows/ | ci.yaml (lint, dependency-review), ci-python.yaml, ci-manifests.yaml, reusable _build-image.yaml, build-*, release.yaml, e2e-kind.yaml, pr-title.yaml, codeql.yml |
 
 ## Commands
 
@@ -99,8 +99,7 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 - Branch names: feat/, fix/, docs/, chore/, refactor/, test/.
 - Conventional Commit subjects and PR titles (feat(scope): ..., fix(scope): ...).
 - PRs are squash-merged; main stays linear and protected.
-- Required checks: lint, python, manifests, gateway-image, pr-title, CodeQL,
-  dependency-review.
+- Required checks: lint, python, manifests, pr-title, CodeQL, dependency-review.
 - Keep diffs scoped; update docs with the code; never mix a version bump with
   unrelated changes.
 

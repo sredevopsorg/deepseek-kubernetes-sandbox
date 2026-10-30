@@ -42,13 +42,23 @@ branch; the PR is squash-merged, so individual branch commits are never part of
 
 | Check | Workflow / job | What it verifies |
 | --- | --- | --- |
-| `lint` | `ci.yaml` | `scripts/check-versions.sh` (version pins and markdown tokens), ruff on the gateway, shellcheck on shell scripts, yamllint/actionlint when available. |
-| `python` | `ci.yaml` | Gateway unit tests (`pytest`). |
-| `manifests` | `ci.yaml` | `scripts/check-examples.sh`, `scripts/check-manifests.py` and a server-side dry-run of every example manifest against the agent-sandbox CRDs. |
-| `gateway-image` | `ci.yaml` | Builds the gateway image and smoke-tests `/healthz` without a cluster. |
+| `lint` | `ci.yaml` | `scripts/check-versions.sh` (version pins and markdown tokens), `scripts/check-examples.sh` (example layout), shellcheck, actionlint, yamllint, hadolint and documentation links. |
+| `python` | `ci-python.yaml` | Gateway ruff check/format and unit tests (`pytest` with coverage). Runs only when the gateway or this workflow changes. |
+| `manifests` | `ci-manifests.yaml` | `scripts/check-manifests.py` (manifest shape) and a server-side dry-run of every example manifest against the agent-sandbox CRDs. Runs only when manifests, check scripts or `versions.env` change. |
 | `pr-title` | `pr-title.yaml` | Conventional Commit PR title. |
 | `CodeQL` | `codeql.yml` | Static analysis for Python and GitHub Actions. |
 | `dependency-review` | `ci.yaml` | Dependency changes introduced by the PR (job `dependency-review`; runs on pull requests only). |
+
+`python` and `manifests` use native `on.pull_request.paths` filtering, so PRs that
+do not touch the gateway or the manifests skip them. The gateway image build and
+`/healthz` are no longer smoke-tested in a dedicated job: `/healthz` is covered by
+the gateway unit tests, the Dockerfile is linted by `lint` (hadolint), and the
+multi-arch image build is published by `build-gateway.yaml` on merge.
+
+Because a skipped path-filtered check is not a passing check, only the always-on
+checks (`lint`, `pr-title`, `CodeQL`, `dependency-review`) should be enforced as
+required status checks; `python` and `manifests` are on-demand checks that skip
+when unrelated to the change.
 
 The image build workflows (`_build-image.yaml`, `build-main.yaml`,
 `build-gateway.yaml`) and `e2e-kind.yaml` are **not** required on every PR: the
@@ -105,10 +115,10 @@ respectively.
 Configure these on the repository before relying on the workflow:
 
 - [ ] **Branches → main**: require a pull request; require the checks `lint`,
-      `python`, `manifests`, `gateway-image`, `pr-title`, `CodeQL`,
-      `dependency-review`; require branches to be up to date; require conversation
-      resolution; restrict direct pushes; allow only squash merges and enable
-      "Automatically delete head branches".
+      `python`, `manifests`, `pr-title`, `CodeQL`, `dependency-review`; require
+      branches to be up to date; require conversation resolution; restrict direct
+      pushes; allow only squash merges and enable "Automatically delete head
+      branches".
 - [ ] **Branches → release/***: same protections, plus allow the release workflow
       to push tags.
 - [ ] **Tags → dsh-***: restrict creation/update/deletion to maintainers; a tag

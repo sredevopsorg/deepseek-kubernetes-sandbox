@@ -43,8 +43,8 @@ Install the gateway dev dependencies once:
 - Use a Conventional Commit title, for example feat(gateway): add wake metrics
   or docs(examples): clarify SSO trust boundary. PR titles are linted.
 - Keep the diff scoped. Squash merge into main; history stays linear.
-- Required checks: lint, python, manifests, gateway-image, pr-title, CodeQL,
-  and dependency-review. Branch protection is described in docs/gitflow.md.
+- Required checks: lint, python, manifests, pr-title, CodeQL, and
+  dependency-review. Branch protection is described in docs/gitflow.md.
 - Update the docs that the change affects; docs are part of the change, not a
   follow-up.
 - Never commit a real secret. Secret-shaped YAML belongs in a *.yaml.example
