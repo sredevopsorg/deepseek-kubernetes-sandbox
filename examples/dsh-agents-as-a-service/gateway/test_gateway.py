@@ -8,6 +8,7 @@ use Starlette's ``TestClient`` (which runs the lifespan) against a fake
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import threading
@@ -261,6 +262,43 @@ def asgi_client(env, cookies=None):
 
 def stale_handshake(env):
     env.gateway.state.handshake[("alice", POD_UID, "gateway.test")] = "dsh-auth-a=stale"
+
+
+def raw_scope(method, path, headers=()):
+    """An ASGI HTTP scope for driving the app without an httpx client.
+
+    ``spec_version`` matches what uvicorn 0.54 advertises (2.3), which is what
+    puts ``StreamingResponse`` on its disconnect-listening path.
+    """
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "server": ("gateway.test", 80),
+        "client": ("10.0.0.9", 4321),
+        "headers": [(b"host", b"gateway.test"), *headers],
+    }
+
+
+async def asgi_call(env, scope, receive):
+    """Drive the app with a scripted ``receive`` and return the sent messages.
+
+    An exception escaping the app fails the test, which is exactly how a
+    ``ClientDisconnect``-induced traceback used to surface.
+    """
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    await env.app(scope, receive, send)
+    return sent
 
 
 # --- pure helpers ----------------------------------------------------------
@@ -1046,6 +1084,162 @@ async def test_proxy_body_limit_returns_413(env):
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
     assert response.status_code == 413
+    assert env.gateway.state.in_flight["alice"] == 0
+
+
+@pytest.mark.asyncio
+async def test_proxy_client_disconnect_mid_body_returns_499(env):
+    """An aborted upload is answered 499 quietly and never reaches DSH."""
+    add_user(env.k8s)
+    messages = [
+        {"type": "http.request", "body": b"partial", "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+
+    async def receive():
+        return messages.pop(0)
+
+    sent = await asgi_call(
+        env,
+        raw_scope(
+            "POST",
+            "/u/alice/api/echo",
+            headers=[
+                (b"origin", b"http://gateway.test"),
+                (b"cookie", f"dsh_gw_session=alice:{TOKEN}".encode()),
+                (b"content-type", b"application/json"),
+            ],
+        ),
+        receive,
+    )
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert [start["status"] for start in starts] == [499]
+    assert env.upstream.proxy_requests == []
+    assert env.gateway.state.in_flight["alice"] == 0
+
+
+@pytest.mark.asyncio
+async def test_signup_client_disconnect_mid_body_returns_499(env):
+    """Body-reading control routes get the same treatment, not just the proxy."""
+    messages = [
+        {"type": "http.request", "body": b'{"user": "ali', "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+
+    async def receive():
+        return messages.pop(0)
+
+    sent = await asgi_call(
+        env,
+        raw_scope("POST", "/users", headers=[(b"content-type", b"application/json")]),
+        receive,
+    )
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert [start["status"] for start in starts] == [499]
+    assert env.k8s.claims == {}
+
+
+@pytest.mark.asyncio
+async def test_proxy_client_disconnect_mid_stream_frees_slot(env):
+    """Closing an open SSE-style stream frees the slot without a traceback."""
+    add_user(env.k8s)
+    first_chunk = asyncio.Event()
+
+    class SlowStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"chunk-one"
+            first_chunk.set()
+            await asyncio.Event().wait()  # the upstream stream stays open
+
+    env.upstream.proxy_handler = lambda request: httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, stream=SlowStream()
+    )
+    messages = [{"type": "http.request", "body": b"", "more_body": False}]
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        await first_chunk.wait()
+        return {"type": "http.disconnect"}
+
+    sent = await asgi_call(
+        env,
+        raw_scope(
+            "GET",
+            "/u/alice/api/stream",
+            headers=[(b"cookie", f"dsh_gw_session=alice:{TOKEN}".encode())],
+        ),
+        receive,
+    )
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert [start["status"] for start in starts] == [200]
+    assert env.gateway.state.in_flight["alice"] == 0
+
+
+@pytest.mark.asyncio
+async def test_release_frees_slot_even_when_cancelled(env):
+    """A cancelled request must still return its in-flight slot.
+
+    Starlette cancels the streaming task through an anyio cancel scope when the
+    client disconnects, and the cancellation can land inside ``_relay``'s
+    ``finally``.  Waiting for ``state.lock`` there would strand the slot, which
+    keeps the sandbox looking busy forever.
+    """
+    env.gateway.state.in_flight["alice"] = 1
+    await env.gateway.state.lock.acquire()
+    try:
+        task = asyncio.create_task(env.gateway._release("alice"))
+        await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        env.gateway.state.lock.release()
+    assert env.gateway.state.in_flight["alice"] == 0
+
+
+@pytest.mark.asyncio
+async def test_proxy_client_disconnect_survives_cancelled_upstream_close(env):
+    """A cancellation that lands inside ``upstream.aclose()`` must not skip the release.
+
+    CancelledError is a BaseException, so ``contextlib.suppress(Exception)``
+    around the close would let it escape before ``_release`` ran.  A real
+    network close awaits, which is where the cancel scope delivers it.
+    """
+    add_user(env.k8s)
+    first_chunk = asyncio.Event()
+
+    class ClosingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"chunk-one"
+            first_chunk.set()
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            await asyncio.sleep(0)  # a checkpoint for the cancel scope
+
+    env.upstream.proxy_handler = lambda request: httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, stream=ClosingStream()
+    )
+    messages = [{"type": "http.request", "body": b"", "more_body": False}]
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        await first_chunk.wait()
+        return {"type": "http.disconnect"}
+
+    sent = await asgi_call(
+        env,
+        raw_scope(
+            "GET",
+            "/u/alice/api/stream",
+            headers=[(b"cookie", f"dsh_gw_session=alice:{TOKEN}".encode())],
+        ),
+        receive,
+    )
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert [start["status"] for start in starts] == [200]
     assert env.gateway.state.in_flight["alice"] == 0
 
 

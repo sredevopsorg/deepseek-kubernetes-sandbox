@@ -135,6 +135,10 @@ Handshake cache behavior: one entry per `(user, pod UID, Host)`; refreshed once 
 `401`; dropped when the sandbox is suspended or deleted. The launch token and the DSH auth
 cookie never reach the browser.
 
+Inside `proxy_http` the order is auth, in-flight slot, sandbox resolution/wake, DSH handshake,
+body read, upstream send. An upload aborted mid-body may therefore already have paid for a wake
+and a handshake, but it never reaches DSH.
+
 ### Wake-on-connect and idle suspend
 
 ```mermaid
@@ -317,6 +321,7 @@ Notes and limits:
 | Probe on `/` | Pod `CrashLoopBackOff`, `401` in probe logs | Use `/favicon.svg` for readiness/liveness (shipped templates do) |
 | Warm pool exhausted | JSON signup returns `202` (state `Waking`); form signup is slow | Increase `replicas` in the warm pool |
 | Gateway restart | Idle sandboxes stop suspending; handshake cache lost | Rebuilt lazily on next request; consider a shared store for production |
+| Browser aborts a request (tab reload, back navigation) during a slow wake or handshake | No response reaches the client; nothing appears in the access log | If the abort lands before the response starts, the body read raises `ClientDisconnect` and the app answers `499` (`CLIENT_CLOSED_REQUEST`), which cannot reach the departed peer. Nothing reached DSH, no ERROR traceback is logged, and the in-flight slot is released. A request already streaming ends with its upstream status. Before the fix every mid-body abort logged a `ClientDisconnect` traceback |
 | DSH auth cookie expired mid-session | Proxy `401` once, then recovers | Gateway refreshes the handshake once |
 | Upstream pod name changed after resume | Cached cookie keyed by old pod UID is useless | Cache is invalidated on suspend; next request re-handshakes |
 | Two gateway replicas | Double suspend/wake races | Keep `replicas: 1` until state is externalized |
