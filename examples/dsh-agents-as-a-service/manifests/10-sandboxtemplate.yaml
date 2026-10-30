@@ -102,6 +102,20 @@ spec:
             # dsh-demo.example.com for the gateway-api-sso/ HTTPRoute).
             - name: DSH_TRUSTED_HOSTS
               value: ""
+            # DSH confines every bash command with its own file sandbox
+            # (bubblewrap, else Landlock). Neither backend is usable inside this
+            # pod: bubblewrap ships in the image but is unsetuid, so it needs an
+            # unprivileged user namespace that the pod's RuntimeDefault seccomp
+            # and dropped capabilities do not grant, and the runtime/kernel
+            # surface here exposes no Landlock runner. The executor therefore
+            # fails closed with SANDBOX_UNAVAILABLE and every command fails. The
+            # pod is the isolation boundary in this example (one pod
+            # per user, non-root, capabilities dropped, seccomp RuntimeDefault,
+            # a private PVC), so trade DSH's inner file policy for a working
+            # agent. Set this to workspace-write (or read-only) on hosts where a
+            # backend is available; see the README troubleshooting row.
+            - name: DSH_PERMISSION_MODE
+              value: danger-full-access
           # Probes target /favicon.svg: DSH gates / behind its launch-token
           # cookie and answers 401 to an unauthenticated GET, which would
           # otherwise fail readiness and then get the pod killed by liveness.

@@ -123,6 +123,16 @@ kubectl -n "$NS" patch sandboxwarmpool "$POOL" --type merge -p '{"spec":{"replic
   `0600`; the template uses `fsGroupChangePolicy: OnRootMismatch`. If a resumed
   sandbox crash-loops with a mode-660 error, suspend it, fix the file with a
   throwaway pod, patch the policy, then resume.
+- Agent files live at `/workspace`, the same PVC mounted with
+  `subPath: workspace`; it survives suspend/resume and dies with the PVC.
+- DSH confines bash with its own file sandbox (`bubblewrap`, else Landlock) and
+  fails closed with `SANDBOX_UNAVAILABLE` when neither works. The image ships
+  `bubblewrap`, but it is unsetuid and needs an unprivileged user namespace that
+  this hardened pod (all capabilities dropped, RuntimeDefault seccomp) does not
+  grant; that plus no Landlock runner is why the template sets
+  `DSH_PERMISSION_MODE=danger-full-access` and treats the pod as the boundary.
+  Never "fix" it by granting `CAP_SYS_ADMIN` or `seccompProfile: Unconfined`
+  without an explicit decision.
 
 ## 8. Gateway layer
 

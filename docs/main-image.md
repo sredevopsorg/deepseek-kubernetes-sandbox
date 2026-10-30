@@ -18,7 +18,8 @@ The Dockerfile is a two-stage build:
    CLI with `pnpm pack`, and installs its production dependencies with npm.
 2. **Runtime stage** (`node:24-trixie-slim`) copies `/opt/dsh` to `/app`, adds the
    CLI tools DSH agents commonly use (`git`, `ripgrep`, `jq`, `yq`, `curl`, `wget`,
-   `gh`, `tini`, `uv`), and starts `dsh web` through a small entrypoint.
+   `gh`, `tini`, `uv`), installs `bubblewrap` as DSH's preferred command-sandbox
+   runner, and starts `dsh web` through a small entrypoint.
 
 ## Build it
 
@@ -27,6 +28,9 @@ make image          # canonical: builds the DSH Web image, no push
 ```
 
 `make image` reads [versions.env](../versions.env) and passes the pins as build args.
+Pull requests that touch `Dockerfile`, `.dockerignore` or `versions.env` get the
+same build for `linux/amd64` from the [`ci-image.yaml`](../.github/workflows/ci-image.yaml)
+workflow — no registry login, no push — followed by a container smoke test.
 To reproduce the equivalent by hand:
 
 ```bash
@@ -76,9 +80,23 @@ The entrypoint is `tini -- /usr/local/bin/dsh-entrypoint`:
 | `DSH_TRUSTED_HOSTS` | empty | Extra `Host`/`Origin` allow-list entries, comma- or space-separated. `localhost`/`127.0.0.1` are always trusted. Required when a proxy forwards the browser's `Host`. |
 | `DEEPSEEK_API_KEY` | empty | Provider credential read by DSH. Inject it with `-e`/`envFrom`; never bake it into the image. Only model calls fail when it is missing. |
 | `DSH_HOME` | `/home/node/.dsh` | DSH state directory (conversations, sessions, config, credentials). Mount a volume here to persist it. |
+| `DSH_PERMISSION_MODE` | `workspace-write` | Deployment default for DSH's file policy: `read-only`, `workspace-write`, or `danger-full-access` (which also turns approval prompts off). The confined modes need `bubblewrap` or Landlock inside the container; where neither is usable every bash command fails closed with `SANDBOX_UNAVAILABLE`. See the note below. |
 
 The image also sets `NODE_ENV=production`, `HOME=/home/node`, and a `PATH` that
 includes `/app/node_modules/.bin`.
+
+DSH confines bash commands itself (a second layer inside whatever container
+sandbox you already run). Its Linux runners are `bubblewrap` and then Landlock,
+and it fails closed rather than running unconfined. The image ships
+`bubblewrap`, but Debian's binary is unsetuid: it needs **unprivileged user
+namespaces** plus the namespace/mount syscalls. A hardened pod — non-root,
+`capabilities.drop: ["ALL"]`, `seccompProfile: RuntimeDefault` — usually cannot
+create one, and it may expose no Landlock runner either, in which case every
+command fails with `SANDBOX_UNAVAILABLE`. Set
+`DSH_PERMISSION_MODE=danger-full-access` only when the surrounding pod or VM is
+the isolation boundary you rely on; keep the confined modes when the host
+provides a working runner (check `grep -o landlock /sys/kernel/security/lsm` and
+`bwrap --ro-bind / / true` inside the container first).
 
 ### Provider credentials
 

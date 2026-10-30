@@ -588,6 +588,7 @@ is non-recursive, so the optional manifest is not applied by the base step.
 | Step 3: `pod "$SB" not found` after deploying the gateway | The claim was suspended by the idle sweeper. Claims created by the gateway carry `aaas.example.com/managed-by=dsh-gateway`; hand-applied claims (steps 1–7) do not and are never swept. Resume the sandbox: `kubectl -n dsh-demo patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Running"}}'` |
 | Resume crash-loops: `credentials-local: … is readable beyond its owner (mode 660)` | The pod template lacks `fsGroupChangePolicy: OnRootMismatch`, so the kubelet's default fsGroup policy rewrote `.credentials.yaml` to `0660`; DSH requires `0600` and refuses to start. New installs get the policy from the template. For an existing sandbox: suspend it, run a throwaway pod on `dsh-home-$SB` to `chmod 600 /home/node/.dsh/.credentials.yaml`, patch the sandbox's `podTemplate` with the policy, then resume |
 | Agents get `Permission denied` writing to `/workspace` on a fresh or resumed pod | The `/workspace` mount is the `dsh-home` PVC's `workspace/` subPath, and the kubelet is known to leave a `subPath` directory at `0755` if it is interrupted between creating and chmodding it ([kubernetes#142464](https://github.com/kubernetes/kubernetes/issues/142464)); later mounts never correct it. Suspend the sandbox, run a throwaway pod on `dsh-home-$SB` mounted at `/data`, `chmod 2775 /data/workspace` (do **not** chown/chmod recursively — that rewrites `.credentials.yaml`), then resume. If you recreate the sandbox instead, its current `/workspace` contents go with the PVC |
+| Every bash command fails: `SANDBOX_UNAVAILABLE`, `sandbox mode "workspace-write" is requested but no sandbox backend is usable` | DSH's own command sandbox found neither backend: `bubblewrap` ships in the image but is unsetuid, so it needs an unprivileged user namespace this hardened pod does not grant, and no Landlock runner exists on this kernel/runtime — the confined executor fails closed. The template sets `DSH_PERMISSION_MODE=danger-full-access` to keep agents usable inside the pod boundary. To restore confinement, confirm a backend inside the pod (`bwrap --ro-bind / / true`; `grep -o landlock /sys/kernel/security/lsm`), set `DSH_PERMISSION_MODE=workspace-write` (or `read-only`), and recreate the pod — the value is stamped at creation. A session that explicitly chose a mode keeps that choice |
 | SSO: GitHub login succeeds but the gateway asks for a token / returns `401` to `/recreate` | `AUTH_PROXY_HEADER` is not set on `deploy/dsh-gateway` (SSO is opt-in). Set `AUTH_PROXY_HEADER=X-Forwarded-User` and confirm the request actually reaches the gateway through oauth2-proxy |
 | SSO: gateway treats a caller as another user / bad `X-Forwarded-User` accepted | Trust boundary violation: something other than oauth2-proxy can reach `dsh-gateway:8080`. Remove the second path (Ingress/Gateway/port-forward), keep the Service ClusterIP, and only re-enable SSO once the proxy is the sole entry point. Never put a trusted identity header in front of a service that is directly reachable |
 | SSO: oauth2-proxy `cookie_secret must be 16, 24, or 32 bytes ... but is 44 bytes` | The cookie secret was generated as standard base64. Use URL-safe unpadded base64 (see `73-oauth2-proxy-secret.yaml.example`) |
@@ -622,6 +623,19 @@ Deliberately **not** production code:
   to oauth2-proxy and oauth2-proxy egress to the gateway/DNS/public HTTPS; a
   custom exposure without that policy has no signature, mTLS or network
   enforcement.
+- **DSH's inner file sandbox is off here.** The template sets
+  `DSH_PERMISSION_MODE=danger-full-access` because neither backend of DSH's own
+  command sandbox is usable in this pod: `bubblewrap` is installed in the image
+  but is unsetuid, so it needs an unprivileged user namespace that the pod's
+  seccomp/capability surface does not grant (`capabilities.drop: ["ALL"]`), and
+  the kernel/runtime exposes no Landlock runner. The executor therefore fails
+  closed with `SANDBOX_UNAVAILABLE` and every bash command fails. The per-user
+  pod remains the boundary — non-root,
+  capabilities dropped, `seccompProfile: RuntimeDefault`, its own PVC and Service
+  — but an agent command can now read its own `DSH_HOME` (including
+  `.credentials.yaml`) and write anywhere in the container. On hosts where a
+  backend works, set `workspace-write` (or `read-only`) and verify before relying
+  on the inner policy.
 - **Isolation is opt-in.** gVisor, the sandbox NetworkPolicy and the exposure
   policies are opt-in; without them, sandboxes share the host kernel and can
   reach the cluster network. The base example is a demo, not a hardened

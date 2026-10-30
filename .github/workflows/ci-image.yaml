@@ -1,0 +1,126 @@
+# Build-only check for the main DSH Web image: linux/amd64, no registry login,
+# no push. It proves the Dockerfile still builds from the pinned versions.env and
+# that the resulting image can actually run DSH Web. The published multi-arch
+# build stays in build-main.yaml (merge to main) and release.yaml (tags).
+#
+# Like ci-python.yaml and ci-manifests.yaml this is path-filtered, so it is an
+# on-demand check rather than a required status check.
+name: CI image
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - versions.env
+      - .github/workflows/ci-image.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-image-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-amd64:
+    name: build-amd64
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read versions.env
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          # shellcheck disable=SC1091
+          source versions.env
+          set +a
+          identity="$DSH_VERSION"
+          [ -z "${RELEASE_REVISION:-}" ] || identity="$DSH_VERSION-$RELEASE_REVISION"
+          {
+            echo "identity=$identity"
+            echo "dsh_version=$DSH_VERSION"
+            echo "pnpm_version=$PNPM_VERSION"
+            echo "release_revision=${RELEASE_REVISION:-}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build linux/amd64 (load locally, never push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: dsh-web:ci
+          build-args: |
+            DSH_VERSION=${{ steps.meta.outputs.dsh_version }}
+            RELEASE_REVISION=${{ steps.meta.outputs.release_revision }}
+            PNPM_VERSION=${{ steps.meta.outputs.pnpm_version }}
+            VCS_REF=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.identity }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=ci-image-linux-amd64
+          cache-to: type=gha,mode=max,scope=ci-image-linux-amd64
+
+      - name: Smoke test the image
+        env:
+          IDENTITY: ${{ steps.meta.outputs.identity }}
+          DSH_VERSION: ${{ steps.meta.outputs.dsh_version }}
+        run: |
+          set -euo pipefail
+          image=dsh-web:ci
+
+          # The packaged CLI runs and reports the version pinned in versions.env.
+          version="$(docker run --rm --entrypoint node "$image" /app/lib/bin.js --version)"
+          printf 'DSH CLI: %s\n' "$version"
+          grep -q "${DSH_VERSION#dsh-v}" <<<"$version"
+
+          # The container runs as the non-root node user and its writable
+          # directories exist and are owned by that user.
+          [ "$(docker run --rm --entrypoint id "$image" -u)" = "1000" ]
+          docker run --rm --entrypoint sh "$image" -c \
+            'test -d /workspace && test -d "$DSH_HOME" && [ "$(stat -c %u /workspace)" = 1000 ]'
+
+          # The command-sandbox runner this image is expected to ship.
+          docker run --rm --entrypoint bwrap "$image" --version
+
+          # Labels come from the build args rather than a hard-coded value.
+          label="$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")"
+          printf 'image version label: %s\n' "$label"
+          [ "$label" = "$IDENTITY" ]
+
+      - name: Serve DSH Web
+        run: |
+          set -euo pipefail
+          docker run -d --name dsh-ci -p 18080:3080 \
+            -e DSH_TRUSTED_HOSTS=127.0.0.1:18080 dsh-web:ci >/dev/null
+          trap 'docker rm -f dsh-ci >/dev/null 2>&1 || true' EXIT
+
+          # /favicon.svg is unauthenticated and served by the web layer, which is
+          # why the shipped probes use it too.
+          for second in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:18080/favicon.svg; then
+              printf 'DSH Web served /favicon.svg after ~%ss\n' "$((second * 2))"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::DSH Web did not serve /favicon.svg within 120s"
+          # Pod logs can hold the DSH launch token: never dump them verbatim.
+          docker logs dsh-ci 2>&1 | grep -v 'token=' | tail -50 || true
+          exit 1
