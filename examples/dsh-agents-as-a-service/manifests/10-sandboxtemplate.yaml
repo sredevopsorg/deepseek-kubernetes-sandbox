@@ -73,7 +73,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: dsh-web
-          image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.3-r4
+          image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5
           imagePullPolicy: IfNotPresent
           ports:
             - name: web

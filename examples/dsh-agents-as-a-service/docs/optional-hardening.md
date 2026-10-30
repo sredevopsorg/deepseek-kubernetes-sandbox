@@ -413,7 +413,7 @@ Secrets; when the same key exists twice, the later `envFrom` entry wins.
 
 ### Supported names (curated)
 
-These are the names DSH v0.2.1-rc.3 resolves through its packaged provider
+These are the names the pinned DSH release resolves through its packaged provider
 catalog; the catalog has more entries, these are the common ones:
 
 | Provider | Environment variable |
