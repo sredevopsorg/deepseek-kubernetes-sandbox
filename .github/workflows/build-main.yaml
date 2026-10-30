@@ -13,11 +13,9 @@ on:
       - .github/workflows/build-main.yaml
       - .github/workflows/_build-image.yaml
 
+# Write scopes are granted to the build job only; every other job stays read-only.
 permissions:
   contents: read
-  packages: write
-  id-token: write
-  attestations: write
 
 concurrency:
   group: build-main-${{ github.ref }}

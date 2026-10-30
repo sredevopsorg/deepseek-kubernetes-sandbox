@@ -15,6 +15,7 @@ gets a DSH Web container running before anything else.
 | [examples.md](examples.md) | The example contract: required layout, manifest rules, exposure variants, components and image naming, scripts, docs, and how to add a new example. |
 | [gitflow.md](gitflow.md) | Branches, protected `main`, squash merges, Conventional PR titles, required CI checks, release branches, hotfixes and the one-time GitHub settings checklist. |
 | [versioning.md](versioning.md) | Release identity (`DSH ref` + optional `-rN`), the current identity `dsh-v0.2.1-rc.5`, why identities are immutable, channels, compatibility matrix, bumping pins, the release checklist, rollback, git-cliff and digest pinning. |
+| [workflow-security.md](workflow-security.md) | GitHub Actions security posture: least-privilege tokens, pinned actions, untrusted-input handling, download integrity checks, artifact hygiene, the latest audit record and residual repository-setting recommendations. |
 
 ## Project skills
 

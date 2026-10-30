@@ -37,19 +37,29 @@ jobs:
       - name: Install actionlint
         env:
           ACTIONLINT_VERSION: v1.7.12
+          # SHA-256 of actionlint_1.7.12_linux_amd64.tar.gz, published in the
+          # release's actionlint_1.7.12_checksums.txt. Update it with the version.
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
           set -euo pipefail
           version="${ACTIONLINT_VERSION#v}"
-          curl -fsSL -o /tmp/actionlint.tar.gz             "https://github.com/rhysd/actionlint/releases/download/$ACTIONLINT_VERSION/actionlint_${version}_linux_amd64.tar.gz"
-          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          asset="actionlint_${version}_linux_amd64.tar.gz"
+          curl -fsSL --proto '=https' -o "/tmp/$asset" \
+            "https://github.com/rhysd/actionlint/releases/download/$ACTIONLINT_VERSION/$asset"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "/tmp/$asset" | sha256sum -c -
+          tar -xzf "/tmp/$asset" -C /tmp actionlint
           install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
           actionlint -version
       - name: Install hadolint
         env:
           HADOLINT_VERSION: v2.12.0
+          # SHA-256 of hadolint-Linux-x86_64, published next to the download.
+          HADOLINT_SHA256: 56de6d5e5ec427e17b74fa48d51271c7fc0d61244bf5c90e828aab8362d55010
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/hadolint             "https://github.com/hadolint/hadolint/releases/download/$HADOLINT_VERSION/hadolint-Linux-x86_64"
+          curl -fsSL --proto '=https' -o /tmp/hadolint \
+            "https://github.com/hadolint/hadolint/releases/download/$HADOLINT_VERSION/hadolint-Linux-x86_64"
+          printf '%s  %s\n' "$HADOLINT_SHA256" /tmp/hadolint | sha256sum -c -
           install -m 0755 /tmp/hadolint /usr/local/bin/hadolint
           hadolint --version
       - name: Repository checks
