@@ -72,6 +72,15 @@ pass "claim Ready in ${ELAPSED}s, adopted $SB"
 
 echo "=== 3. write state on the PVC"
 POD="$SB"
+# HOME must point at the PVC-backed workspace: DSH's directory picker lists
+# $HOME when it opens and has no start-path setting, so this is what makes the
+# folder explorer start on the persisted tree instead of the ephemeral image
+# home. It also makes ~ resolve to /workspace inside agent commands.
+HOME_VALUE=$(kubectl -n "$NS" exec "$POD" -- printenv HOME)
+[ "$HOME_VALUE" = "/workspace" ] || fail "HOME is '$HOME_VALUE', expected /workspace"
+TILDE=$(kubectl -n "$NS" exec "$POD" -- sh -c 'cd ~ && pwd')
+[ "$TILDE" = "/workspace" ] || fail "~ resolves to '$TILDE', expected /workspace"
+pass "HOME=$HOME_VALUE and ~ resolve to the workspace"
 kubectl -n "$NS" exec "$POD" -- sh -c 'echo "remember me" > /home/node/.dsh/marker.txt'
 pass "state marker written in $POD"
 # The agent workspace must be the dsh-home PVC's workspace/ subPath, writable

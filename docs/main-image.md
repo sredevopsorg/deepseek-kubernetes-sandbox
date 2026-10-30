@@ -80,10 +80,25 @@ The entrypoint is `tini -- /usr/local/bin/dsh-entrypoint`:
 | `DSH_TRUSTED_HOSTS` | empty | Extra `Host`/`Origin` allow-list entries, comma- or space-separated. `localhost`/`127.0.0.1` are always trusted. Required when a proxy forwards the browser's `Host`. |
 | `DEEPSEEK_API_KEY` | empty | Provider credential read by DSH. Inject it with `-e`/`envFrom`; never bake it into the image. Only model calls fail when it is missing. |
 | `DSH_HOME` | `/home/node/.dsh` | DSH state directory (conversations, sessions, config, credentials). Mount a volume here to persist it. |
+| `HOME` | `/home/node` | OS home: where `~` resolves and where tools keep caches and config. DSH's directory picker has no start-path setting, so it lists `$HOME` when opened. The shipped sandbox templates override it to `/workspace` so the picker opens on the persisted workspace; the trade-offs are below. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | Deployment default for DSH's file policy: `read-only`, `workspace-write`, or `danger-full-access` (which also turns approval prompts off). The confined modes need `bubblewrap` or Landlock inside the container; where neither is usable every bash command fails closed with `SANDBOX_UNAVAILABLE`. See the note below. |
 
 The image also sets `NODE_ENV=production`, `HOME=/home/node`, and a `PATH` that
 includes `/app/node_modules/.bin`.
+
+`HOME` decides where DSH's folder picker starts. DSH has no start-path setting:
+the picker's browse backend lists `$HOME` when the dialog opens and labels that
+listing *Home*. With the image default (`/home/node`) that listing is outside a
+mounted volume; the example sandbox templates
+([minimal](../examples/minimal-single-tenant/manifests/sandbox-template.yaml),
+[agents as a service](../examples/dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml))
+set `HOME=/workspace` so the picker opens on the persisted agent workspace. `~`
+and every tool that keeps caches or config under `$HOME` (`npm`/`pnpm`, `uv`,
+`git`, `gh`, DSH's global `~/.agents` instructions and skills) follow, so those
+dotfiles then live on the workspace volume too. `DSH_HOME` is separate and stays
+`/home/node/.dsh`, so sessions, config and credentials stay out of the
+workspace. An existing sandbox stamps this environment at pod creation, so the
+override only applies to sandboxes created after it was added.
 
 DSH confines bash commands itself (a second layer inside whatever container
 sandbox you already run). Its Linux runners are `bubblewrap` and then Landlock,
@@ -126,7 +141,7 @@ procedure.
 | --- | --- | --- |
 | Exposed port | `3080/tcp` | `EXPOSE 3080`; one port serves the UI, assets, API, SSE and WebSocket traffic. |
 | State volume | `/home/node/.dsh` | Declared with `VOLUME`; use a named volume (Docker) or PVC (Kubernetes). |
-| Working directory | `/workspace` | The agent workspace. Mount a volume here if agents should keep files; the agents-as-a-service example mounts the same PVC's `workspace` subPath here. |
+| Working directory | `/workspace` | The agent workspace. Mount a volume here if agents should keep files; the agents-as-a-service example mounts the same PVC's `workspace` subPath here and points `HOME` at it, so DSH's folder picker opens on it. |
 | Stop signal | `SIGTERM` | `tini` forwards it to `dsh web`; allow a graceful shutdown period. |
 | User | `node`, UID/GID `1000` | The process is non-root. A PVC mounted at `DSH_HOME` must be writable by UID 1000. |
 

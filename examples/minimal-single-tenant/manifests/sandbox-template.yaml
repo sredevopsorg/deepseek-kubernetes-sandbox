@@ -69,6 +69,21 @@ spec:
                 name: dsh-provider-keys-extra
                 optional: true
           env:
+            # Point the OS home at the persisted agent workspace. DSH's
+            # directory picker (the folder explorer used to choose a workspace)
+            # lists $HOME when it opens and has no start-path setting, so with
+            # the image default (/home/node, not on a volume) it would open on a
+            # throwaway directory. /workspace is the PVC-backed WORKDIR, so the
+            # picker opens on the tree that survives suspend/resume, and `~` in
+            # agent commands resolves there. Trade-off: tools that keep caches
+            # or config under $HOME (npm/pnpm, uv, git, gh, DSH's global
+            # ~/.agents instructions and skills) write dotfiles onto the PVC
+            # inside the agent workspace. DSH_HOME is explicit
+            # (/home/node/.dsh), so sessions, config and credentials are
+            # unaffected. Rationale in full at
+            # examples/dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml.
+            - name: HOME
+              value: /workspace
             # Empty => DSH derives links from the request Host. Keep it empty
             # when fronting the sandbox with a proxy/gateway.
             - name: DSH_PUBLIC_URL

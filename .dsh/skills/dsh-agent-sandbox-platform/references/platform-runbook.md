@@ -125,6 +125,15 @@ kubectl -n "$NS" patch sandboxwarmpool "$POOL" --type merge -p '{"spec":{"replic
   throwaway pod, patch the policy, then resume.
 - Agent files live at `/workspace`, the same PVC mounted with
   `subPath: workspace`; it survives suspend/resume and dies with the PVC.
+- The templates set `HOME=/workspace` (the image default is `/home/node`). DSH's
+  directory picker lists `$HOME` when it opens and has no start-path setting, so
+  this is what makes the folder explorer start on the persisted workspace; `~`
+  and `$HOME`-relative tool caches/config also resolve there. `DSH_HOME` remains
+  `/home/node/.dsh`, so state and credentials stay out of the workspace. Pod env
+  is stamped at sandbox creation: a sandbox created before the override keeps
+  the old `HOME` until it is recreated (or its `podTemplate` is patched and the
+  sandbox resumed). Verify with
+  `kubectl -n "$NS" exec "$POD" -- printenv HOME`.
 - DSH confines bash with its own file sandbox (`bubblewrap`, else Landlock) and
   fails closed with `SANDBOX_UNAVAILABLE` when neither works. The image ships
   `bubblewrap`, but it is unsetuid and needs an unprivileged user namespace that

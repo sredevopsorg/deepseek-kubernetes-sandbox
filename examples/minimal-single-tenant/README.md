@@ -101,6 +101,25 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 > example or a reachable Service instead; see
 > [optional hardening](../dsh-agents-as-a-service/docs/optional-hardening.md).
 
+## Folder picker and the workspace
+
+The template sets `HOME=/workspace`. DSH's directory picker (the folder explorer
+used to choose a workspace) has no start-path setting: it lists `$HOME` when it
+opens, so with the image default (`/home/node`) it would start on a directory that
+is not persisted. Pointing `HOME` at the PVC-backed workspace makes the picker
+open there (labelled *Home* in its breadcrumbs) and makes `~` in agent commands
+resolve to `/workspace`. The trade-off is that `$HOME`-relative tool caches and
+config (`.cache`, `.config`, `.local`, `.npm`, `.agents`) are written into the
+workspace on the PVC. DSH state is unaffected: `DSH_HOME` stays
+`/home/node/.dsh`. The rationale and the list of affected paths are in
+[`10-sandboxtemplate.yaml`](../dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml).
+
+Verify inside a running sandbox:
+
+```bash
+kubectl -n dsh-demo exec "$SB" -- printenv HOME   # /workspace
+```
+
 ## Network policy and optional hardening
 
 The template omits `networkPolicyManagement`, so the agent-sandbox controller

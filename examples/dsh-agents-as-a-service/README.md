@@ -201,6 +201,7 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 ## 4. Write state on the PVC
 
 ```bash
+kubectl -n dsh-demo exec "$SB" -- printenv HOME                        # /workspace
 kubectl -n dsh-demo exec "$SB" -- sh -c 'echo "remember me" > /home/node/.dsh/marker.txt'
 kubectl -n dsh-demo exec "$SB" -- sh -c 'echo "remember me too" > /workspace/marker.txt'
 ```
@@ -209,6 +210,20 @@ kubectl -n dsh-demo exec "$SB" -- sh -c 'echo "remember me too" > /workspace/mar
 `dsh-home` PVC mounted again with `subPath: workspace`. The two trees stay
 separate, so `.credentials.yaml` and the session store are never part of the
 agent-visible workspace.
+
+The template also sets `HOME=/workspace`. DSH's directory picker (the folder
+explorer used to choose a workspace) has no start-path setting: when it opens,
+its browse backend lists `$HOME`, so with the image default (`/home/node`, which
+is not on a volume) it would start outside the persisted tree. Pointing `HOME`
+at the workspace makes the picker open on it (labelled *Home* in its breadcrumbs)
+and makes `~` in agent commands mean `/workspace`. The trade-off is that tools
+keeping caches or config under `$HOME` (`npm`/`pnpm`, `uv`, `git`, `gh`, and
+DSH's global `~/.agents` instructions and skills) write dotfiles onto the PVC
+inside the agent workspace, where the agent and the file explorer can see them.
+`DSH_HOME` is explicit (`/home/node/.dsh`), so sessions, config and credentials
+are unaffected. Pod env is stamped when a sandbox is created: a sandbox from
+before this setting keeps `HOME=/home/node` until it is recreated (see
+[Troubleshooting](#troubleshooting)).
 
 ## 5. Suspend: delete the pod, keep the PVC + Service
 
@@ -599,6 +614,8 @@ is non-recursive, so the optional manifest is not applied by the base step.
 | Sandbox cannot reach a model API after applying the optional NetworkPolicy | The policy allows DNS and public TCP `443` only; a proxy, custom base URL, port `80` or non-443 endpoint needs an explicit egress rule |
 | Gateway cannot reach a sandbox after applying an exposure NetworkPolicy | Check that the CNI enforces NetworkPolicy and that the Traefik/oauth2-proxy pod labels match; kubelet probes may also need the node CIDR |
 | New provider key not visible in a sandbox | Pod env is stamped at creation: delete the warm-pool spares and recreate claimed pods. A key saved in DSH's credential store also wins over env |
+| Folder picker opens on `/home/node` instead of the workspace | The sandbox was created before the template set `HOME=/workspace`, and pod env is stamped at creation. Verify with `kubectl -n dsh-demo exec "$SB" -- printenv HOME`; patch the sandbox's `podTemplate` with the env (or recreate the sandbox — the PVC keeps DSH state and workspace) and resume |
+| File explorer and `ls /workspace` show `.cache`, `.config`, `.local`, `.npm`, `.agents` | Expected with `HOME=/workspace`: `~`-relative tool caches and DSH's global agent instructions/skills live on the PVC inside the workspace. Remove the `HOME` env from the template (and recreate the sandbox) if you would rather keep the picker on the ephemeral image home; point caches elsewhere per tool if only they are unwanted |
 | Sandbox reports `Finished=True` and every gateway request fails | The sandbox Pod reached phase `Failed` (node eviction, spot reclaim) and the default `Retain` keeps it. Delete the Pod so the controller recreates it, or set `failedPodPolicy: Recreate` (agent-sandbox v1.0.8+; see optional hardening) |
 
 ## Limitations
