@@ -6,8 +6,8 @@ platform pattern into pure agent-sandbox resources + kubectl, running **DeepSeek
 Harness Web (DSH)** instead of Hermes. Every user of such a platform gets a
 personal, long-lived DSH Web instance that is **provisioned in ~2 seconds from a
 warm pool, suspended when idle to save cost, and woken transparently when the
-user returns** — with all state (conversations, sessions, config) surviving on a
-per-user PVC at `/home/node/.dsh`.
+user returns** — with all state (conversations, sessions, config, and the agent
+workspace) surviving on the per-user PVC at `/home/node/.dsh` + `/workspace`.
 
 It ships in three layers:
 
@@ -46,7 +46,7 @@ What it demonstrates, feature by feature:
 
 | agent-sandbox feature | Role in the platform |
 | --- | --- |
-| `SandboxTemplate` with `volumeClaimTemplates` | Identical DSH pods; per-user state on a PVC at `/home/node/.dsh` |
+| `SandboxTemplate` with `volumeClaimTemplates` | Identical DSH pods; per-user state at `/home/node/.dsh` and the agent workspace at `/workspace`, on one PVC (the workspace is a `subPath` mount, so DSH state stays private) |
 | `envVarsInjectionPolicy` / `volumeClaimTemplatesPolicy: Disallowed` | Claims that would bypass the warm pool are **rejected loudly**, not cold-started silently |
 | `service: true` | Stable per-sandbox DNS (`status.serviceFQDN`) for the gateway to route on |
 | `SandboxWarmPool` | Signup latency is pre-paid: image pull, PVC provision, DSH boot all happen before any user exists |
@@ -202,7 +202,13 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 
 ```bash
 kubectl -n dsh-demo exec "$SB" -- sh -c 'echo "remember me" > /home/node/.dsh/marker.txt'
+kubectl -n dsh-demo exec "$SB" -- sh -c 'echo "remember me too" > /workspace/marker.txt'
 ```
+
+`/workspace` (the DSH image's `WORKDIR`, where agents keep files) is the same
+`dsh-home` PVC mounted again with `subPath: workspace`. The two trees stay
+separate, so `.credentials.yaml` and the session store are never part of the
+agent-visible workspace.
 
 ## 5. Suspend: delete the pod, keep the PVC + Service
 
@@ -219,13 +225,15 @@ kubectl -n dsh-demo get svc "$SB"            # still here
 kubectl -n dsh-demo patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Running"}}'
 kubectl -n dsh-demo wait sandbox "$SB" --for=condition=Ready --timeout=180s
 kubectl -n dsh-demo exec "$SB" -- cat /home/node/.dsh/marker.txt   # "remember me"
+kubectl -n dsh-demo exec "$SB" -- cat /workspace/marker.txt        # "remember me too"
 ```
 
 > **Why resume works:** the pod template sets `fsGroupChangePolicy: OnRootMismatch`.
 > DSH requires its `.credentials.yaml` to be `0600`, while the kubelet's default
 > fsGroup policy widens every file to `0660` on each pod start — a resumed sandbox
 > would crash-loop. See [Troubleshooting](#troubleshooting) for the one-time fix
-> on sandboxes created before this setting existed.
+> on sandboxes created before this setting existed. The `/workspace` mount does not
+> change that: `subPath` is a separate directory, and only the volume root is walked.
 
 ## 7. Injection policy rejects env-carrying claims
 
@@ -579,6 +587,7 @@ is non-recursive, so the optional manifest is not applied by the base step.
 | Gateway pod `ErrImagePull` / `ImagePullBackOff` (especially on kind) | The manifest uses `imagePullPolicy: IfNotPresent` with the release identity. Build with `make gateway`, retag to exactly the manifest's image, `kind load docker-image <that-ref>`, or set the Deployment image to your local tag / pinned digest. On a real cluster, make sure the GHCR package is readable (public or a pull secret) |
 | Step 3: `pod "$SB" not found` after deploying the gateway | The claim was suspended by the idle sweeper. Claims created by the gateway carry `aaas.example.com/managed-by=dsh-gateway`; hand-applied claims (steps 1–7) do not and are never swept. Resume the sandbox: `kubectl -n dsh-demo patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Running"}}'` |
 | Resume crash-loops: `credentials-local: … is readable beyond its owner (mode 660)` | The pod template lacks `fsGroupChangePolicy: OnRootMismatch`, so the kubelet's default fsGroup policy rewrote `.credentials.yaml` to `0660`; DSH requires `0600` and refuses to start. New installs get the policy from the template. For an existing sandbox: suspend it, run a throwaway pod on `dsh-home-$SB` to `chmod 600 /home/node/.dsh/.credentials.yaml`, patch the sandbox's `podTemplate` with the policy, then resume |
+| Agents get `Permission denied` writing to `/workspace` on a fresh or resumed pod | The `/workspace` mount is the `dsh-home` PVC's `workspace/` subPath, and the kubelet is known to leave a `subPath` directory at `0755` if it is interrupted between creating and chmodding it ([kubernetes#142464](https://github.com/kubernetes/kubernetes/issues/142464)); later mounts never correct it. Suspend the sandbox, run a throwaway pod on `dsh-home-$SB` mounted at `/data`, `chmod 2775 /data/workspace` (do **not** chown/chmod recursively — that rewrites `.credentials.yaml`), then resume. If you recreate the sandbox instead, its current `/workspace` contents go with the PVC |
 | SSO: GitHub login succeeds but the gateway asks for a token / returns `401` to `/recreate` | `AUTH_PROXY_HEADER` is not set on `deploy/dsh-gateway` (SSO is opt-in). Set `AUTH_PROXY_HEADER=X-Forwarded-User` and confirm the request actually reaches the gateway through oauth2-proxy |
 | SSO: gateway treats a caller as another user / bad `X-Forwarded-User` accepted | Trust boundary violation: something other than oauth2-proxy can reach `dsh-gateway:8080`. Remove the second path (Ingress/Gateway/port-forward), keep the Service ClusterIP, and only re-enable SSO once the proxy is the sole entry point. Never put a trusted identity header in front of a service that is directly reachable |
 | SSO: oauth2-proxy `cookie_secret must be 16, 24, or 32 bytes ... but is 44 bytes` | The cookie secret was generated as standard base64. Use URL-safe unpadded base64 (see `73-oauth2-proxy-secret.yaml.example`) |

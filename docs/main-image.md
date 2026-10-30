@@ -108,7 +108,7 @@ procedure.
 | --- | --- | --- |
 | Exposed port | `3080/tcp` | `EXPOSE 3080`; one port serves the UI, assets, API, SSE and WebSocket traffic. |
 | State volume | `/home/node/.dsh` | Declared with `VOLUME`; use a named volume (Docker) or PVC (Kubernetes). |
-| Working directory | `/workspace` | The agent workspace; mount a volume here if agents should keep files. |
+| Working directory | `/workspace` | The agent workspace. Mount a volume here if agents should keep files; the agents-as-a-service example mounts the same PVC's `workspace` subPath here. |
 | Stop signal | `SIGTERM` | `tini` forwards it to `dsh web`; allow a graceful shutdown period. |
 | User | `node`, UID/GID `1000` | The process is non-root. A PVC mounted at `DSH_HOME` must be writable by UID 1000. |
 
