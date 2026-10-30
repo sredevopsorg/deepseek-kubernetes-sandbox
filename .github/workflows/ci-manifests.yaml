@@ -1,0 +1,80 @@
+# Manifest shape validation and server-side dry-run. Split from ci.yaml so this
+# job can use native on.pull_request.paths filtering and skip PRs that do not
+# touch manifests, scripts or versions.env. The job name is the required
+# branch-protection check `manifests`.
+name: CI (manifests)
+
+on:
+  pull_request:
+    paths:
+      - examples/**/manifests/**
+      - scripts/check-manifests.py
+      - versions.env
+      - .github/workflows/ci-manifests.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-manifests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifests:
+    name: manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          cluster_name: dsh-ci
+      - name: Read versions.env
+        run: |
+          set -euo pipefail
+          while IFS= read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            echo "$line" >> "$GITHUB_ENV"
+          done < versions.env
+      - name: Install agent-sandbox and Gateway API CRDs
+        run: |
+          set -euo pipefail
+          kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml"
+          kubectl wait --for=condition=Established crd/sandboxtemplates.extensions.agents.x-k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/sandboxwarmpools.extensions.agents.x-k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/sandboxclaims.extensions.agents.x-k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/sandboxes.agents.x-k8s.io --timeout=180s
+          kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/$GATEWAY_API_VERSION/standard-install.yaml"
+          kubectl wait --for=condition=Established crd/gateways.gateway.networking.k8s.io --timeout=180s
+          kubectl wait --for=condition=Established crd/httproutes.gateway.networking.k8s.io --timeout=180s
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install check dependencies
+        run: pip install "pyyaml==6.0.3"
+      - name: Validate manifest shape
+        run: python scripts/check-manifests.py
+      - name: Validate manifests (server dry-run)
+        run: |
+          set -euo pipefail
+          kubectl create namespace dsh-demo
+          shopt -s globstar nullglob
+          count=0
+          for file in examples/*/manifests/**/*.yaml; do
+            case "$file" in *.yaml.example) continue ;; esac
+            echo "== $file =="
+            kubectl apply --dry-run=server -f "$file"
+            count=$((count + 1))
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "no manifests were validated" >&2
+            exit 1
+          fi
+          echo "validated $count manifests"

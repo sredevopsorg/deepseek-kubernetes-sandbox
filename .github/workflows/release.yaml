@@ -45,6 +45,7 @@ jobs:
       ghcr_image: ${{ steps.meta.outputs.ghcr_image }}
       gateway_image: ${{ steps.meta.outputs.gateway_image }}
       tag: ${{ steps.meta.outputs.tag }}
+      run_tests: ${{ steps.meta.outputs.run_tests }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,6 +83,12 @@ jobs:
               echo "tag commit $commit is not on main or a release branch" >&2
               exit 1
             fi
+            # Tests already ran in PR CI when the tag is on main; only re-run
+            # them for release-branch tags (where ci.yaml does not trigger).
+            run_tests=true
+            if git rev-parse -q --verify origin/main >/dev/null && git merge-base --is-ancestor "$commit" origin/main; then
+              run_tests=false
+            fi
           else
             echo "tag '$tag' does not exist in this repository" >&2
             exit 1
@@ -98,6 +105,7 @@ jobs:
             echo "ghcr_image=$GHCR_IMAGE"
             echo "gateway_image=$GATEWAY_IMAGE"
             echo "tag=$tag"
+            echo "run_tests=$run_tests"
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify repository pins
@@ -106,6 +114,9 @@ jobs:
   tests:
     name: Unit tests and lint
     needs: meta
+    # The test steps are guarded individually rather than the whole job so a
+    # main-branch tag (run_tests=false) still leaves this job "successful" and
+    # does not cascade-skip build-main/build-gateway.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -117,6 +128,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up Python
+        if: needs.meta.outputs.run_tests == 'true'
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
@@ -125,16 +137,19 @@ jobs:
             examples/dsh-agents-as-a-service/gateway/requirements.txt
             examples/dsh-agents-as-a-service/gateway/requirements-dev.txt
       - name: Install dependencies
+        if: needs.meta.outputs.run_tests == 'true'
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Lint
+        if: needs.meta.outputs.run_tests == 'true'
         run: |
           set -euo pipefail
           python -m ruff check .
           python -m ruff format --check .
       - name: Unit tests
+        if: needs.meta.outputs.run_tests == 'true'
         run: python -m pytest -q
 
   build-main:
