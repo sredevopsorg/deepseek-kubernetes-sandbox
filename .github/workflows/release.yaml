@@ -17,11 +17,10 @@ on:
         required: true
         type: string
 
+# Read-only by default; the build and publish jobs add the write scopes they
+# need as job-level grants.
 permissions:
-  contents: write
-  packages: write
-  id-token: write
-  attestations: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -52,13 +51,17 @@ jobs:
       - name: Validate tag against versions.env
         id: meta
         shell: bash
+        env:
+          # Passed through the environment, never interpolated into the script:
+          # a tag name or dispatch input can contain shell metacharacters.
+          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           set -a
           # shellcheck disable=SC1091
           source versions.env
           set +a
-          tag="${{ inputs.tag || github.ref_name }}"
+          tag="$REQUESTED_TAG"
           identity="$DSH_VERSION"
           [ -z "$RELEASE_REVISION" ] || identity="$DSH_VERSION-$RELEASE_REVISION"
           if [ "$tag" != "$identity" ]; then
@@ -222,11 +225,17 @@ jobs:
       - name: Install git-cliff
         env:
           GIT_CLIFF_VERSION: v2.14.2
+          # SHA-256 of git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz; upstream
+          # publishes the matching SHA-512 next to the asset. Update with the version.
+          GIT_CLIFF_SHA256: 24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4
         run: |
           set -euo pipefail
           version="${GIT_CLIFF_VERSION#v}"
-          curl -fsSL -o /tmp/git-cliff.tar.gz             "https://github.com/orhun/git-cliff/releases/download/$GIT_CLIFF_VERSION/git-cliff-$version-x86_64-unknown-linux-gnu.tar.gz"
-          tar -xzf /tmp/git-cliff.tar.gz -C /tmp
+          asset="git-cliff-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL --proto '=https' -o "/tmp/$asset" \
+            "https://github.com/orhun/git-cliff/releases/download/$GIT_CLIFF_VERSION/$asset"
+          printf '%s  %s\n' "$GIT_CLIFF_SHA256" "/tmp/$asset" | sha256sum -c -
+          tar -xzf "/tmp/$asset" -C /tmp
           install -m 0755 "/tmp/git-cliff-$version/git-cliff" /usr/local/bin/git-cliff
           git-cliff --version
 

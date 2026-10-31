@@ -40,7 +40,10 @@ jobs:
       - name: Install agent-sandbox
         run: |
           set -euo pipefail
-          kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml"
+          curl -fsSL --proto '=https' -o /tmp/agent-sandbox.yaml \
+            "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml"
+          printf '%s  %s\n' "$AGENT_SANDBOX_MANIFEST_SHA256" /tmp/agent-sandbox.yaml | sha256sum -c -
+          kubectl apply -f /tmp/agent-sandbox.yaml
           kubectl -n agent-sandbox-system rollout status deployment --timeout=180s
           kubectl wait --for=condition=Established crd/sandboxtemplates.extensions.agents.x-k8s.io --timeout=180s
           kubectl wait --for=condition=Established crd/sandboxwarmpools.extensions.agents.x-k8s.io --timeout=180s
@@ -66,7 +69,9 @@ jobs:
             echo "== events =="
             kubectl get events -n dsh-demo --sort-by=.lastTimestamp 2>&1 || true
             echo "== gateway logs =="
-            kubectl -n dsh-demo logs deploy/dsh-gateway --tail=200 2>&1 || true
+            # Redact any token material before this file becomes an artifact.
+            kubectl -n dsh-demo logs deploy/dsh-gateway --tail=200 2>&1 \
+              | sed -E 's/(token=)[^&"[:space:]]+/\1[REDACTED]/g' || true
           } > /tmp/e2e-cluster.txt
       - name: Upload cluster state
         if: always()

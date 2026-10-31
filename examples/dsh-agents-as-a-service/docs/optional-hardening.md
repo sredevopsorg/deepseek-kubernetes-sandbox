@@ -507,7 +507,7 @@ The Sandbox, its claim and its PVC survive, but nothing runs: the gateway keeps
 proxying to a dead Pod and every request fails until someone deletes the Pod or
 the claim.
 
-agent-sandbox v1.0.8 (the pin in [versions.env](../../../versions.env)) adds
+agent-sandbox v1.0.8+ (the current pin in [versions.env](../../../versions.env) is newer) adds
 `spec.failedPodPolicy` to `Sandbox` and to `SandboxTemplate`:
 
 | Value | Behavior |

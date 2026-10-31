@@ -46,12 +46,19 @@ jobs:
       - name: Install agent-sandbox and Gateway API CRDs
         run: |
           set -euo pipefail
-          kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml"
+          # Download, verify the pinned digest from versions.env, then apply.
+          curl -fsSL --proto '=https' -o /tmp/agent-sandbox.yaml \
+            "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$AGENT_SANDBOX_VERSION/sandbox-with-extensions.yaml"
+          printf '%s  %s\n' "$AGENT_SANDBOX_MANIFEST_SHA256" /tmp/agent-sandbox.yaml | sha256sum -c -
+          kubectl apply -f /tmp/agent-sandbox.yaml
           kubectl wait --for=condition=Established crd/sandboxtemplates.extensions.agents.x-k8s.io --timeout=180s
           kubectl wait --for=condition=Established crd/sandboxwarmpools.extensions.agents.x-k8s.io --timeout=180s
           kubectl wait --for=condition=Established crd/sandboxclaims.extensions.agents.x-k8s.io --timeout=180s
           kubectl wait --for=condition=Established crd/sandboxes.agents.x-k8s.io --timeout=180s
-          kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/$GATEWAY_API_VERSION/standard-install.yaml"
+          curl -fsSL --proto '=https' -o /tmp/gateway-api.yaml \
+            "https://github.com/kubernetes-sigs/gateway-api/releases/download/$GATEWAY_API_VERSION/standard-install.yaml"
+          printf '%s  %s\n' "$GATEWAY_API_MANIFEST_SHA256" /tmp/gateway-api.yaml | sha256sum -c -
+          kubectl apply -f /tmp/gateway-api.yaml
           kubectl wait --for=condition=Established crd/gateways.gateway.networking.k8s.io --timeout=180s
           kubectl wait --for=condition=Established crd/httproutes.gateway.networking.k8s.io --timeout=180s
       - name: Set up Python

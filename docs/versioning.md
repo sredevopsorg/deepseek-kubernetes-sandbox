@@ -67,7 +67,7 @@ Values from [versions.env](../versions.env) at the current identity:
 | Node build image | `docker.io/node:24-trixie@sha256:8c761eca2bf7eec965f946cf47b8090143cb41f45f2f8699af0cc0298d2d2d19` | `NODE_BUILD_IMAGE`, digest-pinned |
 | Node runtime image | `docker.io/node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446` | `NODE_RUNTIME_IMAGE`, digest-pinned |
 | Gateway Python image | `docker.io/python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159` | `GATEWAY_PYTHON_IMAGE`, digest-pinned |
-| agent-sandbox (CRDs) | `v1.0.8` | `AGENT_SANDBOX_VERSION`, used by the examples and CI dry-run |
+| agent-sandbox (CRDs) | `v1.0.9` | `AGENT_SANDBOX_VERSION`, used by the examples and CI dry-run |
 | Kubernetes Gateway API | `v1.2.1` | `GATEWAY_API_VERSION`, used by the SSO exposure variant |
 | oauth2-proxy | `quay.io/oauth2-proxy/oauth2-proxy:v7.15.5@sha256:8498b0d0ef0a7b29686414000a08aee467f02d0299c9ed1e006a8f33fc017916` | `OAUTH2_PROXY_IMAGE`, digest-pinned and used by the SSO exposure variant |
 | Main image | `ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox` | `GHCR_IMAGE` |
