@@ -24,7 +24,7 @@ It does four things:
 The DSH version pin lives in [`versions.env`](../../../versions.env)
 (`DSH_VERSION` plus the optional repository `RELEASE_REVISION`); the example
 manifests and published images use the release identity built from it (currently
-`dsh-v0.2.1-rc.5`). DSH binds `:3080`, gates the UI and `/api` behind a
+`dsh-v0.2.1-rc.5-r6`). DSH binds `:3080`, gates the UI and `/api` behind a
 `dsh-auth-*` cookie and requires a WebSocket at `/api/remote.mux`.
 
 ## Flow

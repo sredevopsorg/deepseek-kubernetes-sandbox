@@ -270,7 +270,7 @@ kubectl delete -f manifests/40-claim-rejected.yaml
 ```bash
 # Published image (on kind, load it into the cluster; on a real cluster the
 # kubelet pulls it from GHCR):
-GW=ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway:dsh-v0.2.1-rc.5
+GW=ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway:dsh-v0.2.1-rc.5-r6
 docker pull "$GW"
 kind load docker-image "$GW" --name <kind-cluster>
 

@@ -20,7 +20,7 @@ docker run -d --name dsh-web \
   -p 3080:3080 \
   -v dsh-home:/home/node/.dsh \
   -e DEEPSEEK_API_KEY \
-  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5
+  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5-r6
 ```
 
 DSH Web is **not usable at a bare `/`**. Without its launch-token cookie it
@@ -45,7 +45,7 @@ docker run -d --name dsh-web -p 18081:3080 \
   -e DSH_PUBLIC_URL=http://localhost:18081 \
   -v dsh-home:/home/node/.dsh \
   -e DEEPSEEK_API_KEY \
-  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5
+  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5-r6
 # then open http://localhost:18081/?token=...
 ```
 
@@ -94,20 +94,20 @@ ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway
 
 | Tag | Contents | Meaning |
 | --- | --- | --- |
-| `dsh-v0.2.1-rc.5` | DSH Web, port `3080` | **Current release identity.** Immutable: once published it never moves. |
+| `dsh-v0.2.1-rc.5-r6` | DSH Web, port `3080` | **Current release identity.** Immutable: once published it never moves. |
 | `latest` | DSH Web | Most recent release; same digest as the current identity. |
 | `main` | DSH Web | Development channel rebuilt when image-definition files change on `main`. Not a release; not for production. |
 
 The example gateway is published under its nested path with the same release
 identity, e.g.
-`ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway:dsh-v0.2.1-rc.5`.
+`ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway:dsh-v0.2.1-rc.5-r6`.
 
 Release identities, channels and rollback rules are explained in
 [docs/versioning.md](docs/versioning.md). Production deployments should pin a
 digest:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5
+docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5-r6
 # image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
 ```
 
@@ -188,7 +188,7 @@ required checks and releases: [docs/gitflow.md](docs/gitflow.md).
 
 The release identity is the upstream DSH ref plus an optional repository
 revision: `DSH_VERSION` and `RELEASE_REVISION` in [versions.env](versions.env).
-The current identity is **`dsh-v0.2.1-rc.5`** — the first release at this
+The current identity is **`dsh-v0.2.1-rc.5-r6`** — the first release at this
 upstream DSH ref, so it carries no repository revision. Tags are immutable; a
 broken release is fixed by publishing `-r(N+1)`, never by re-tagging.
 

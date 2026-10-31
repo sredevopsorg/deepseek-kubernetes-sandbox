@@ -39,12 +39,12 @@ To reproduce the equivalent by hand:
 
 ```bash
 docker build \
-  --build-arg DSH_VERSION=dsh-v0.2.1-rc.5 \
+  --build-arg DSH_VERSION=dsh-v0.2.1-rc.5-r6 \
   --build-arg DSH_COMMIT=b830ec950faba0a46dda564be3e2d854afed94f1 \
   --build-arg RELEASE_REVISION= \
   --build-arg PNPM_VERSION=11.28.5 \
   --build-arg VCS_REF="$(git rev-parse --short HEAD)" \
-  -t ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5 .
+  -t ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5-r6 .
 ```
 
 ### Build args
@@ -209,7 +209,7 @@ GitHub Container Registry:
 
 | Tag | Meaning |
 | --- | --- |
-| `dsh-v0.2.1-rc.5` | Current release identity. **Immutable**: once published it never moves. |
+| `dsh-v0.2.1-rc.5-r6` | Current release identity. **Immutable**: once published it never moves. |
 | `latest` | Most recent release; points at the same digest as the current identity. |
 | `main` | Development channel rebuilt when image-definition files change on `main`; not a release, not for production. |
 
@@ -218,7 +218,7 @@ Release identities, channels and rollback rules are defined in
 pin a digest:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5
+docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5-r6
 # ... pin the digest in your deployment manifests:
 #   image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
 ```
@@ -226,7 +226,7 @@ docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbo
 ## Verifying an image
 
 ```bash
-docker inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5 \
+docker inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5-r6 \
   --format '{{json .Config.Labels}}'
 # org.opencontainers.image.title / .version / .source
 # io.sredevopsorg.dsh.version / io.sredevopsorg.release.revision
