@@ -131,6 +131,24 @@ spec:
             # a private PVC), so trade DSH's inner file policy for a working
             # agent. Set this to workspace-write (or read-only) on hosts where a
             # backend is available; see the README troubleshooting row.
+            # SECURITY: the pod is the isolation boundary in this example.
+            # danger-full-access is set only because DSH's own command sandbox
+            # has no usable backend in this pod (see above), which means an
+            # agent command can read its own DSH_HOME (including
+            # .credentials.yaml) and write anywhere in the container. What
+            # still contains it is the pod itself: one pod per user, non-root,
+            # all capabilities dropped, RuntimeDefault seccomp, its own PVC and
+            # Service. That is NOT a hardened multi-tenant boundary on a shared
+            # kernel. For production/multi-tenant use, additionally run the
+            # sandbox under gVisor (`runtimeClassName: gvisor` above) so a
+            # container escape is trapped in a userspace kernel, and apply the
+            # sandbox NetworkPolicy (manifests/optional/network-policy/) so
+            # tenants cannot reach each other or cluster-internal endpoints.
+            # The base manifests without those two controls are a demo. Treat
+            # danger-full-access as a fallback, not a target: on hosts where
+            # DSH's command-sandbox backend works, prefer workspace-write (or
+            # read-only), and recreate the pod because the value is stamped at
+            # creation.
             - name: DSH_PERMISSION_MODE
               value: danger-full-access
           # Probes target /favicon.svg: DSH gates / behind its launch-token

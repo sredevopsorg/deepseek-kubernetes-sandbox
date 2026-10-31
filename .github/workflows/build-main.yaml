@@ -29,6 +29,7 @@ jobs:
     outputs:
       identity: ${{ steps.meta.outputs.identity }}
       dsh_version: ${{ steps.meta.outputs.dsh_version }}
+      dsh_commit: ${{ steps.meta.outputs.dsh_commit }}
       pnpm_version: ${{ steps.meta.outputs.pnpm_version }}
       release_revision: ${{ steps.meta.outputs.release_revision }}
       ghcr_image: ${{ steps.meta.outputs.ghcr_image }}
@@ -53,6 +54,7 @@ jobs:
           {
             echo "identity=$identity"
             echo "dsh_version=$DSH_VERSION"
+            echo "dsh_commit=$DSH_COMMIT"
             echo "pnpm_version=$PNPM_VERSION"
             echo "release_revision=$RELEASE_REVISION"
             echo "ghcr_image=$GHCR_IMAGE"
@@ -75,6 +77,7 @@ jobs:
       dockerfile: Dockerfile
       build-args: |
         DSH_VERSION=${{ needs.meta.outputs.dsh_version }}
+        DSH_COMMIT=${{ needs.meta.outputs.dsh_commit }}
         RELEASE_REVISION=${{ needs.meta.outputs.release_revision }}
         PNPM_VERSION=${{ needs.meta.outputs.pnpm_version }}
         VCS_REF=${{ github.sha }}

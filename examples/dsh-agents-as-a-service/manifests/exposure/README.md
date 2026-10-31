@@ -16,6 +16,16 @@ Applying both gives the gateway two entry points, and the SSO variant is only
 safe when the gateway is reachable **exclusively** through oauth2-proxy. Do not
 mix them.
 
+> **Production requirement.** Each variant's NetworkPolicy is part of the
+> variant, and applying the variant without it is demo-only. The sandbox
+> NetworkPolicy and the gateway egress policy (the API server is cluster-specific)
+> are separate and equally required; see the
+> [production checklist](../../docs/optional-hardening.md#6-production-checklist)
+> and the
+> [gateway egress recipe](../../docs/optional-hardening.md#gateway-egress-required-for-production).
+> For SSO, run [`scripts/preflight-sso.sh`](../../scripts/preflight-sso.sh)
+> after applying the variant and before sending real traffic.
+
 Each variant also ships a NetworkPolicy, applied by the same directory apply:
 
 - `ingress/61-networkpolicy.yaml` allows only Traefik pods to reach the gateway
@@ -27,7 +37,8 @@ Each variant also ships a NetworkPolicy, applied by the same directory apply:
 The policies assume Traefik's `app.kubernetes.io/name: traefik` pod label.
 Adjust the selector for another implementation or a `hostNetwork` install; see
 [optional hardening](../../docs/optional-hardening.md) for the probe caveat and
-verification commands.
+verification commands. Keep the policies: an exposure without its NetworkPolicy
+is demo-only.
 
 ## Applying a variant
 
@@ -69,10 +80,13 @@ Secrets imperatively (commands below) before applying the directory.
 2. Set `DSH_TRUSTED_HOSTS` in the SandboxTemplate to the same public host:
    the gateway forwards the browser's `Host`, and DSH rejects unknown hosts on
    `/api` (see `../10-sandboxtemplate.yaml`).
-3. Set `COOKIE_SECURE=true` on the gateway once the Ingress serves HTTPS:
-   `kubectl -n dsh-demo set env deploy/dsh-gateway COOKIE_SECURE=true`. The
-   base manifest keeps `false` so the plain-HTTP port-forward demo works; a
-   `Secure` cookie is never sent over HTTP, which silently breaks login.
+3. Set `COOKIE_SECURE=true` and remove the plain-HTTP acknowledgement once the
+   Ingress serves HTTPS:
+   `kubectl -n dsh-demo set env deploy/dsh-gateway COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-`.
+   The base manifest keeps `false` + `ALLOW_INSECURE_COOKIES=1` so the
+   plain-HTTP port-forward demo works; a `Secure` cookie is never sent over HTTP,
+   which silently breaks login, while the acknowledgement must not survive into
+   production.
 4. Do not attach buffering or compression middlewares to this router: they
    break WebSocket upgrades and streaming.
 5. `61-networkpolicy.yaml` is part of this variant: it allows only Traefik pods
@@ -116,13 +130,22 @@ kubectl -n dsh-demo create secret tls dsh-demo-tls --cert=tls.crt --key=tls.key
 
 # 3. Enable SSO on the gateway and trust the public host in the template.
 kubectl -n dsh-demo set env deploy/dsh-gateway \
-  AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true
+  AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-
 # then set DSH_TRUSTED_HOSTS=dsh-demo.example.com in the SandboxTemplate
 # (see ../10-sandboxtemplate.yaml) and re-apply it.
 
 # 4. Apply the variant.
 kubectl apply -f manifests/exposure/gateway-api-sso/
+
+# 5. Preflight: fails loudly on missing Secrets, a bad oauth2-proxy cookie
+#    secret, missing gateway SSO env, a dangling TLS reference, leftover
+#    placeholders, or a second path to the gateway.
+./scripts/preflight-sso.sh
 ```
+
+The preflight is read-only and exits non-zero on any failure, naming the exact
+fix. Run it again after rotating a Secret or changing the public host; it also
+verifies that the oauth2-proxy cookie secret decodes to 16, 24 or 32 bytes.
 
 ### SSO trust boundary
 
@@ -141,8 +164,14 @@ takes all of these:
    impersonate any user.
 3. Keep `75-networkpolicies.yaml` with the variant. It enforces the boundary in
    the network layer (gateway ← oauth2-proxy ← Traefik, and limited oauth2-proxy
-   egress). A custom exposure without an equivalent policy has no network
+   egress). This is required, not optional: an exposure without the policy is
+   demo-only, and a custom exposure without an equivalent policy has no network
    enforcement.
+4. Apply the gateway egress policy too: the gateway talks to the Kubernetes API
+   and to sandbox pods, and `75-networkpolicies.yaml` intentionally leaves that
+   direction unrestricted because the API-server endpoint is cluster-specific.
+   See
+   [gateway egress](../../docs/optional-hardening.md#gateway-egress-required-for-production).
 
 Also terminate TLS in front of the gateway (the Gateway listener does) and
 leave `COOKIE_SECURE=true` so the session cookie never travels in clear text.

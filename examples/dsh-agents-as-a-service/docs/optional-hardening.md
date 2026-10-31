@@ -2,14 +2,26 @@
 
 The base example is deliberately portable: it runs on kind and GKE without a
 gVisor runtime, a tainted node pool or a NetworkPolicy-capable CNI, and it
-boots with only the required `dsh-provider-keys` Secret. This document covers
-four **opt-in** controls plus failed-Pod recovery:
+boots with only the required `dsh-provider-keys` Secret. That portability is
+exactly why the base manifests are **demo-only**. This document covers the
+controls you add for production and the steps to enable or roll them back.
+
+**Production is not the base walkthrough.** At minimum, a production deployment
+needs: gVisor for the sandbox pods (or another kernel-isolation boundary), the
+sandbox NetworkPolicy, the gateway egress policy, the exposure variant's
+NetworkPolicy, TLS with `COOKIE_SECURE=true` (and no
+`ALLOW_INSECURE_COOKIES`), SSO (or an equivalent authenticating proxy) as the
+only path to the gateway, and per-tenant provider credentials/egress. The
+checklist at the end summarizes this; without the network and kernel layers the
+example is not tenant-isolated.
+
+This document covers four **opt-in** controls plus failed-Pod recovery:
 
 | Setting | Where it lives | What it changes |
 | --- | --- | --- |
-| gVisor | commented `runtimeClassName` in the SandboxTemplates and Deployments | puts DSH and/or the gateway in a userspace kernel |
+| gVisor | commented `runtimeClassName` in the SandboxTemplates and Deployments | puts DSH and/or the gateway in a userspace kernel; required for untrusted agents in production |
 | nodeSelector | commented `nodeSelector` in the same files | pins pods to a chosen node pool |
-| NetworkPolicy | `manifests/optional/network-policy/`, `manifests/exposure/*/` | limits sandbox, gateway and proxy connectivity |
+| NetworkPolicy | `manifests/optional/network-policy/`, `manifests/exposure/*/`, plus the gateway egress recipe | limits sandbox, gateway and proxy connectivity; the sandbox and gateway-egress policies are required for production |
 | Provider keys | optional `dsh-provider-keys-extra` Secret | injects extra provider API keys into every sandbox |
 | Failed-Pod recovery | commented `failedPodPolicy` in the SandboxTemplates | replaces a Failed sandbox Pod instead of parking the sandbox |
 
@@ -234,10 +246,17 @@ kubectl -n dsh-demo patch sandboxtemplate dsh-web --type merge \
 
 The base example does **not** manage NetworkPolicy: the SandboxTemplate is
 `networkPolicyManagement: Unmanaged`, and the gateway has no policy. That keeps
-the walkthrough portable and independent of the sandbox-router; the opt-in
-policies below are standard Kubernetes `NetworkPolicy` objects.
+the walkthrough portable and independent of the sandbox-router. **For
+production this is not optional**: without the sandbox policy every tenant can
+reach every other tenant and cluster-internal endpoints, and without a gateway
+egress policy the gateway can talk to anything the cluster network allows.
+Apply both. The policies below are standard Kubernetes `NetworkPolicy` objects.
 
-### Optional sandbox policy
+> **Demo vs production.** An installation that skips the sandbox NetworkPolicy
+> and the gateway egress policy is a demo. Exposure (Ingress/Gateway API) adds
+> ingress protection only; it does not isolate tenants from each other.
+
+### Sandbox policy (required for production)
 
 [`manifests/optional/network-policy/10-sandbox-networkpolicy.yaml`](../manifests/optional/network-policy/10-sandbox-networkpolicy.yaml)
 selects every Sandbox pod through the agent-sandbox tracking label
@@ -301,10 +320,10 @@ Caveats:
 - `kubectl port-forward` still works for debugging (the connection is local to
   the pod), except under gVisor.
 
-### Exposure-variant policies
+### Exposure-variant policies (required, part of the variant)
 
-Each exposure variant ships its own policy. They are part of the variant, not a
-separate opt-in step:
+Each exposure variant ships its own policy. They are part of the variant and
+**required for production**; an exposure without its policy is demo-only:
 
 - [`manifests/exposure/ingress/61-networkpolicy.yaml`](../manifests/exposure/ingress/61-networkpolicy.yaml)
   allows only Traefik pods (`app.kubernetes.io/name: traefik`) to reach the
@@ -317,7 +336,10 @@ separate opt-in step:
 The SSO policy is what turns the trust boundary in the
 [exposure README](../manifests/exposure/README.md) into network enforcement.
 The `dsh-gateway` Service must still stay ClusterIP; do not apply both exposure
-variants.
+variants. After applying the SSO variant, run
+[`scripts/preflight-sso.sh`](../scripts/preflight-sso.sh): it checks the
+gateway's SSO env, the Secrets, the TLS reference, leftover placeholders and
+accidental second paths (such as an Ingress).
 
 Verify the negative case from a sandbox pod (it is not the proxy):
 
@@ -332,11 +354,12 @@ different pod label, replace the `podSelector` with the correct selector or an
 `ipBlock`. As with the sandbox policy, kubelet probes can be affected on some
 CNIs.
 
-### Gateway egress (documented, not shipped)
+### Gateway egress (required for production)
 
-The gateway needs DNS, the Kubernetes API, and TCP `3080` to sandbox pods. The
-API server endpoint is cluster-specific (Service CIDR or node IP/port), so an
-egress policy is **not** shipped. If your cluster has a stable API-server CIDR
+The gateway needs DNS, the Kubernetes API, and TCP `3080` to sandbox pods. An
+egress policy is **required for production** but is not shipped, because the API
+server endpoint is cluster-specific (Service CIDR or node IP/port) and a wrong
+value silently breaks signup/proxy. If your cluster has a stable API-server CIDR
 and port, add an egress policy like this (replace the placeholders; verify the
 port, commonly `443` or `6443`):
 
@@ -597,7 +620,63 @@ done
 Warm-pool spares pick the default up as they are claimed and replenished, or
 delete them as in step 2 above.
 
-## 6. Verification summary
+## 6. Production checklist
+
+The base walkthrough is a demo. A production install must satisfy every item
+below; the sections above give the commands and caveats.
+
+**Isolation and network**
+
+- [ ] Sandbox pods run under gVisor (or an equivalent kernel-isolation
+      boundary) because DSH runs with `DSH_PERMISSION_MODE=danger-full-access`
+      in this image; the pod is the boundary. (Section 1.)
+- [ ] The sandbox NetworkPolicy is applied and verified: no tenant→tenant,
+      no tenant→cluster-Service/API, DNS + public HTTPS only. (Section 3.)
+- [ ] The gateway egress policy is applied with the cluster's real API-server
+      CIDR/port, scoped to DNS, the API server and sandbox pods on `3080`.
+      (Section 3, "Gateway egress".)
+- [ ] The exposure variant's NetworkPolicy is applied. An exposure without it is
+      demo-only. For SSO, the gateway is reachable **only** through
+      oauth2-proxy; there is no second Ingress/Gateway/port-forward path.
+- [ ] Nodes/CNI enforce NetworkPolicy (verify the negative cases, not just the
+      positive path).
+- [ ] The gateway and (optionally) oauth2-proxy run with `runAsNonRoot`,
+      dropped capabilities, `RuntimeDefault` seccomp and a read-only root
+      filesystem, as shipped.
+
+**Authentication, TLS and abuse controls**
+
+- [ ] TLS terminates in front of the gateway, `COOKIE_SECURE=true`, and
+      `ALLOW_INSECURE_COOKIES` is **not** set. The gateway refuses to start with
+      an insecure cookie unless explicitly acknowledged.
+- [ ] SSO (or an equivalent authenticating proxy) is enabled with
+      `AUTH_PROXY_HEADER=X-Forwarded-User`, and
+      [`scripts/preflight-sso.sh`](../scripts/preflight-sso.sh) exits `0`.
+- [ ] No `your-github-org` / `dsh-demo.example.com` placeholder remains.
+- [ ] `SIGNUP_INVITE_CODE` is set from a Secret if the gateway's own signup form
+      is reachable, and `AUTH_RATE_LIMIT` is set deliberately (`30`/60s shipped).
+      Add ingress-level rate limiting/quota too; the gateway's buckets are
+      in-process and reset on restart.
+- [ ] Session lifetime (`COOKIE_MAX_AGE`) and the logout/delete revocation
+      behavior are acceptable; account for gateway restarts logging users out.
+- [ ] `MAX_IN_FLIGHT_PER_USER` and `WS_MAX_MESSAGE_BYTES` fit the workload.
+
+**Credentials, platform and operations**
+
+- [ ] Provider keys are per-tenant (or routed through an egress proxy) instead
+      of the shared `dsh-provider-keys` Secrets; any shared key is treated as
+      visible to every tenant.
+- [ ] RBAC stays namespace-scoped; `pods/log` is treated as sensitive because
+      it contains launch tokens and model output. Plan the upstream token API
+      migration.
+- [ ] Images are digest-pinned and dependency installs are hash-locked.
+- [ ] Gateway replicas stay at `1` (in-memory sessions/idle state) or the state
+      is externalized.
+- [ ] `failedPodPolicy: Recreate` is set if node eviction/spot reclaim is
+      expected.
+- [ ] Audit logging, alerting and backups of the PVCs are in place.
+
+## 7. Verification summary
 
 Required locally for any change to this example:
 
@@ -605,6 +684,7 @@ Required locally for any change to this example:
 make check          # versions, example layout, manifest YAML shape
 yamllint .
 make test           # only when the gateway code changed
+shellcheck examples/dsh-agents-as-a-service/scripts/*.sh
 ```
 
 CI additionally parses every manifest and runs `kubectl apply
@@ -618,17 +698,25 @@ Manual checks, on a cluster with the relevant CNI/runtime:
   gateway proxy works, port-forward limitation acknowledged.
 - nodeSelector: pods land on the intended nodes; no `Pending` events.
 - Sandbox policy: the allow/deny matrix above.
+- Gateway egress policy: signup and proxy still work; the gateway cannot reach
+  an arbitrary cluster Service or the metadata server.
 - Exposure policies: browser path works; a non-proxy pod cannot reach the
-  gateway; probes stay healthy.
+  gateway; probes stay healthy. `scripts/preflight-sso.sh` exits `0`.
+- Cookie/TLS guard: with `COOKIE_SECURE=false` and no
+  `ALLOW_INSECURE_COOKIES` the gateway refuses to start; with TLS it starts and
+  the cookie is `Secure` (`__Host-` prefixed).
+- Auth abuse controls: `429` + `Retry-After` after the configured limit, `403`
+  on a wrong invite code, and revocations on logout/delete/recreate.
 - Provider keys: set/unset output (never the values) and the refresh procedure.
 - Failed-Pod recovery: `spec.failedPodPolicy` on the Sandbox, and the drill
   above replaces a `Failed` Pod while keeping the claim and PVC.
 
-## 7. Rollback summary
+## 8. Rollback summary
 
 | Layer | Rollback |
 | --- | --- |
 | Sandbox policy | `kubectl delete -f manifests/optional/network-policy/` |
+| Gateway egress policy | `kubectl delete networkpolicy dsh-gateway-egress -n dsh-demo` (do not leave it half-configured) |
 | Exposure policy | delete the exposure variant directory |
 | gVisor | patch `runtimeClassName: null`, recreate pods |
 | nodeSelector | patch `nodeSelector: null`, recreate pods |

@@ -134,14 +134,30 @@ spec:
             # the DSH launch token.
             - name: DSH_CONTAINER
               value: dsh-web
-            # Cookie dsh_gw_session is HttpOnly + SameSite=Lax. "false" keeps
-            # the plain-HTTP demo usable through port-forward: a Secure cookie
-            # is never sent over HTTP, so login would silently fail.
-            # HTTPS deployments (the ingress/ variant with TLS, or
-            # gateway-api-sso/, which terminates TLS at the Gateway) MUST set
-            # this to "true".
+            # Browser session cookie: HttpOnly + SameSite=Lax, holds only an
+            # opaque, server-side session id (sid) - never the user's DSH
+            # token. Sessions can be revoked server-side: POST /logout, user
+            # delete, POST /recreate and expiry (COOKIE_MAX_AGE, default
+            # 7 days) all invalidate them. The session table is in process
+            # memory, so restarting this Deployment logs every browser out.
+            # With COOKIE_SECURE=true the cookie is named
+            # __Host-dsh_gw_session; COOKIE_NAME overrides the name.
+            #
+            # "false" keeps the plain-HTTP demo usable through port-forward: a
+            # Secure cookie is never sent over HTTP, so login would silently
+            # fail. The gateway REFUSES TO START with COOKIE_SECURE=false
+            # unless ALLOW_INSECURE_COOKIES=1 acknowledges that the session
+            # travels in clear text, so the base demo sets both. HTTPS
+            # deployments (the ingress/ variant with TLS, or gateway-api-sso/,
+            # which terminates TLS at the Gateway) MUST set this to "true".
             - name: COOKIE_SECURE
               value: "false"
+            # Explicit acknowledgement that this base demo serves plain HTTP.
+            # Required when COOKIE_SECURE=false (the gateway exits at startup
+            # otherwise); ignored once COOKIE_SECURE=true, so HTTPS installs
+            # should drop it. Never set this on an internet-facing deployment.
+            - name: ALLOW_INSECURE_COOKIES
+              value: "1"
             # SSO IS OPT-IN AND DISABLED HERE. With AUTH_PROXY_HEADER unset the
             # gateway trusts only its own bearer/session auth and ignores every
             # identity header. Enable it ONLY behind
@@ -152,9 +168,49 @@ spec:
             # reach :8080 can impersonate any user by sending that header.
             # - name: AUTH_PROXY_HEADER
             #   value: X-Forwarded-User
+            # Brute-force / abuse throttle for the unauthenticated auth
+            # endpoints (/users and /login): at most N attempts per client per
+            # AUTH_RATE_WINDOW seconds (default 60). A client is the rightmost
+            # X-Forwarded-For entry (the one added by the trusted proxy) when
+            # present, otherwise the TCP peer. Over the limit the gateway
+            # answers 429 + Retry-After BEFORE reading the body or touching the
+            # cluster; 0 disables the limiter. This is a per-process bucket, so
+            # it is not a substitute for an ingress rate limit.
+            - name: AUTH_RATE_LIMIT
+              value: "30"
+            # Window in seconds for AUTH_RATE_LIMIT (default 60).
+            # - name: AUTH_RATE_WINDOW
+            #   value: "60"
+            # Optional signup gate. When set, POST /users requires the invite
+            # code - form field "invite" or header X-Signup-Invite - compared in
+            # constant time. A missing/wrong code is rejected with 403 before
+            # the user is looked up, so it also stops unauthenticated claim
+            # creation. The landing page shows the invite input only when this
+            # is set. Keep the value in a Secret, create it before rollout and
+            # restart the gateway to pick up a rotation:
+            #   kubectl -n dsh-demo create secret generic dsh-signup-invite \
+            #     --from-literal=code="$(openssl rand -hex 16)"
+            # - name: SIGNUP_INVITE_CODE
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: dsh-signup-invite
+            #       key: code
             # Reject proxied request bodies larger than this (413).
             - name: MAX_BODY_MB
               value: "32"
+            # Per-user concurrency guard (default 32): at most this many
+            # proxied HTTP requests and WebSocket connections per user.
+            # Excess HTTP requests get 503 + Retry-After and excess WebSocket
+            # upgrades close with 1011, so one tenant cannot exhaust the
+            # single-replica gateway for everyone else.
+            # - name: MAX_IN_FLIGHT_PER_USER
+            #   value: "32"
+            # Largest WebSocket message received from DSH, in bytes (default
+            # 16 MiB); oversized frames close the connection. Browser-to-DSH
+            # frames are bounded by uvicorn's own limit. HTTP/SSE responses are
+            # streamed without this cap.
+            # - name: WS_MAX_MESSAGE_BYTES
+            #   value: "16777216"
           # /healthz is unauthenticated and returns 200 without touching the
           # cluster, so it is safe for both readiness and liveness.
           readinessProbe:

@@ -1,8 +1,14 @@
-# OPTIONAL, opt-in tenant network policy for the DSH sandboxes.
+# OPTIONAL for the base walkthrough, REQUIRED for production. Opt-in tenant
+# network policy for the DSH sandboxes: without it every tenant can reach every
+# other tenant and cluster-internal endpoints.
 #
 # It is NOT part of the top-level walkthrough. Apply and delete it explicitly:
 #   kubectl apply  -f manifests/optional/network-policy/
 #   kubectl delete -f manifests/optional/network-policy/
+#
+# Production also needs the gateway egress policy (cluster-specific API-server
+# endpoint) and the exposure variant's policy, plus gVisor
+# (docs/optional-hardening.md#6-production-checklist).
 #
 # The selector uses the agent-sandbox controller's pod tracking label, which is
 # present on every Sandbox pod (including warm-pool spares), so the policy

@@ -14,8 +14,13 @@
 #      DSH_TRUSTED_HOSTS to this host so DSH accepts the forwarded Host/Origin
 #      on /api.
 #   2. Gateway Deployment (manifests/50-gateway.yaml): set COOKIE_SECURE to
-#      "true" once this Ingress serves HTTPS, so the session cookie is Secure.
-#      The base manifest sets "false" for the plain-HTTP port-forward demo.
+#      "true" and remove ALLOW_INSECURE_COOKIES once this Ingress serves HTTPS,
+#      so the session cookie is Secure:
+#        kubectl -n dsh-demo set env deploy/dsh-gateway \
+#          COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-
+#      The base manifest sets "false" + ALLOW_INSECURE_COOKIES=1 for the
+#      plain-HTTP port-forward demo; without the acknowledgement the gateway
+#      refuses to start.
 #
 # WebSocket support is REQUIRED: the browser talks to /u/<user>/... and DSH
 # uses WebSockets for live session traffic. Traefik upgrades WS/SSE
@@ -24,9 +29,11 @@
 # and upgrades. `path: /` Prefix covers the landing page and every per-user
 # proxy path, so no per-sandbox Ingress is needed.
 #
-# 61-networkpolicy.yaml is part of this variant: it restricts the gateway's
-# ingress to Traefik pods. Adjust its selector if your ingress controller uses
-# a different label or hostNetwork.
+# 61-networkpolicy.yaml is part of this variant and required for production:
+# it restricts the gateway's ingress to Traefik pods. Adjust its selector if
+# your ingress controller uses a different label or hostNetwork. The sandbox
+# and gateway-egress NetworkPolicies are separate requirements; see
+# ../../../docs/optional-hardening.md#6-production-checklist.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

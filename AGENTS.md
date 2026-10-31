@@ -117,17 +117,33 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 
 - AUTH_PROXY_HEADER is opt-in. Only enable it when the gateway Service is
   reachable exclusively through the authenticating proxy; otherwise any client
-  can spoof X-Forwarded-User.
+  can spoof X-Forwarded-User. The SSO variant's NetworkPolicy is required for
+  production, and `examples/dsh-agents-as-a-service/scripts/preflight-sso.sh`
+  verifies the setup (Secrets, gateway env, TLS reference, placeholders, second
+  paths).
 - The example gateway reads the DSH launch token from pod logs. Treat pod logs
   as sensitive and keep its RBAC namespace-scoped.
+- Browser sessions are opaque server-side ids held in gateway memory: they are
+  revocable (logout/delete/recreate/expiry) but a gateway restart logs everyone
+  out and horizontal scaling needs a shared store. Session cookies are never
+  accepted as bearer tokens.
+- AUTH_RATE_LIMIT, SIGNUP_INVITE_CODE, MAX_IN_FLIGHT_PER_USER and
+  WS_MAX_MESSAGE_BYTES are in-process abuse guards, not ingress rate limits,
+  quotas or an audit log. Add those for an internet-facing deployment.
 - The example shares provider keys (dsh-provider-keys plus the optional
   dsh-provider-keys-extra) across sandboxes; do not describe it as
   tenant-isolated.
-- gVisor, nodeSelector, the NetworkPolicies, extra provider keys and failed-Pod
-  recovery are opt-in and are not active in the base manifests; do not describe
-  the base example as hardened.
-- TLS terminates outside the gateway; set COOKIE_SECURE=true for HTTPS and keep
-  the base manifest safe for local HTTP.
+- gVisor, nodeSelector, the shipped sandbox/exposure NetworkPolicies and the
+  documented gateway egress policy, extra provider keys and failed-Pod recovery
+  are opt-in and are not active in the base manifests; do not describe the base
+  example as hardened.
+  The sandbox and gateway-egress policies are required production steps; an
+  exposure without its NetworkPolicy is demo-only. See the example's
+  production checklist.
+- TLS terminates outside the gateway. Set COOKIE_SECURE=true for HTTPS and drop
+  ALLOW_INSECURE_COOKIES; the gateway refuses COOKIE_SECURE=false unless
+  ALLOW_INSECURE_COOKIES=1, which is only for the plain-HTTP local demo. Never
+  expose that combination.
 
 ## Ask before
 

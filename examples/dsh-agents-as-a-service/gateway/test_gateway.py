@@ -18,10 +18,12 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from kubernetes.client.exceptions import ApiException
+from starlette.responses import Response
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from gateway import (
+    Session,
     Settings,
     UserExists,
     claim_name,
@@ -217,6 +219,39 @@ def add_user(k8s, user="alice", token=TOKEN, ready=True, pod_name=None, suffix="
     k8s.pods[pod_name] = {"metadata": {"name": pod_name, "uid": POD_UID}}
     k8s.logs[pod_name] = f"booting\ndsh web: http://10.0.0.7:3080/?token={TOKEN}-launch\n"
     return sandbox_name, pod_name
+
+
+# --- browser sessions ------------------------------------------------------
+#
+# A browser session is an opaque server-side id.  Tests must never forge a
+# cookie (or a bearer token); they mint a real session through the gateway so
+# the production lookup path is exercised.
+
+
+def mint_session(env, user="alice") -> tuple[str, str]:
+    """Mint a server-side session for ``user``; returns ``(cookie_name, sid)``."""
+    response = Response()
+    sid = env.gateway.set_session(response, user)
+    return env.gateway.settings.cookie_name, sid
+
+
+def session_dict(env, user="alice") -> dict:
+    name, sid = mint_session(env, user)
+    return {name: sid}
+
+
+def session_cookie(env, user="alice") -> str:
+    name, sid = mint_session(env, user)
+    return f"{name}={sid}"
+
+
+def response_session_user(env, response) -> str:
+    """The user of the server-side session a response just set."""
+    cookie = response.headers["set-cookie"]
+    value = cookie.split(";", 1)[0].split("=", 1)[1]
+    session = env.gateway.state.sessions.get(value)
+    assert session is not None, "response did not set a server-side session"
+    return session.user
 
 
 @pytest.fixture
@@ -463,6 +498,12 @@ def test_settings_from_env(monkeypatch):
     monkeypatch.setenv("MAX_BODY_MB", "2")
     monkeypatch.setenv("HTTP_TIMEOUT", "12.5")
     monkeypatch.setenv("AUTH_PROXY_HEADER", "X-Forwarded-User")
+    monkeypatch.setenv("AUTH_RATE_LIMIT", "5")
+    monkeypatch.setenv("AUTH_RATE_WINDOW", "30")
+    monkeypatch.setenv("SIGNUP_INVITE_CODE", "invite-x")
+    monkeypatch.setenv("UPSTREAM_HEADER_ALLOWLIST", "X-Custom, Accept")
+    monkeypatch.setenv("MAX_IN_FLIGHT_PER_USER", "4")
+    monkeypatch.setenv("WS_MAX_MESSAGE_BYTES", "1024")
     settings = Settings.from_env()
     assert settings.namespace == "ns-x"
     assert settings.pool == "pool-x"
@@ -476,11 +517,54 @@ def test_settings_from_env(monkeypatch):
     assert settings.max_body_bytes == 2 * 1024 * 1024
     assert settings.http_timeout == 12.5
     assert settings.auth_proxy_header == "X-Forwarded-User"
+    assert settings.auth_rate_limit == 5
+    assert settings.auth_rate_window == 30
+    assert settings.signup_invite_code == "invite-x"
+    assert settings.upstream_header_allowlist == frozenset({"x-custom", "accept"})
+    assert settings.max_in_flight_per_user == 4
+    assert settings.ws_max_message_bytes == 1024
 
 
 def test_settings_auth_proxy_header_defaults_to_none(monkeypatch):
     monkeypatch.delenv("AUTH_PROXY_HEADER", raising=False)
+    monkeypatch.setenv("ALLOW_INSECURE_COOKIES", "1")
     assert Settings.from_env().auth_proxy_header is None
+
+
+def test_settings_from_env_rejects_insecure_cookies_by_default(monkeypatch):
+    monkeypatch.delenv("COOKIE_SECURE", raising=False)
+    monkeypatch.delenv("ALLOW_INSECURE_COOKIES", raising=False)
+    with pytest.raises(RuntimeError, match="insecure session cookie"):
+        Settings.from_env()
+
+
+def test_settings_from_env_allows_insecure_cookies_with_the_explicit_flag(monkeypatch):
+    monkeypatch.delenv("COOKIE_SECURE", raising=False)
+    monkeypatch.setenv("ALLOW_INSECURE_COOKIES", "1")
+    monkeypatch.delenv("COOKIE_NAME", raising=False)
+    settings = Settings.from_env()
+    assert settings.cookie_secure is False
+    assert settings.cookie_name == "dsh_gw_session"
+
+
+def test_settings_default_cookie_name_is_host_prefixed_when_secure(monkeypatch):
+    monkeypatch.setenv("COOKIE_SECURE", "true")
+    monkeypatch.delenv("COOKIE_NAME", raising=False)
+    assert Settings.from_env().cookie_name == "__Host-dsh_gw_session"
+
+
+def test_settings_explicit_cookie_name_wins(monkeypatch):
+    monkeypatch.setenv("COOKIE_SECURE", "true")
+    monkeypatch.setenv("COOKIE_NAME", "sid")
+    assert Settings.from_env().cookie_name == "sid"
+
+
+def test_settings_upstream_header_allowlist_unset_means_denylist_mode(monkeypatch):
+    monkeypatch.setenv("ALLOW_INSECURE_COOKIES", "1")
+    monkeypatch.delenv("UPSTREAM_HEADER_ALLOWLIST", raising=False)
+    assert Settings.from_env().upstream_header_allowlist is None
+    monkeypatch.setenv("UPSTREAM_HEADER_ALLOWLIST", "")
+    assert Settings.from_env().upstream_header_allowlist == frozenset()
 
 
 # --- Kubernetes adapter ----------------------------------------------------
@@ -635,11 +719,22 @@ async def test_landing_page_has_signup_and_login_forms(env):
     assert "text/html" in response.headers["content-type"]
     assert 'action="/users"' in response.text
     assert 'action="/login"' in response.text
+    # No invite code configured => no invite input on the landing page.
+    assert 'name="invite"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_landing_page_shows_invite_input_only_when_configured(env):
+    configure(env, signup_invite_code="let-me-in")
+    async with asgi_client(env) as client:
+        response = await client.get("/")
+    assert response.status_code == 200
+    assert 'name="invite"' in response.text
 
 
 @pytest.mark.asyncio
 async def test_landing_page_shows_session_when_cookie_present(env):
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/")
     assert "Signed in as" in response.text
     assert "/u/alice/" in response.text
@@ -708,11 +803,14 @@ async def test_signup_json_stores_only_hash_and_returns_token(env, monkeypatch):
     assert pool == "test-pool"
     assert token_hash == hashlib.sha256(body["token"].encode()).hexdigest()
     assert token_hash != body["token"]
-    # The JSON API also gets a browser session cookie (HttpOnly, SameSite=Lax).
+    # The JSON API also gets a browser session cookie (HttpOnly, SameSite=Lax)
+    # carrying only an opaque server-side session id, never the user/token.
     cookie = response.headers["set-cookie"]
-    assert "dsh_gw_session=alice:" in cookie
+    assert "dsh_gw_session=" in cookie
+    assert f"dsh_gw_session={TOKEN}" not in cookie
     assert "HttpOnly" in cookie
     assert "SameSite=lax" in cookie
+    assert response_session_user(env, response) == "alice"
 
 
 @pytest.mark.asyncio
@@ -741,13 +839,7 @@ async def test_signup_form_redirects_and_sets_session_cookie(env, monkeypatch):
         )
     assert response.status_code == 303
     assert response.headers["location"] == "/u/bob/"
-    cookie = response.headers["set-cookie"]
-    assert re_cookie_user(cookie) == "bob"
-
-
-def re_cookie_user(set_cookie: str) -> str:
-    value = set_cookie.split(";", 1)[0].split("=", 1)[1]
-    return value.split(":", 1)[0]
+    assert response_session_user(env, response) == "bob"
 
 
 @pytest.mark.asyncio
@@ -774,7 +866,29 @@ async def test_login_form_sets_cookie_and_redirects(env):
         )
     assert response.status_code == 303
     assert response.headers["location"] == "/u/alice/"
-    assert re_cookie_user(response.headers["set-cookie"]) == "alice"
+    assert response_session_user(env, response) == "alice"
+
+
+@pytest.mark.asyncio
+async def test_secure_session_cookie_uses_the_host_prefix_and_flags(env):
+    configure(env, cookie_secure=True, cookie_name="__Host-dsh_gw_session")
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.post(
+            "/login",
+            data={"user": "alice", "token": TOKEN},
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    cookie = response.headers["set-cookie"]
+    assert cookie.startswith("__Host-dsh_gw_session=")
+    assert "Secure" in cookie
+    assert "HttpOnly" in cookie
+    assert "Path=/" in cookie
+    assert "SameSite=lax" in cookie
+    assert "Domain=" not in cookie
+    # The value is an opaque session id, not <user>:<token>.
+    assert "alice" not in cookie.split(";", 1)[0]
+    assert TOKEN not in cookie
 
 
 @pytest.mark.asyncio
@@ -786,17 +900,197 @@ async def test_login_json_and_failures(env):
         missing = await client.post("/login", json={"user": "ghost", "token": TOKEN})
     assert ok.status_code == 200
     assert bad.status_code == 401
-    assert missing.status_code == 404
+    # An unknown user is a 401 too: login must not reveal which users exist.
+    assert missing.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_logout_clears_cookie(env):
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+async def test_logout_clears_cookie_and_revokes_the_session(env):
+    add_user(env.k8s)
+    name, sid = mint_session(env)
+    assert env.gateway.session_for(sid) is not None
+    async with asgi_client(env, cookies={name: sid}) as client:
         response = await client.post("/logout")
     assert response.status_code == 303
     assert response.headers["location"] == "/"
     assert "dsh_gw_session=" in response.headers["set-cookie"]
     assert "Max-Age=0" in response.headers["set-cookie"]
+    # The old sid is dead server-side, not just deleted from the browser.
+    assert env.gateway.session_for(sid) is None
+    async with asgi_client(env, cookies={name: sid}) as client:
+        replay = await client.get("/users/alice")
+    assert replay.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_logout_deletion_cookie_is_secure_for_the_host_prefix(env):
+    """A __Host- cookie can only be cleared by a Secure deletion Set-Cookie."""
+    configure(env, cookie_secure=True, cookie_name="__Host-dsh_gw_session")
+    add_user(env.k8s)
+    name, sid = mint_session(env)
+    assert name == "__Host-dsh_gw_session"
+    async with asgi_client(env, cookies={name: sid}) as client:
+        response = await client.post("/logout")
+    assert response.status_code == 303
+    cookie = response.headers["set-cookie"]
+    assert cookie.startswith("__Host-dsh_gw_session=")
+    assert "Max-Age=0" in cookie
+    assert "Path=/" in cookie
+    assert "Secure" in cookie
+    assert "Domain=" not in cookie
+
+
+# --- signup invite / auth abuse controls -----------------------------------
+
+
+def configure(env, **overrides):
+    """Return a copy of the fixture settings with overrides applied."""
+    env.settings = Settings(**{**env.settings.__dict__, **overrides})
+    env.gateway.settings = env.settings
+    return env
+
+
+@pytest.mark.asyncio
+async def test_signup_requires_invite_when_configured(env, monkeypatch):
+    configure(env, signup_invite_code="invite-code")
+
+    async def not_ready(user, timeout):
+        return None
+
+    monkeypatch.setattr(env.gateway, "wait_ready", not_ready)
+    async with asgi_client(env) as client:
+        missing = await client.post("/users", json={"user": "alice"})
+        wrong = await client.post("/users", json={"user": "alice", "invite": "nope"})
+        good = await client.post("/users", json={"user": "alice", "invite": "invite-code"})
+    assert missing.status_code == 403
+    assert wrong.status_code == 403
+    assert good.status_code == 202
+    assert [created[0] for created in env.k8s.created] == ["alice"]
+
+
+@pytest.mark.asyncio
+async def test_invite_is_checked_before_the_user_lookup(env):
+    configure(env, signup_invite_code="invite-code")
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.post("/users", json={"user": "alice"})
+    # 403, not 409: an unauthenticated caller cannot probe for existing users.
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_invite_accepts_the_header_and_the_form_field(env, monkeypatch):
+    configure(env, signup_invite_code="invite-code")
+
+    async def not_ready(user, timeout):
+        return None
+
+    monkeypatch.setattr(env.gateway, "wait_ready", not_ready)
+    async with asgi_client(env) as client:
+        via_header = await client.post(
+            "/users",
+            json={"user": "alice"},
+            headers={"X-Signup-Invite": "invite-code"},
+        )
+        via_form = await client.post(
+            "/users",
+            data={"user": "bob", "invite": "invite-code"},
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    assert via_header.status_code == 202
+    assert via_form.status_code == 303
+
+
+@pytest.mark.asyncio
+async def test_form_auth_rejects_cross_origin_requests(env):
+    add_user(env.k8s)
+    form = {"content-type": "application/x-www-form-urlencoded"}
+    async with asgi_client(env) as client:
+        signup = await client.post(
+            "/users", data={"user": "bob"}, headers={**form, "Origin": "http://evil.test"}
+        )
+        login = await client.post(
+            "/login",
+            data={"user": "alice", "token": TOKEN},
+            headers={**form, "Origin": "http://evil.test"},
+        )
+        referer = await client.post(
+            "/login",
+            data={"user": "alice", "token": TOKEN},
+            headers={**form, "Referer": "http://evil.test/login"},
+        )
+        same_origin = await client.post(
+            "/login",
+            data={"user": "alice", "token": TOKEN},
+            headers={**form, "Origin": "http://gateway.test"},
+        )
+    assert signup.status_code == 403
+    assert login.status_code == 403
+    assert referer.status_code == 403
+    assert same_origin.status_code == 303
+
+
+@pytest.mark.asyncio
+async def test_auth_rate_limit_returns_429_with_retry_after(env):
+    configure(env, auth_rate_limit=2, auth_rate_window=60)
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        first = await client.post("/login", json={"user": "alice", "token": "nope"})
+        second = await client.post("/login", json={"user": "alice", "token": "nope"})
+        third = await client.post("/login", json={"user": "alice", "token": "nope"})
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert third.status_code == 429
+    assert int(third.headers["retry-after"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_auth_rate_limit_is_per_client_via_rightmost_forwarded_for(env):
+    configure(env, auth_rate_limit=1, auth_rate_window=60)
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        first = await client.post(
+            "/login",
+            json={"user": "alice", "token": "nope"},
+            headers={"X-Forwarded-For": "1.1.1.1, 10.0.0.1"},
+        )
+        # A spoofed leftmost entry cannot escape the same rightmost-client bucket.
+        same_client = await client.post(
+            "/login",
+            json={"user": "alice", "token": "nope"},
+            headers={"X-Forwarded-For": "9.9.9.9, 10.0.0.1"},
+        )
+        other_client = await client.post(
+            "/login",
+            json={"user": "alice", "token": "nope"},
+            headers={"X-Forwarded-For": "10.0.0.2"},
+        )
+    assert first.status_code == 401
+    assert same_client.status_code == 429
+    assert other_client.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_auth_rate_limit_zero_disables_it(env):
+    configure(env, auth_rate_limit=0)
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        responses = [
+            await client.post("/login", json={"user": "alice", "token": "nope"}) for _ in range(40)
+        ]
+    assert {response.status_code for response in responses} == {401}
+
+
+@pytest.mark.asyncio
+async def test_signup_is_rate_limited_before_the_body_is_read(env):
+    """429 wins over parsing: an abusive client cannot even submit a body."""
+    configure(env, auth_rate_limit=1, auth_rate_window=60)
+    async with asgi_client(env) as client:
+        # Spend the single allowed auth attempt on a login, then hit signup.
+        await client.post("/login", json={"user": "alice", "token": "nope"})
+        limited = await client.post("/users", content=b"not json at all")
+    assert limited.status_code == 429
+    assert env.k8s.created == []
 
 
 # --- auth ------------------------------------------------------------------
@@ -810,11 +1104,11 @@ async def test_get_user_requires_valid_bearer_or_cookie(env):
         bearer = await client.get("/users/alice", headers={"Authorization": f"Bearer {TOKEN}"})
         cookie = await client.get(
             "/users/alice",
-            headers={"Cookie": f"dsh_gw_session=alice:{TOKEN}"},
+            headers={"Cookie": session_cookie(env)},
         )
         wrong_user_cookie = await client.get(
             "/users/alice",
-            headers={"Cookie": f"dsh_gw_session=bob:{TOKEN}"},
+            headers={"Cookie": session_cookie(env, "bob")},
         )
     assert forbidden.status_code == 401
     assert bearer.status_code == 200
@@ -852,7 +1146,7 @@ async def test_delete_user_requires_auth(env):
 async def test_delete_with_cookie_requires_same_origin(env):
     add_user(env.k8s)
     env.gateway.state.handshake[("alice", POD_UID, "gateway.test")] = "dsh-auth-a=x"
-    cookies = {"dsh_gw_session": f"alice:{TOKEN}"}
+    cookies = session_dict(env)
     async with asgi_client(env, cookies=cookies) as client:
         missing = await client.delete("/users/alice")
         cross = await client.delete("/users/alice", headers={"Origin": "http://evil.test"})
@@ -890,13 +1184,78 @@ async def test_unexpected_api_error_propagates(env):
             await client.get("/users/alice")
 
 
+@pytest.mark.asyncio
+async def test_bearer_token_never_authorizes_another_user(env):
+    add_user(env.k8s, "alice", token=TOKEN)
+    add_user(env.k8s, "bob", token="bob-token")
+    async with asgi_client(env) as client:
+        alice_on_bob = await client.get("/users/bob", headers={"Authorization": f"Bearer {TOKEN}"})
+        bob_on_alice = await client.get(
+            "/users/alice", headers={"Authorization": "Bearer bob-token"}
+        )
+        alice_on_alice = await client.get(
+            "/users/alice", headers={"Authorization": f"Bearer {TOKEN}"}
+        )
+    assert alice_on_bob.status_code == 401
+    assert bob_on_alice.status_code == 401
+    assert alice_on_alice.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_session_cookie_never_authorizes_another_user(env):
+    add_user(env.k8s, "alice", token=TOKEN)
+    add_user(env.k8s, "bob", token="bob-token")
+    bob_cookie = session_cookie(env, "bob")
+    async with asgi_client(env) as client:
+        user = await client.get("/users/alice", headers={"Cookie": bob_cookie})
+        proxy = await client.get("/u/alice/api/state", headers={"Cookie": bob_cookie})
+    assert user.status_code == 401
+    assert proxy.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_opaque_session_cookie_is_not_a_bearer_token(env):
+    add_user(env.k8s)
+    _name, sid = mint_session(env)
+    async with asgi_client(env) as client:
+        response = await client.get("/users/alice", headers={"Authorization": f"Bearer {sid}"})
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_expired_session_is_revoked_and_treated_as_anonymous(env):
+    add_user(env.k8s)
+    name, sid = mint_session(env)
+    env.gateway.state.sessions[sid] = Session(user="alice", expires_at=time.time() - 1)
+    async with asgi_client(env, cookies={name: sid}) as client:
+        user = await client.get("/users/alice")
+        landing = await client.get("/")
+    assert user.status_code == 401
+    assert "Signed in as" not in landing.text
+    assert sid not in env.gateway.state.sessions
+
+
+@pytest.mark.asyncio
+async def test_delete_user_revokes_all_its_sessions(env):
+    add_user(env.k8s)
+    cookie = session_dict(env)
+    other = session_dict(env)  # a second browser session for the same user
+    async with asgi_client(env, cookies=cookie) as client:
+        response = await client.delete("/users/alice", headers={"Origin": "http://gateway.test"})
+    assert response.status_code == 200
+    assert env.gateway.state.sessions == {}
+    async with asgi_client(env, cookies=other) as client:
+        landing = await client.get("/")
+    assert "Signed in as" not in landing.text
+
+
 # --- DSH handshake ---------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_proxy_handshakes_and_uses_browser_host(env):
     add_user(env.k8s)
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 200
     assert response.text == "hello from DSH"
@@ -912,7 +1271,7 @@ async def test_proxy_handshakes_and_uses_browser_host(env):
 @pytest.mark.asyncio
 async def test_dsh_cookie_is_cached_per_pod_uid_and_host(env):
     add_user(env.k8s)
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         first = await client.get("/u/alice/api/one")
         second = await client.get("/u/alice/api/two")
     assert first.status_code == second.status_code == 200
@@ -924,7 +1283,7 @@ async def test_dsh_cookie_is_cached_per_pod_uid_and_host(env):
 async def test_missing_launch_token_returns_503_with_retry_after(env):
     _sandbox_name, pod_name = add_user(env.k8s)
     env.k8s.logs[pod_name] = "no token printed yet\n"
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 503
     assert response.headers["retry-after"] == "10"
@@ -935,7 +1294,7 @@ async def test_missing_launch_token_returns_503_with_retry_after(env):
 async def test_handshake_4xx_is_503(env):
     add_user(env.k8s)
     env.upstream.handshake_status = 401
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 503
 
@@ -944,9 +1303,25 @@ async def test_handshake_4xx_is_503(env):
 async def test_missing_cookie_in_handshake_is_503(env):
     add_user(env.k8s)
     env.upstream.handshake_cookies = ["other=1; Path=/"]
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_handshake_error_never_leaks_the_launch_token_or_url(env):
+    _sandbox_name, pod_name = add_user(env.k8s)
+    secret = "super-secret-launch-token"
+    env.k8s.logs[pod_name] = f"dsh web: http://10.0.0.7:3080/?token={secret}\n"
+    env.upstream.handshake_status = 500
+    async with asgi_client(env, cookies=session_dict(env)) as client:
+        response = await client.get("/u/alice/api/state")
+    assert response.status_code == 503
+    body = response.text
+    assert secret not in body
+    assert FQDN not in body
+    assert "10.0.0.7" not in body
+    assert "dsh-auth" not in body
 
 
 @pytest.mark.asyncio
@@ -957,7 +1332,7 @@ async def test_pod_annotation_overrides_sandbox_name(env):
     )
     env.k8s.pods["custom-pod"] = {"metadata": {"uid": "other-uid"}}
     env.k8s.logs["custom-pod"] = env.k8s.logs[pod_name]
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 200
     assert ("alice", "other-uid", "gateway.test") in env.gateway.state.handshake
@@ -984,7 +1359,7 @@ async def test_proxy_strips_gateway_auth_cookie_and_hop_headers(env):
     env.upstream.proxy_handler = handler
     headers = {
         "Authorization": f"Bearer {TOKEN}",
-        "Cookie": "dsh_gw_session=alice:x; browser=1",
+        "Cookie": session_cookie(env) + "; browser=1",
         "X-Forwarded-For": "1.2.3.4",
         "X-Forwarded-Proto": "https",
         "Host": "gateway.test",
@@ -1010,6 +1385,83 @@ async def test_proxy_strips_gateway_auth_cookie_and_hop_headers(env):
 
 
 @pytest.mark.asyncio
+async def test_proxy_strips_client_supplied_forwarding_and_sso_headers(env):
+    add_user(env.k8s)
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Forwarded": "for=evil.test;proto=https",
+        "X-Forwarded-User": "bob",
+        "X-Forwarded-Host": "evil.test",
+        "X-Auth-Request-User": "bob",
+        "X-Auth-Request-Email": "bob@evil.test",
+        "X-Real-IP": "6.6.6.6",
+        "Origin": "http://gateway.test",
+    }
+    async with asgi_client(env) as client:
+        response = await client.get("/u/alice/api/state", headers=headers)
+    assert response.status_code == 200
+    proxy = env.upstream.proxy_requests[0]
+    for name in (
+        "forwarded",
+        "x-forwarded-user",
+        "x-auth-request-user",
+        "x-auth-request-email",
+        "x-real-ip",
+    ):
+        assert name not in proxy.headers
+    # The gateway's own hop metadata comes from the real connection instead.
+    assert proxy.headers["x-forwarded-for"] == "127.0.0.1"
+    assert proxy.headers["x-forwarded-host"] == "gateway.test"
+
+
+@pytest.mark.asyncio
+async def test_proxy_upstream_header_allowlist_drops_unlisted_headers(env):
+    configure(env, upstream_header_allowlist=frozenset({"x-custom-ok"}))
+    add_user(env.k8s)
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "X-Custom-Ok": "keep",
+        "X-Custom-Drop": "drop",
+        "X-Forwarded-User": "bob",
+        "Origin": "http://gateway.test",
+    }
+    async with asgi_client(env) as client:
+        response = await client.get("/u/alice/api/state", headers=headers)
+    assert response.status_code == 200
+    proxy = env.upstream.proxy_requests[0]
+    assert proxy.headers["x-custom-ok"] == "keep"
+    assert "x-custom-drop" not in proxy.headers
+    # Allowlisting never re-enables gateway-owned or spoofable headers.
+    assert "authorization" not in proxy.headers
+    assert "x-forwarded-user" not in proxy.headers
+    assert "cookie" not in proxy.headers or proxy.headers["cookie"] == "dsh-auth-a=one"
+
+
+@pytest.mark.asyncio
+async def test_proxy_rejects_requests_over_the_per_user_in_flight_cap(env):
+    configure(env, max_in_flight_per_user=1)
+    add_user(env.k8s)
+    env.gateway.state.in_flight["alice"] = 1
+    async with asgi_client(env, cookies=session_dict(env)) as client:
+        response = await client.get("/u/alice/api/state")
+    assert response.status_code == 503
+    assert "retry-after" in response.headers
+    assert env.gateway.state.in_flight["alice"] == 1
+    assert env.upstream.proxy_requests == []
+
+
+@pytest.mark.asyncio
+async def test_proxy_accepts_requests_below_the_per_user_in_flight_cap(env):
+    configure(env, max_in_flight_per_user=2)
+    add_user(env.k8s)
+    env.gateway.state.in_flight["alice"] = 1
+    async with asgi_client(env, cookies=session_dict(env)) as client:
+        response = await client.get("/u/alice/api/state")
+    assert response.status_code == 200
+    assert env.gateway.state.in_flight["alice"] == 1  # the slot was released again
+
+
+@pytest.mark.asyncio
 async def test_proxy_rewrites_absolute_path_location(env):
     add_user(env.k8s)
     env.upstream.proxy_handler = lambda request: dsh_response(
@@ -1019,7 +1471,7 @@ async def test_proxy_rewrites_absolute_path_location(env):
             ("set-cookie", "upstream=leak; Path=/"),
         ],
     )
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/redirect", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/u/alice/?next=1"
@@ -1040,7 +1492,7 @@ async def test_proxy_refreshes_cookie_once_on_upstream_401(env):
         return dsh_response(200, b"fresh")
 
     env.upstream.proxy_handler = handler
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 200
     assert response.text == "fresh"
@@ -1053,7 +1505,7 @@ async def test_proxy_refreshes_cookie_once_on_upstream_401(env):
 async def test_proxy_does_not_refresh_401_without_cached_cookie(env):
     add_user(env.k8s)
     env.upstream.proxy_handler = lambda request: dsh_response(401, b"no")
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 401
     assert len(env.upstream.proxy_requests) == 1
@@ -1067,7 +1519,7 @@ async def test_proxy_upstream_connection_error_is_502(env):
         raise httpx.ConnectError("boom", request=request)
 
     env.upstream.proxy_handler = handler
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 502
     assert env.gateway.state.in_flight["alice"] == 0
@@ -1106,7 +1558,7 @@ async def test_proxy_client_disconnect_mid_body_returns_499(env):
             "/u/alice/api/echo",
             headers=[
                 (b"origin", b"http://gateway.test"),
-                (b"cookie", f"dsh_gw_session=alice:{TOKEN}".encode()),
+                (b"cookie", session_cookie(env).encode()),
                 (b"content-type", b"application/json"),
             ],
         ),
@@ -1167,7 +1619,7 @@ async def test_proxy_client_disconnect_mid_stream_frees_slot(env):
         raw_scope(
             "GET",
             "/u/alice/api/stream",
-            headers=[(b"cookie", f"dsh_gw_session=alice:{TOKEN}".encode())],
+            headers=[(b"cookie", session_cookie(env).encode())],
         ),
         receive,
     )
@@ -1234,7 +1686,7 @@ async def test_proxy_client_disconnect_survives_cancelled_upstream_close(env):
         raw_scope(
             "GET",
             "/u/alice/api/stream",
-            headers=[(b"cookie", f"dsh_gw_session=alice:{TOKEN}".encode())],
+            headers=[(b"cookie", session_cookie(env).encode())],
         ),
         receive,
     )
@@ -1258,7 +1710,7 @@ async def test_proxy_wakes_suspended_sandbox(env, monkeypatch):
         return env.k8s.sandboxes[sandbox_name]
 
     monkeypatch.setattr(env.gateway, "wait_ready", ready)
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 200
     assert ("dsh-alice-sbx", "Running") in env.k8s.patches
@@ -1273,7 +1725,7 @@ async def test_proxy_wake_timeout_returns_503(env, monkeypatch):
         return None
 
     monkeypatch.setattr(env.gateway, "wait_ready", never)
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/u/alice/api/state")
     assert response.status_code == 503
     assert response.headers["retry-after"] == "10"
@@ -1297,7 +1749,7 @@ async def test_proxy_requires_auth(env):
 @pytest.mark.asyncio
 async def test_proxy_cookie_mutation_requires_same_origin(env):
     add_user(env.k8s)
-    cookies = {"dsh_gw_session": f"alice:{TOKEN}"}
+    cookies = session_dict(env)
     async with asgi_client(env, cookies=cookies) as client:
         cross = await client.post(
             "/u/alice/api/mutate", headers={"Origin": "http://evil.test"}, content=b"{}"
@@ -1385,7 +1837,7 @@ def test_ws_cookie_cross_origin_closes_4401(env):
         with client.websocket_connect(
             "/u/alice/api/remote.mux",
             headers={
-                "cookie": f"dsh_gw_session=alice:{TOKEN}",
+                "cookie": session_cookie(env),
                 "origin": "http://evil.test",
             },
         ) as ws:
@@ -1425,7 +1877,7 @@ def test_ws_cookie_same_origin_bridges_frames(env):
         with client.websocket_connect(
             "/u/alice/api/remote.mux",
             headers={
-                "cookie": f"dsh_gw_session=alice:{TOKEN}",
+                "cookie": session_cookie(env),
                 "origin": "http://testserver",
             },
         ) as ws:
@@ -1462,6 +1914,70 @@ def test_ws_upstream_connect_failure_closes_1011(env):
             with pytest.raises(WebSocketDisconnect) as exc:
                 ws.receive_text()
     assert exc.value.code == 1011
+
+
+def test_ws_strips_client_supplied_forwarding_and_sso_headers(env):
+    add_user(env.k8s)
+    with TestClient(env.app) as client:
+        with client.websocket_connect(
+            "/u/alice/api/remote.mux",
+            headers={
+                "Authorization": f"Bearer {TOKEN}",
+                "Forwarded": "for=evil.test",
+                "X-Forwarded-User": "bob",
+                "X-Auth-Request-User": "bob",
+            },
+        ) as ws:
+            ws.send_text("hello")
+            assert ws.receive_text() == "welcome"
+            assert ws.receive_text() == "pong"
+    headers = env.ws_connect.calls[0][1]["additional_headers"]
+    assert "forwarded" not in headers
+    assert "x-forwarded-user" not in headers
+    assert "x-auth-request-user" not in headers
+    assert headers["cookie"] == "dsh-auth-a=one"
+
+
+def test_ws_per_user_in_flight_cap_closes_1011(env):
+    configure(env, max_in_flight_per_user=1)
+    add_user(env.k8s)
+    env.gateway.state.in_flight["alice"] = 1
+    with TestClient(env.app) as client:
+        with client.websocket_connect(
+            "/u/alice/api/remote.mux",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+    assert exc.value.code == 1011
+    assert env.ws_connect.calls == []
+
+
+def test_ws_passes_the_default_max_message_size(env):
+    add_user(env.k8s)
+    with TestClient(env.app) as client:
+        with client.websocket_connect(
+            "/u/alice/api/remote.mux",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as ws:
+            ws.send_text("hello")
+            assert ws.receive_text() == "welcome"
+            assert ws.receive_text() == "pong"
+    assert env.ws_connect.calls[0][1]["max_size"] == 16 * 1024 * 1024
+
+
+def test_ws_max_message_size_is_configurable(env):
+    configure(env, ws_max_message_bytes=2048)
+    add_user(env.k8s)
+    with TestClient(env.app) as client:
+        with client.websocket_connect(
+            "/u/alice/api/remote.mux",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as ws:
+            ws.send_text("hello")
+            assert ws.receive_text() == "welcome"
+            assert ws.receive_text() == "pong"
+    assert env.ws_connect.calls[0][1]["max_size"] == 2048
 
 
 # --- idle sweeper ----------------------------------------------------------
@@ -1576,14 +2092,46 @@ async def test_sweeper_survives_transient_api_error(env):
     assert env.gateway.state.maintenance["alice"] is False
 
 
+@pytest.mark.asyncio
+async def test_sweeper_prunes_orphan_and_expired_state(env):
+    now = time.time()
+    # No claim for "ghost": every per-user entry is orphaned.
+    env.gateway.state.last_activity["ghost"] = now
+    env.gateway.state.in_flight["ghost"] = 0
+    env.gateway.state.maintenance["ghost"] = False
+    env.gateway.state.handshake[("ghost", POD_UID, "gateway.test")] = "dsh-auth-a=x"
+    _ghost_name, ghost_sid = mint_session(env, "ghost")
+    env.gateway.state.auth_rate["1.2.3.4"] = (now - 3600, 5)
+    # A user with requests still in flight is preserved even without a claim.
+    env.gateway.state.in_flight["busy"] = 2
+    # A live claim keeps its user's current session...
+    env.k8s.claims["alice"] = ready_claim()
+    env.k8s.sandboxes["dsh-alice-sbx"] = ready_sandbox()
+    env.gateway.state.last_activity["alice"] = now
+    _alice_name, alice_sid = mint_session(env, "alice")
+    # ...but an expired session is pruned even for a live user.
+    _old_name, expired_sid = mint_session(env, "alice")
+    env.gateway.state.sessions[expired_sid] = Session(user="alice", expires_at=now - 1)
+
+    await env.gateway.sweep_once()
+
+    assert "ghost" not in env.gateway.state.last_activity
+    assert "ghost" not in env.gateway.state.in_flight
+    assert "ghost" not in env.gateway.state.maintenance
+    assert ("ghost", POD_UID, "gateway.test") not in env.gateway.state.handshake
+    assert ghost_sid not in env.gateway.state.sessions
+    assert env.gateway.state.auth_rate == {}
+    assert env.gateway.state.in_flight["busy"] == 2
+    assert alice_sid in env.gateway.state.sessions
+    assert expired_sid not in env.gateway.state.sessions
+
+
 # --- SSO (reverse-proxy identity) ------------------------------------------
 
 
 def enable_sso(env, header="X-Forwarded-User"):
     """Flip an env into SSO mode: the gateway trusts the named identity header."""
-    env.settings = Settings(**{**env.settings.__dict__, "auth_proxy_header": header})
-    env.gateway.settings = env.settings
-    return env
+    return configure(env, auth_proxy_header=header)
 
 
 def test_remote_user_none_when_sso_disabled(env):
@@ -1611,7 +2159,7 @@ async def test_sso_landing_new_user_shows_provisioning(env):
     assert "Signed in as <strong>alice</strong>" in response.text
     assert "Provisioning" in response.text
     assert "Recreate sandbox" not in response.text
-    assert re_cookie_user(response.headers["set-cookie"]) == "alice"
+    assert response_session_user(env, response) == "alice"
     assert [c[0] for c in env.k8s.created] == ["alice"]
     assert env.k8s.token_patches == []
 
@@ -1620,7 +2168,7 @@ async def test_sso_landing_new_user_shows_provisioning(env):
 async def test_sso_landing_ready_connects_and_offers_recreate_only(env):
     enable_sso(env)
     add_user(env.k8s)
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.get("/", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 200
     assert "Signed in as <strong>alice</strong>" in response.text
@@ -1642,9 +2190,53 @@ async def test_sso_landing_rotates_token_when_session_missing(env):
         response = await client.get("/", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 200
     assert "Recreate sandbox" in response.text
-    assert re_cookie_user(response.headers["set-cookie"]) == "alice"
+    assert response_session_user(env, response) == "alice"
     assert [p[0] for p in env.k8s.token_patches] == ["alice"]
     assert env.k8s.created == []
+
+
+@pytest.mark.asyncio
+async def test_sso_landing_reuses_a_valid_session_for_the_remote_user(env):
+    enable_sso(env)
+    add_user(env.k8s)
+    name, sid = mint_session(env)
+    async with asgi_client(env, cookies={name: sid}) as client:
+        response = await client.get("/", headers={"X-Forwarded-User": "alice"})
+    assert response.status_code == 200
+    assert "Recreate sandbox" in response.text
+    # Untouched: no cookie is re-issued and no token is rotated.
+    assert "set-cookie" not in response.headers
+    assert [p[0] for p in env.k8s.token_patches] == []
+    assert env.gateway.state.sessions[sid].user == "alice"
+
+
+@pytest.mark.asyncio
+async def test_sso_landing_revokes_a_foreign_session(env):
+    enable_sso(env)
+    add_user(env.k8s)
+    bob_name, bob_sid = mint_session(env, "bob")
+    async with asgi_client(env, cookies={bob_name: bob_sid}) as client:
+        response = await client.get("/", headers={"X-Forwarded-User": "alice"})
+    assert response.status_code == 200
+    # A session for another identity is never reused and is revoked server-side.
+    assert bob_sid not in env.gateway.state.sessions
+    assert response_session_user(env, response) == "alice"
+
+
+@pytest.mark.asyncio
+async def test_recreate_revokes_the_old_session_and_mints_a_new_one(env):
+    enable_sso(env)
+    add_user(env.k8s)
+    name, sid = mint_session(env)
+    async with asgi_client(env, cookies={name: sid}) as client:
+        response = await client.post(
+            "/recreate",
+            headers={"X-Forwarded-User": "alice", "Origin": "http://gateway.test"},
+        )
+    assert response.status_code == 303
+    assert sid not in env.gateway.state.sessions
+    new_sid = response.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+    assert env.gateway.state.sessions[new_sid].user == "alice"
 
 
 @pytest.mark.asyncio
@@ -1657,7 +2249,7 @@ async def test_recreate_deletes_and_reprovisions(env):
     assert response.headers["location"] == "/u/alice/"
     assert env.k8s.deleted == ["alice"]
     assert [c[0] for c in env.k8s.created] == ["alice"]
-    assert re_cookie_user(response.headers["set-cookie"]) == "alice"
+    assert response_session_user(env, response) == "alice"
 
 
 @pytest.mark.asyncio
@@ -1673,7 +2265,7 @@ async def test_recreate_requires_sso(env):
 async def test_recreate_rejects_cross_origin(env):
     enable_sso(env)
     add_user(env.k8s)
-    async with asgi_client(env, cookies={"dsh_gw_session": f"alice:{TOKEN}"}) as client:
+    async with asgi_client(env, cookies=session_dict(env)) as client:
         response = await client.post(
             "/recreate",
             headers={"X-Forwarded-User": "alice", "Origin": "http://evil.test"},

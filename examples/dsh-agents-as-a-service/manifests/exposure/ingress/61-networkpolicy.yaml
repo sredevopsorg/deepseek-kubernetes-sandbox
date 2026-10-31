@@ -1,10 +1,15 @@
-# OPTIONAL with the Ingress exposure variant: restrict the gateway's ingress
-# to the ingress controller.
+# REQUIRED with the Ingress exposure variant for production: restrict the
+# gateway's ingress to the ingress controller. Applying the variant without
+# this policy is demo-only.
 #
 # This manifest assumes Traefik, matching this variant's
 # `ingressClassName: traefik`. Traefik's Helm chart labels its pods
 # app.kubernetes.io/name=traefik; adjust the selector for another controller or
 # for a hostNetwork install (where the source is the node IP, not a pod IP).
+#
+# The sandbox NetworkPolicy and the gateway egress policy are separate and also
+# required for production; see
+# ../../../docs/optional-hardening.md#6-production-checklist.
 #
 # NetworkPolicy enforcement of kubelet probe traffic is CNI-dependent. If the
 # gateway starts failing its /healthz probes, allow the node CIDR on port 8080

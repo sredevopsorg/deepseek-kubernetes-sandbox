@@ -22,13 +22,47 @@ expect() { # <file> <literal>
 
 # Main Dockerfile build args
 expect Dockerfile "ARG DSH_VERSION=$DSH_VERSION"
+expect Dockerfile "ARG DSH_COMMIT=$DSH_COMMIT"
 expect Dockerfile "ARG PNPM_VERSION=$PNPM_VERSION"
 expect Dockerfile "ARG RELEASE_REVISION=$RELEASE_REVISION"
+expect Dockerfile "ARG NODE_BUILD_IMAGE=$NODE_BUILD_IMAGE"
+expect Dockerfile "ARG NODE_RUNTIME_IMAGE=$NODE_RUNTIME_IMAGE"
+# The build stage must fail closed when the tag no longer resolves to DSH_COMMIT.
+expect Dockerfile "git -C /src rev-parse HEAD"
+
+# Example gateway build base image
+expect examples/dsh-agents-as-a-service/gateway/Dockerfile \
+  "ARG GATEWAY_PYTHON_IMAGE=$GATEWAY_PYTHON_IMAGE"
 
 # Local configuration mirrored for humans
 expect .env.sample "DSH_VERSION=$DSH_VERSION"
+expect .env.sample "DSH_COMMIT=$DSH_COMMIT"
 expect .env.sample "PNPM_VERSION=$PNPM_VERSION"
 expect .env.sample "RELEASE_REVISION=$RELEASE_REVISION"
+
+# Human-facing docs embed the resolved commit in the build example and table.
+expect docs/main-image.md "$DSH_COMMIT"
+expect docs/versioning.md "$DSH_COMMIT"
+
+# Every container image is pinned to an immutable multi-arch index digest, not
+# a mutable tag. This is a supply-chain invariant: don't "fix" a failing check
+# by dropping the digest.
+for image_var in NODE_BUILD_IMAGE NODE_RUNTIME_IMAGE GATEWAY_PYTHON_IMAGE OAUTH2_PROXY_IMAGE; do
+  image_value="${!image_var:-}"
+  if ! printf '%s' "$image_value" | grep -qE '@sha256:[0-9a-f]{64}$'; then
+    err "versions.env: $image_var must be digest-pinned (name:tag@sha256:<64 hex>), got: ${image_value:-<unset>}"
+  fi
+done
+
+if ! printf '%s' "${DSH_COMMIT:-}" | grep -qE '^[0-9a-f]{40}$'; then
+  err "versions.env: DSH_COMMIT must be a full 40-character commit SHA, got: ${DSH_COMMIT:-<unset>}"
+fi
+
+# Build entrypoints must pass DSH_COMMIT rather than trusting the tag alone.
+expect Makefile "--build-arg DSH_COMMIT=\$(DSH_COMMIT)"
+for wf in build-main.yaml release.yaml ci-image.yaml; do
+  expect ".github/workflows/$wf" "DSH_COMMIT="
+done
 
 # Image references in the example manifests
 for f in \
@@ -37,6 +71,10 @@ for f in \
   expect "$f" "image: $GHCR_IMAGE:$IDENTITY"
 done
 expect examples/dsh-agents-as-a-service/manifests/50-gateway.yaml "image: $GATEWAY_IMAGE:$IDENTITY"
+
+# The oauth2-proxy exposure variant pins the digest, not the mutable tag.
+expect examples/dsh-agents-as-a-service/manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml \
+  "image: $OAUTH2_PROXY_IMAGE"
 
 # The gateway image must live below the repository image (one package per
 # example component, no unrelated top-level packages).

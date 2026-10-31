@@ -43,7 +43,9 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          # Both files are fully hash-pinned (uv pip compile --generate-hashes);
+          # pip refuses to install anything not listed with a matching hash.
+          pip install --require-hashes -r requirements.txt -r requirements-dev.txt
       - name: Lint
         run: |
           set -euo pipefail

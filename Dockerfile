@@ -6,13 +6,14 @@
 # Build args (all pinned in versions.env, verified by scripts/check-versions.sh):
 #   DSH_REPO              upstream git remote to package
 #   DSH_VERSION           upstream git ref to build (tag or branch)
+#   DSH_COMMIT            full commit SHA DSH_VERSION must resolve to
 #   RELEASE_REVISION      optional repository revision label (r2, r3, ...)
 #   PNPM_VERSION          pnpm used to build DSH
 #   VCS_REF               this repository's commit, recorded in OCI labels
-#   NODE_BUILD_IMAGE      node image used to build DSH
-#   NODE_RUNTIME_IMAGE    node image used at runtime
-ARG NODE_BUILD_IMAGE=docker.io/node:24-trixie
-ARG NODE_RUNTIME_IMAGE=docker.io/node:24-trixie-slim
+#   NODE_BUILD_IMAGE      node image used to build DSH (pinned by digest)
+#   NODE_RUNTIME_IMAGE    node image used at runtime (pinned by digest)
+ARG NODE_BUILD_IMAGE=docker.io/node:24-trixie@sha256:8c761eca2bf7eec965f946cf47b8090143cb41f45f2f8699af0cc0298d2d2d19
+ARG NODE_RUNTIME_IMAGE=docker.io/node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446
 
 # ---------------------------------------------------------------------------
 # Build stage: clone DSH at the pinned ref, build, and package the CLI.
@@ -21,6 +22,7 @@ FROM $NODE_BUILD_IMAGE AS build
 
 ARG DSH_REPO=https://github.com/deepseek-ai/deepseek-harness.git
 ARG DSH_VERSION=dsh-v0.2.1-rc.5
+ARG DSH_COMMIT=b830ec950faba0a46dda564be3e2d854afed94f1
 ARG PNPM_VERSION=11.28.5
 
 ENV CI=true \
@@ -31,7 +33,15 @@ RUN corepack enable \
 
 WORKDIR /src
 
-RUN git clone --depth 1 --branch "$DSH_VERSION" "$DSH_REPO" .
+# Clone the pinned ref and fail closed unless it resolves to DSH_COMMIT. A moved
+# tag would otherwise silently change what the image packages.
+RUN git clone --depth 1 --branch "$DSH_VERSION" "$DSH_REPO" . \
+ && actual="$(git -C /src rev-parse HEAD)" \
+ && if [ "$actual" != "$DSH_COMMIT" ]; then \
+      echo "error: $DSH_REPO $DSH_VERSION resolved to $actual, expected DSH_COMMIT $DSH_COMMIT" >&2; \
+      echo "error: update DSH_VERSION/DSH_COMMIT in versions.env with scripts/set-version.sh" >&2; \
+      exit 1; \
+    fi
 
 RUN pnpm install --frozen-lockfile
 

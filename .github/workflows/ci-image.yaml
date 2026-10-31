@@ -48,6 +48,7 @@ jobs:
           {
             echo "identity=$identity"
             echo "dsh_version=$DSH_VERSION"
+            echo "dsh_commit=$DSH_COMMIT"
             echo "pnpm_version=$PNPM_VERSION"
             echo "release_revision=${RELEASE_REVISION:-}"
           } >> "$GITHUB_OUTPUT"
@@ -66,6 +67,7 @@ jobs:
           tags: dsh-web:ci
           build-args: |
             DSH_VERSION=${{ steps.meta.outputs.dsh_version }}
+            DSH_COMMIT=${{ steps.meta.outputs.dsh_commit }}
             RELEASE_REVISION=${{ steps.meta.outputs.release_revision }}
             PNPM_VERSION=${{ steps.meta.outputs.pnpm_version }}
             VCS_REF=${{ github.sha }}

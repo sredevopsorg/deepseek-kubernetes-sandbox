@@ -27,6 +27,7 @@ help: ## Show available targets
 image: ## Build the main DSH Web image (no push)
 	docker build \
 		--build-arg DSH_VERSION=$(DSH_VERSION) \
+		--build-arg DSH_COMMIT=$(DSH_COMMIT) \
 		--build-arg RELEASE_REVISION=$(RELEASE_REVISION) \
 		--build-arg PNPM_VERSION=$(PNPM_VERSION) \
 		--build-arg VCS_REF=$(VCS_REF) \
