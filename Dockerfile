@@ -94,8 +94,8 @@ ENV NODE_ENV=production \
 # syscalls; a hardened pod (all capabilities dropped, RuntimeDefault seccomp)
 # usually cannot create one, which is why DSH then falls back to Landlock and,
 # when that is unavailable too, to DSH_PERMISSION_MODE=danger-full-access.
-RUN apt update \
- && apt install -y --no-install-recommends \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
       ca-certificates \
       git \
       ripgrep \
@@ -110,7 +110,7 @@ RUN apt update \
       python3-pip \
       python3-venv \ 
  && rm -rf /var/lib/apt/lists/* \
- && apt autoclean -y \
+ && apt-get autoclean -y \
      && install -d -o node -g node -m 0755 /workspace "$DSH_HOME" \
      && corepack enable \
      && corepack prepare "pnpm@$PNPM_VERSION" --activate \
