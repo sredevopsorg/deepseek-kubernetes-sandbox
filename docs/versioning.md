@@ -15,12 +15,12 @@ release identity = DSH_VERSION + optional "-" + RELEASE_REVISION
 
 | Piece | Meaning |
 | --- | --- |
-| `DSH_VERSION` | The upstream DeepSeek Harness git ref being packaged, e.g. `dsh-v0.2.1-rc.5`. It mirrors upstream's own tag. |
+| `DSH_VERSION` | The upstream DeepSeek Harness git ref being packaged, e.g. `dsh-v0.2.1-rc.5-r6`. It mirrors upstream's own tag. |
 | `RELEASE_REVISION` | An optional repository revision at that DSH ref: empty for the first release, `rN` (`N >= 2`) for a repository-only re-release. |
 
 Examples:
 
-- `DSH_VERSION=dsh-v0.2.1-rc.5`, `RELEASE_REVISION=` → identity `dsh-v0.2.1-rc.5`
+- `DSH_VERSION=dsh-v0.2.1-rc.5-r6`, `RELEASE_REVISION=` → identity `dsh-v0.2.1-rc.5-r6`
   (first release at that upstream ref).
 - `DSH_VERSION=<ref>`, `RELEASE_REVISION=rN` → identity `<ref>-rN` (for example
   documentation, CI or gateway changes on top of an already-released ref; no DSH
@@ -36,7 +36,7 @@ with an empty revision); a repository-only change at the same DSH ref increments
 change what an existing deployment runs. A fix therefore publishes a new identity;
 see the rules above.
 
-The current identity is `dsh-v0.2.1-rc.5`, the first release at this upstream
+The current identity is `dsh-v0.2.1-rc.5-r6`, the first release at this upstream
 ref, so it carries no revision suffix. The identity is stored in
 [versions.env](../versions.env) and consumed everywhere: the Dockerfile labels
 (version and revision), the example manifests, the Makefile and the release
@@ -46,7 +46,7 @@ workflow.
 
 | Channel | Image tag | Meaning |
 | --- | --- | --- |
-| Release | `dsh-v0.2.1-rc.5` | The current immutable release identity. What production should pin (preferably by digest). |
+| Release | `dsh-v0.2.1-rc.5-r6` | The current immutable release identity. What production should pin (preferably by digest). |
 | `latest` | `latest` | Alias for the most recent release; moves only when a new release is published. |
 | `main` | `main` | Development channel, rebuilt when image or gateway sources change on `main`. Never treat it as a release; it exists so `main` can be tested. |
 
@@ -60,7 +60,7 @@ Values from [versions.env](../versions.env) at the current identity:
 | Component | Pin | Source |
 | --- | --- | --- |
 | Upstream DSH source | `DSH_REPO` | [versions.env](../versions.env) |
-| DSH ref | `dsh-v0.2.1-rc.5` | `DSH_VERSION` |
+| DSH ref | `dsh-v0.2.1-rc.5-r6` | `DSH_VERSION` |
 | DSH commit | `b830ec950faba0a46dda564be3e2d854afed94f1` | `DSH_COMMIT`; the main image build fails unless the clone's `HEAD` matches |
 | Repository revision | `(empty)` | `RELEASE_REVISION` |
 | pnpm | `11.28.5` | `PNPM_VERSION` |
@@ -176,7 +176,7 @@ Release identities are immutable in theory; deployments should still pin the
 _resolved_ digest for reproducibility and supply-chain safety:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5
+docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.1-rc.5-r6
 # then, in the deployment:
 #   image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
 ```
