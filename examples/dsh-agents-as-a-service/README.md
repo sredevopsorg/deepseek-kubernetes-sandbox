@@ -16,8 +16,9 @@ It ships in three layers:
 1. **The resource layer** (steps 1–7): pure manifests + kubectl, so every
    mechanism is visible.
 2. **The service layer** (step 8): a small included **gateway** (`gateway/`) that
-   makes the platform browser-usable — a signup page/API, `HttpOnly` cookie
-   sessions, a `/u/{user}/**` proxy for HTTP **and WebSocket** that transparently
+   makes the platform browser-usable — a signup page/API, revocable server-side
+   **opaque-cookie sessions**, auth rate limiting and an optional signup invite
+   code, a `/u/{user}/**` proxy for HTTP **and WebSocket** that transparently
    **wakes suspended instances on connect**, and an idle sweeper that suspends
    them again. The gateway performs the DSH launch-token handshake server-side,
    so the browser never sees the token.
@@ -65,12 +66,13 @@ What it demonstrates, feature by feature:
   upstream instead of splitting `/v1/*` (API) from the dashboard.
 - **Shared provider keys**: `DEEPSEEK_API_KEY` plus any keys in the optional
   `dsh-provider-keys-extra` Secret are injected via `envFrom` into every
-  sandbox. There is no per-tenant key, dashboard basic-auth, session-cookie
-  secret, or API-server key.
+  sandbox. There is no per-tenant key, dashboard basic-auth, signed-session
+  secret (sessions are opaque server-side ids), or API-server key.
 - **Launch-token handshake**: DSH gates `/` behind a token it prints only in its
   logs. The gateway reads it, performs the handshake, and keeps the resulting
   auth cookie server-side; the browser authenticates to the gateway with its own
-  cookie. See [How the DSH handshake works](#how-the-dsh-handshake-works).
+  opaque session cookie, never the token. See
+  [How the DSH handshake works](#how-the-dsh-handshake-works).
 - **Host allow-list**: DSH rejects unknown `Host` headers. The gateway forwards
   the browser's `Host`, so the public hostname must be added to
   `DSH_TRUSTED_HOSTS` in the template.
@@ -285,6 +287,15 @@ kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 
 > The gateway binds `8080`; the local port-forward uses `18080` and never `3080`.
 >
+> **Cookie/TLS guard.** The base manifest serves plain HTTP through port-forward,
+> so it sets `COOKIE_SECURE=false` **and** `ALLOW_INSECURE_COOKIES=1`. The gateway
+> refuses to start when `COOKIE_SECURE=false` unless
+> `ALLOW_INSECURE_COOKIES=1` explicitly acknowledges that the session cookie
+> travels in clear text; that prevents an HTTPS deployment from silently serving
+> an insecure cookie. Before exposing the gateway over TLS, set
+> `COOKIE_SECURE=true` and remove the acknowledgement:
+> `kubectl -n dsh-demo set env deploy/dsh-gateway COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-`.
+>
 > **Image pull policy.** `manifests/50-gateway.yaml` uses
 > `imagePullPolicy: IfNotPresent` with the release identity, so a locally built
 > image must be loaded into the cluster under exactly that name (kind:
@@ -317,25 +328,40 @@ kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 
 ### Browser flow
 
-Open <http://localhost:18080>. The landing page has a one-field signup form.
-Enter `bob`, and the gateway:
+Open <http://localhost:18080>. The landing page has a one-field signup form (plus
+an invite-code field when `SIGNUP_INVITE_CODE` is configured). Enter `bob`, and
+the gateway:
 
-1. creates the `SandboxClaim` over the warm pool,
-2. waits for it to become `Ready`,
-3. sets an `HttpOnly`, `SameSite=Lax` cookie `dsh_gw_session=<user>:<token>` on
-   the browser,
-4. redirects to `/u/bob/`, where the DSH Web UI loads through the gateway.
+1. enforces the auth rate limit and, if configured, the signup invite code,
+2. creates the `SandboxClaim` over the warm pool,
+3. waits for it to become `Ready`,
+4. mints a random, server-side session (the cookie value is an opaque `sid`, not
+   a user name and not a token), stores `sid -> (user, expiry)` in memory, and
+   sets the `HttpOnly`, `SameSite=Lax` cookie `dsh_gw_session=<sid>` on the
+   browser (`__Host-dsh_gw_session` when `COOKIE_SECURE=true`),
+5. redirects to `/u/bob/`, where the DSH Web UI loads through the gateway.
 
 From then on every request under `/u/bob/` (assets, API calls, SSE, WebSocket) is
 proxied to bob's sandbox. The DSH launch token and DSH's own auth cookie stay in
-the gateway; the browser only holds the gateway cookie.
+the gateway; the browser only holds the opaque gateway session id. The cookie is
+useless as a bearer token.
+
+**Sessions are revocable and mostly short-lived in practice.** `POST /logout`,
+deleting the user, `POST /recreate` and cookie expiry (default 7 days,
+`COOKIE_MAX_AGE`) invalidate the server-side session. The session table lives in
+gateway memory, so **restarting the gateway logs every browser out** — expected
+for this single-replica demo; a production deployment needs a shared session
+store and sticky routing or per-request re-authentication. With SSO enabled, the
+gateway mints a session for the identity oauth2-proxy asserts instead of asking
+for a token.
 
 The same flow with `curl`, no JavaScript (the session cookie is the only
 credential):
 
 ```bash
 JAR=$(mktemp)
-# signup (form POST, exactly what the landing page sends)
+# signup (form POST, exactly what the landing page sends); add -d 'invite=...'
+# when SIGNUP_INVITE_CODE is configured, or send X-Signup-Invite
 curl -s -i -c "$JAR" -H 'Origin: http://localhost:18080' \
   -d 'user=bob' http://localhost:18080/users
 # proxy: bob's DSH Web through the gateway
@@ -344,13 +370,38 @@ curl -s -b "$JAR" http://localhost:18080/u/bob/ | head -5
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18080/u/bob/   # 401
 # derived state: Ready / Waking / Suspended / ...
 curl -s -b "$JAR" http://localhost:18080/users/bob
-# delete bob (cascades sandbox + PVC)
+# sign out (revokes the server-side session)
+curl -s -b "$JAR" -H 'Origin: http://localhost:18080' -X POST http://localhost:18080/logout
+# delete bob (cascades sandbox + PVC and revokes every session for bob)
 curl -s -b "$JAR" -H 'Origin: http://localhost:18080' -X DELETE http://localhost:18080/users/bob
 ```
 
 API clients that prefer bearer tokens can use `POST /users` with a JSON body
 (`{"user":"bob"}`) and the returned one-time token, `POST /login` to exchange a
-token for a cookie, and `Authorization: Bearer <token>` on subsequent calls.
+token for a cookie, and `Authorization: Bearer <token>` on subsequent calls. A
+cookie/session value is never accepted as a bearer token, and a token for one
+user cannot read another user's path.
+
+### Auth abuse controls and proxy limits
+
+The gateway is a single process, so these limits are per replica. They stop
+casual abuse and one tenant monopolizing the service; an internet-facing
+deployment still needs ingress-level rate limiting and an audit trail.
+
+| Setting | Default | Behavior |
+| --- | --- | --- |
+| `AUTH_RATE_LIMIT` / `AUTH_RATE_WINDOW` | `30` per `60` s | Throttles `/users` and `/login` per client (rightmost `X-Forwarded-For` when behind a proxy, else the TCP peer) and answers `429` + `Retry-After` before reading the body or touching the cluster. `0` disables it. The base manifest sets it explicitly. |
+| `SIGNUP_INVITE_CODE` | unset | When set, `POST /users` requires the code as form field `invite` or header `X-Signup-Invite` (constant-time compare, `403` before user lookup). Put it in a Secret and restart the gateway to rotate. |
+| `MAX_IN_FLIGHT_PER_USER` | `32` | Caps concurrent proxied requests + WebSockets per user; excess HTTP gets `503` + `Retry-After`, excess WebSocket upgrades close with `1011`. |
+| `WS_MAX_MESSAGE_BYTES` | `16 MiB` | Largest WebSocket message received from DSH; oversized frames close the connection. Browser-to-DSH frames are bounded by uvicorn's own limit. HTTP/SSE streaming is not capped by this. |
+| `MAX_BODY_MB` | `32` | Largest proxied HTTP request body (`413`). |
+
+The gateway also strips client-supplied `Forwarded`, `X-Forwarded-User` and
+`X-Auth-Request-*` headers (and `x-forwarded-*` / `x-auth-request-*` prefixes)
+before proxying, so a tenant cannot inject identity or spoof hop headers into
+DSH. `UPSTREAM_HEADER_ALLOWLIST` can replace that denylist with an explicit
+comma-separated allowlist. See the [gateway README](gateway/README.md) for the
+full configuration.
 
 ### Gateway routes
 
@@ -395,8 +446,11 @@ not cut off.
 The upstream upgrade dials the sandbox **pod IP**, forwards no `Host`/`Origin`,
 and performs the launch-token handshake under the same `pod-IP:3080` authority.
 Missing or cross-origin auth closes with `4401`; upstream bridging failures close
-with `1011`. See the [gateway README](gateway/README.md#proxy-failure-semantics)
-for the full matrix.
+with `1011`, as does exceeding `MAX_IN_FLIGHT_PER_USER` (per-user socket cap).
+Messages received from DSH larger than `WS_MAX_MESSAGE_BYTES` (16 MiB by
+default) close the connection instead of being buffered; browser-to-DSH frames
+are bounded by uvicorn's own limit. See the
+[gateway README](gateway/README.md#proxy-failure-semantics) for the full matrix.
 
 ### Path routing
 
@@ -420,17 +474,20 @@ not a stack. Details, commands and the switch procedure are in the
 Both variants also ship NetworkPolicies: `ingress/61-networkpolicy.yaml` limits
 gateway ingress to Traefik pods, and `gateway-api-sso/75-networkpolicies.yaml`
 limits the gateway to oauth2-proxy and oauth2-proxy egress to DNS, public HTTPS
-and the gateway. They are part of the variant; see the
-[exposure README](manifests/exposure/README.md) and
-[optional hardening](docs/optional-hardening.md).
+and the gateway. They are part of the variant **and required for production**:
+an exposure applied without its policy is demo-only. The sandbox side needs a
+separate policy, and the gateway needs an egress policy; both are covered in
+[optional hardening](docs/optional-hardening.md) (see the production checklist)
+and summarized in the [exposure README](manifests/exposure/README.md).
 
 ### Option A — plain Ingress (gateway's own session auth)
 
 1. Set the Ingress host/TLS (or drop the `tls:` block), and set
    `DSH_TRUSTED_HOSTS` in `manifests/10-sandboxtemplate.yaml` to the same public
    host; re-apply the template.
-2. Set `COOKIE_SECURE=true` once the Ingress serves HTTPS:
-   `kubectl -n dsh-demo set env deploy/dsh-gateway COOKIE_SECURE=true`.
+2. Set `COOKIE_SECURE=true` and drop the plain-HTTP acknowledgement once the
+   Ingress serves HTTPS:
+   `kubectl -n dsh-demo set env deploy/dsh-gateway COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-`.
 3. `kubectl apply -f manifests/exposure/ingress/`; verify
    `curl -sI https://<host>/healthz` returns `200`.
 
@@ -453,21 +510,37 @@ front of **oauth2-proxy**, which authenticates the browser against GitHub
 2. Create a GitHub OAuth App whose homepage/callback match the public FQDN, and
    create the oauth2-proxy and TLS Secrets from
    `73-oauth2-proxy-secret.yaml.example` and `74-tls-secret.yaml.example`.
-3. Replace `dsh-demo.example.com` and `your-github-org`, set
-   `DSH_TRUSTED_HOSTS` in the template, and enable SSO:
-   `kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true`.
-4. `kubectl apply -f manifests/exposure/gateway-api-sso/`; verify the Gateway,
-   HTTPRoute, oauth2-proxy Deployment and endpoints as shown in the
+3. Replace `dsh-demo.example.com` and `your-github-org` in the variant
+   manifests, set `DSH_TRUSTED_HOSTS` in the template, and enable SSO:
+   `kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-`.
+4. `kubectl apply -f manifests/exposure/gateway-api-sso/`; then run
+   [`scripts/preflight-sso.sh`](scripts/preflight-sso.sh) and fix everything it
+   reports **before** pointing real traffic at the Gateway. It verifies the
+   Secrets (including a valid oauth2-proxy cookie secret length), the gateway's
+   `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, that the Gateway's TLS certificate
+   reference resolves, and that no `your-github-org`/`dsh-demo.example.com`
+   placeholder was left applied. Full verification steps are in the
    [exposure README](manifests/exposure/README.md).
 
+> **Exposure without the variant NetworkPolicy is demo-only.** The SSO
+> variant's `75-networkpolicies.yaml` is not optional in practice: it is the
+> only thing that makes oauth2-proxy the sole path to the gateway. Applying
+> only the Gateway/HTTPRoute/oauth2-proxy objects leaves the trust boundary
+> unenforced, so anyone who can reach `dsh-gateway:8080` can send
+> `X-Forwarded-User` and impersonate the user they claim to be.
+>
 > **SSO trust boundary — read this before enabling it.** After SSO is on, the
 > `dsh-gateway` Service must be reachable **only** through oauth2-proxy (it is
 > ClusterIP). The variant's `75-networkpolicies.yaml` restricts pod traffic
 > accordingly: the gateway accepts traffic only from oauth2-proxy pods,
 > oauth2-proxy only from the Gateway implementation, and its egress only to DNS,
-> public HTTPS and the gateway. Anyone who can reach `dsh-gateway:8080` directly
-> can send `X-Forwarded-User: <victim>`, so never add a second path. To turn SSO
-> off, remove the variable
+> public HTTPS and the gateway. The gateway's own egress (Kubernetes API,
+> sandbox pods) is not restricted by that file because the API-server endpoint is
+> cluster-specific; add the
+> [gateway egress policy](docs/optional-hardening.md#gateway-egress-required-for-production)
+> for production. Anyone who can reach `dsh-gateway:8080` directly can send
+> `X-Forwarded-User: <victim>`, so never add a second path. To turn SSO off,
+> remove the variable
 > (`kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER-`) and
 > delete the SSO variant.
 
@@ -481,25 +554,36 @@ gateway remains. Full commands and verification are in the
 
 ## Optional hardening
 
-The base walkthrough is deliberately portable. Five opt-in settings are
-documented in [optional hardening](docs/optional-hardening.md):
+The base walkthrough is deliberately portable, which means it is **not
+hardened**: without the policies and gVisor it is demo-only, not a safe
+multi-tenant platform. [Optional hardening](docs/optional-hardening.md) has the
+settings and a production checklist. In short:
 
 - **gVisor** — uncomment `runtimeClassName: gvisor` before applying, or patch an
   existing install. Requires a `gvisor` RuntimeClass and capable nodes.
   `kubectl port-forward` does not work under gVisor; the gateway path does.
+  Required for untrusted agents in production.
 - **nodeSelector** — uncomment and replace the placeholder node label to pin
   sandboxes and the gateway to a dedicated pool; add a toleration for tainted
   pools.
 - **Sandbox NetworkPolicy** —
   `kubectl apply -f manifests/optional/network-policy/` allows only
-  gateway→sandbox on `3080` and sandbox→DNS/public `443`.
+  gateway→sandbox on `3080` and sandbox→DNS/public `443`. Required for
+  production; exposure without it is demo-only.
+- **Gateway egress policy** — the gateway needs DNS, the Kubernetes API and
+  `3080` to sandbox pods. It is not shipped because the API-server endpoint is
+  cluster-specific; use the
+  [recipe](docs/optional-hardening.md#gateway-egress-required-for-production).
+  Required for production.
 - **Provider keys** — create `dsh-provider-keys-extra` as shown in step 1.
 - **Failed-Pod recovery** — uncomment `failedPodPolicy: Recreate` so the
   controller replaces a `Failed` sandbox Pod (node eviction) instead of parking
   the sandbox at `Finished=True`. Requires agent-sandbox v1.0.8+.
 
-Apply each independently and re-run the walkthrough. `kubectl apply -f manifests/`
-is non-recursive, so the optional manifests are not applied by the base step.
+The **exposure variants' NetworkPolicies** are not optional in production
+either; see step 9. Apply each setting independently and re-run the walkthrough.
+`kubectl apply -f manifests/` is non-recursive, so the optional manifests are not
+applied by the base step.
 
 ## Troubleshooting
 
@@ -508,9 +592,16 @@ is non-recursive, so the optional manifests are not applied by the base step.
 | Pod `CrashLoopBackOff`, probes failing with `401` | Probe path is `/`; change readiness/liveness to `/favicon.svg` |
 | Browser shows `401` from DSH through the gateway | Gateway handshake failed — check `kubectl -n dsh-demo logs deploy/dsh-gateway` and that RBAC grants `pods/log` |
 | `502` / `upstream unavailable` | Sandbox pod is not Ready (wake timed out) or the Service DNS is stale; check `kubectl get sandbox`, `WAKE_TIMEOUT` |
-| `503` with `Retry-After` | The launch token was not found in the pod logs yet; the gateway retries after a short delay. Check the pod logs and `DSH_LOG_TAIL_LINES` |
+| `503` with `Retry-After` | Either the launch token was not found in the pod logs yet (the gateway retries after a short delay; check the pod logs and `DSH_LOG_TAIL_LINES`) or the user hit `MAX_IN_FLIGHT_PER_USER` (default 32 concurrent requests/WebSockets); reduce client concurrency or raise the limit deliberately |
+| `429` with `Retry-After` on signup/login | The per-client auth rate limit (`AUTH_RATE_LIMIT`, default explicitly `30` per `AUTH_RATE_WINDOW=60` s) rejected the attempt before reading the body. Wait for the window, or raise the limit; behind a proxy make sure the real client IP is the rightmost `X-Forwarded-For` entry, not a shared NAT address |
+| `403` on signup: invite required/invalid | `SIGNUP_INVITE_CODE` is configured. Send the code as form field `invite` or header `X-Signup-Invite`; the landing page shows the field when enabled. A wrong code is rejected before the user lookup |
+| Gateway pod `CrashLoopBackOff` with `refusing to start with an insecure session cookie` | Intentional guard: plain HTTP is only allowed when explicitly acknowledged. For the local demo set `ALLOW_INSECURE_COOKIES=1` (the base manifest does); for HTTPS set `COOKIE_SECURE=true` and remove `ALLOW_INSECURE_COOKIES` |
+| Every browser is logged out after a gateway rollout/restart | Expected: sessions are opaque ids in gateway memory and a restart drops them. Sign in again; a production deployment needs shared session state or per-request re-authentication. The DSH sandboxes and their data are unaffected |
+| WebSocket closes with `1011` for a busy client | `MAX_IN_FLIGHT_PER_USER` (per-user connection cap) or an upstream/handshake failure closed the socket; check the gateway logs to tell them apart |
+| WebSocket closes after a very large message from DSH | A message received from DSH exceeded `WS_MAX_MESSAGE_BYTES` (16 MiB), so the relay closed it instead of buffering; raise the limit only if DSH legitimately sends larger frames. Browser-to-DSH frames are bounded by uvicorn's own limit |
+| `scripts/preflight-sso.sh` exits non-zero | It names the failing item: a missing Secret/key, a bad oauth2-proxy cookie-secret length, missing `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, a dangling Gateway TLS reference, a leftover `your-github-org`/`dsh-demo.example.com` placeholder, or a second path to the gateway (an Ingress). Fix all items before exposing the SSO variant |
 | `409` on signup | User already has a claim; use `POST /login` with the existing token or delete the user first |
-| Cookie set but browser keeps getting `401` | `COOKIE_SECURE=true` while serving over plain HTTP (secure cookies are not sent); use HTTPS or set `false` for local demos |
+| Cookie set but browser keeps getting `401` | `COOKIE_SECURE=true` while serving over plain HTTP (secure cookies are not sent); use HTTPS or set `false` **and** `ALLOW_INSECURE_COOKIES=1` for local demos |
 | WebSocket closes immediately (`4401`) | Missing/expired gateway cookie, or the upgrade's `Origin` does not match `Host` (CSWSH check); DSH rejecting `Host` instead surfaces as close `1011` — add the host to `DSH_TRUSTED_HOSTS` |
 | Console spams `[connection] connection lost, retry #N` | The upstream WS upgrade is being rejected, surfaced as close `1011`. The gateway dials the sandbox **pod IP**, forwards no `Host`/`Origin`, and handshakes under the same `pod-IP:3080` authority DSH binds its cookie to; an older gateway image, or a sandbox with an empty `status.podIPs`, hits this loop |
 | `manifest.webmanifest` returns `401` in the console | Browsers fetch the Web App Manifest without credentials, so the gateway's session cookie is absent and the request fails closed. The UI is unaffected; only the PWA install prompt is lost |
@@ -539,9 +630,19 @@ is non-recursive, so the optional manifests are not applied by the base step.
 
 Deliberately **not** production code:
 
-- **Single replica.** Idle clocks, in-flight tracking, and the handshake cache
-  are in memory. Running two gateway replicas would double-suspend or lose wake
-  tracking; scale up only after moving that state to a shared store.
+- **Single replica.** Idle clocks, in-flight tracking, the handshake cache and
+  the browser session table are in memory. Running two gateway replicas would
+  double-suspend or lose wake tracking, and sessions would land on the wrong
+  replica; scale up only after moving that state to a shared store.
+- **Sessions die with the process.** Browser sessions are opaque ids held in
+  gateway memory (revocable on logout/delete/recreate, but not durable). A
+  gateway restart logs every browser out. There is no SSO refresh-token or
+  password store; identity is re-established by oauth2-proxy on the next
+  request.
+- **Abuse controls are per-process and coarse.** `AUTH_RATE_LIMIT`, the signup
+  invite code, `MAX_IN_FLIGHT_PER_USER` and `WS_MAX_MESSAGE_BYTES` limit casual
+  abuse, but they are not a substitute for ingress rate limiting, WAF/quota, or
+  an audit log, and the in-memory rate buckets reset on restart.
 - **Log scraping.** The launch token is recovered from pod logs. Log rotation, a
   restarted pod, or a changed DSH log format can break the handshake until the
   next `401` refresh.
@@ -551,12 +652,13 @@ Deliberately **not** production code:
   but the platform does not manage that. Real multi-tenancy needs per-tenant
   credentials or an egress proxy.
 - **No TLS in the gateway.** Terminate TLS at an Ingress or Gateway and set
-  `COOKIE_SECURE=true`.
+  `COOKIE_SECURE=true`, then remove `ALLOW_INSECURE_COOKIES`. The base manifest
+  runs plain HTTP for the port-forward demo and is demo-only.
 - **SSO trust is hop-based.** `AUTH_PROXY_HEADER` trusts whoever sets the header.
   The SSO variant ships `75-networkpolicies.yaml`, which restricts the gateway
   to oauth2-proxy and oauth2-proxy egress to the gateway/DNS/public HTTPS; a
   custom exposure without that policy has no signature, mTLS or network
-  enforcement.
+  enforcement. Exposure without the policy is demo-only.
 - **DSH's inner file sandbox is off here.** The template sets
   `DSH_PERMISSION_MODE=danger-full-access` because neither backend of DSH's own
   command sandbox is usable in this pod: `bubblewrap` is installed in the image
@@ -567,21 +669,24 @@ Deliberately **not** production code:
   pod remains the boundary — non-root,
   capabilities dropped, `seccompProfile: RuntimeDefault`, its own PVC and Service
   — but an agent command can now read its own `DSH_HOME` (including
-  `.credentials.yaml`) and write anywhere in the container. On hosts where a
-  backend works, set `workspace-write` (or `read-only`) and verify before relying
-  on the inner policy.
-- **Isolation is opt-in.** gVisor, the sandbox NetworkPolicy and the exposure
-  policies are opt-in; without them, sandboxes share the host kernel and can
-  reach the cluster network. The base example is a demo, not a hardened
-  multi-tenant platform.
+  `.credentials.yaml`) and write anywhere in the container. Run sandboxes under
+  gVisor in production. On hosts where a backend works, set `workspace-write`
+  (or `read-only`) and verify before relying on the inner policy.
+- **Isolation is opt-in.** gVisor, the sandbox NetworkPolicy, the gateway egress
+  policy and the exposure policies are opt-in; without them, sandboxes share the
+  host kernel and can reach the cluster network. The base example is a demo, not
+  a hardened multi-tenant platform. See the
+  [production checklist](docs/optional-hardening.md#6-production-checklist).
 - **OAuth org is the only authorization.** Any GitHub user in the configured
   organization gets an auto-provisioned sandbox; there is no per-user allow-list,
-  quota, or admin API.
+  quota, or admin API. `SIGNUP_INVITE_CODE` gates the gateway's own signup form,
+  not SSO auto-provisioning.
 - **In-memory user directory.** Users are claims + annotations; there is no
   database, password reset, or admin API. Tokens are stored only as SHA-256
   hashes in claim annotations.
 - **Bearer tokens in URLs.** Avoid putting the signup token in a URL/log; the
-  browser flow uses the `HttpOnly` cookie instead.
+  browser flow uses the `HttpOnly` cookie instead. The cookie no longer contains
+  the token, and a cookie value is never accepted as a bearer token.
 
 ## Cleanup
 
@@ -603,6 +708,8 @@ delete the Secrets with the namespace and revoke the OAuth App in GitHub.
 - [Architecture](docs/architecture.md) — container/sequence diagrams, ADRs,
   security and RBAC, failure modes, evolution path.
 - [Exposure README](manifests/exposure/README.md) — the two variants in detail.
+- [SSO preflight](scripts/preflight-sso.sh) — read-only checks for the SSO
+  variant (Secrets, gateway env, TLS reference, placeholders, second paths).
 - [Optional hardening](docs/optional-hardening.md) — gVisor, nodeSelector,
-  NetworkPolicy, extra provider keys and failed-Pod recovery, with verification
-  and rollback.
+  NetworkPolicy, extra provider keys and failed-Pod recovery, with verification,
+  the production checklist and rollback.

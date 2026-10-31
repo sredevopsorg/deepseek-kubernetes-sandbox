@@ -72,8 +72,10 @@ Each variant also ships a NetworkPolicy: `ingress/61-networkpolicy.yaml` limits 
 to Traefik pods, and `gateway-api-sso/75-networkpolicies.yaml` limits the gateway to
 oauth2-proxy, oauth2-proxy ingress to the Gateway implementation, and oauth2-proxy egress to
 DNS/public HTTPS/the gateway. The SSO policy turns the trust boundary into pod-traffic
-enforcement; the caveats (Traefik label, `hostNetwork`, kubelet probes) are in
-[optional hardening](optional-hardening.md).
+enforcement. These policies are **required for production**: exposing the gateway by applying
+only the Gateway/HTTPRoute/Ingress objects is demo-only. The sandbox-side policy and the
+gateway's own egress policy are separate (the API-server endpoint is cluster-specific); see
+[optional hardening](optional-hardening.md#gateway-egress-required-for-production).
 
 ## Flows
 
@@ -87,20 +89,22 @@ sequenceDiagram
     participant K as Kubernetes API
     participant C as agent-sandbox controller
 
-    B->>G: POST /users (form: user=bob, Origin)
-    G->>G: validate user name and body size
+    B->>G: POST /users (form: user=bob, invite, Origin)
+    G->>G: rate limit, invite check, validate user name and body size
     G->>K: create SandboxClaim dsh-bob (warmPoolRef)
     K->>C: reconcile claim
     C-->>K: adopt spare, Ready, status.sandbox.name = dsh-pool-xxxx
     G->>K: read claim (status) + sandbox + pod
-    G-->>B: 303 Location /u/bob/ + Set-Cookie dsh_gw_session
+    G->>G: mint opaque sid, store sid -> (user, expiry)
+    G-->>B: 303 Location /u/bob/ + Set-Cookie dsh_gw_session=<sid>
     Note over G: JSON clients instead get 201 (Ready),<br/>202 (accepted, still waking), or 409 (conflict)
 ```
 
 Form signup waits up to `WAKE_TIMEOUT` for the claim to become `Ready`, then redirects; the
 first proxied request also waits for `Ready` and performs the DSH handshake (below). A `409`
 means the user already has a claim, in which case `POST /login` (bearer token) or the existing
-cookie is the right path.
+cookie is the right path. The cookie value is an opaque session id: it is meaningless outside
+this gateway process and is never accepted as a bearer token.
 
 ### First request / proxy (with handshake)
 
@@ -112,8 +116,8 @@ sequenceDiagram
     participant K as Kubernetes API
     participant D as DSH Web pod
 
-    B->>G: GET /u/bob/ (Cookie dsh_gw_session)
-    G->>G: authenticate cookie, user = bob
+    B->>G: GET /u/bob/ (Cookie dsh_gw_session=<sid>)
+    G->>G: look up sid -> session (valid, not expired), user = bob
     G->>K: resolve claim -> sandbox -> pod
     alt sandbox Suspended
         G->>K: patch operatingMode=Running (wake)
@@ -139,6 +143,32 @@ cookie never reach the browser.
 Inside `proxy_http` the order is auth, in-flight slot, sandbox resolution/wake, DSH handshake,
 body read, upstream send. An upload aborted mid-body may therefore already have paid for a wake
 and a handshake, but it never reaches DSH.
+
+### Browser sessions
+
+The browser never holds a DSH credential. On signup/login the gateway mints a random session id
+(`secrets.token_urlsafe(32)`), stores `sid -> Session(user, expires_at)` in memory, and sets it
+as the `HttpOnly`, `SameSite=Lax` cookie `dsh_gw_session` (`__Host-dsh_gw_session` when
+`COOKIE_SECURE=true`). Every browser request is resolved through that table; the cookie value is
+not a bearer token and cannot be replayed against another user's path.
+
+Sessions end on explicit logout, user delete, `/recreate` (all sessions for that user) and
+expiry (`COOKIE_MAX_AGE`, default 7 days). Because the table is process memory, a gateway
+restart logs every browser out; scaling beyond one replica therefore requires a shared session
+store (or re-authentication on every request). The sweeper prunes expired entries and sessions
+for users whose claim no longer exists.
+
+### Auth abuse controls and proxy limits
+
+Unauthenticated endpoints are throttled before the body is read: `AUTH_RATE_LIMIT` attempts per
+client per `AUTH_RATE_WINDOW` (defaults 30/60s; keyed on the rightmost `X-Forwarded-For` entry
+when present, else the peer address), answered with `429` + `Retry-After`. When
+`SIGNUP_INVITE_CODE` is set, signup additionally requires a constant-time-matched code (form
+field or `X-Signup-Invite`) and answers `403` otherwise. Proxied traffic is capped per user
+(`MAX_IN_FLIGHT_PER_USER`, default 32 concurrent HTTP requests + WebSockets: `503` for HTTP,
+close `1011` for WebSocket) and per WebSocket message received from DSH
+(`WS_MAX_MESSAGE_BYTES`, 16 MiB). These are in-process guards for a single replica, not an ingress
+rate limiter or quota system.
 
 ### Wake-on-connect and idle suspend
 
@@ -220,6 +250,14 @@ sequenceDiagram
     end
 ```
 
+An upgrade with a missing/expired session, or one that would exceed
+`MAX_IN_FLIGHT_PER_USER`, is accepted and then closed: `4401` for authentication, `1011` for
+the per-user socket cap. Messages received from DSH above `WS_MAX_MESSAGE_BYTES` (16 MiB) close
+the connection instead of being buffered; browser-to-DSH frames are bounded by uvicorn's own
+limit. Client-supplied `Forwarded`, `X-Forwarded-User`,
+`X-Auth-Request-*` and `x-forwarded-*`/`x-auth-request-*` headers are stripped on the HTTP and
+WebSocket paths; `UPSTREAM_HEADER_ALLOWLIST` replaces that denylist with an explicit allowlist.
+
 ## Decisions and trade-offs
 
 ### ADR-1: Starlette ASGI instead of a sync Flask proxy
@@ -279,14 +317,21 @@ sequenceDiagram
   (`kubectl annotate sandboxclaim ...`) to keep being swept. Fine for a reference pattern, not
   for a product.
 
-### ADR-6: Gateway cookie session instead of bearer tokens in the browser
+### ADR-6: Opaque server-side session cookie instead of bearer tokens in the browser
 
-- **Decision:** browsers get `dsh_gw_session=<user>:<token>`, `HttpOnly`, `SameSite=Lax`
-  (`Secure` when enabled); API clients may still use `Authorization: Bearer`.
-- **Why:** tokens never appear in URLs or JS-readable storage, and `SameSite=Lax` plus a strict
-  `Origin`/`Referer` check on cookie-authenticated mutations blocks basic CSRF.
-- **Cost:** cookie-based auth needs TLS and correct `COOKIE_SECURE`; there is no signed-cookie
-  layer, so the gateway trusts the token hash comparison for validation.
+- **Decision:** browsers get `dsh_gw_session=<sid>`, `HttpOnly`, `SameSite=Lax` (`Secure` when
+  enabled); the sid maps to `Session(user, expires_at)` in gateway memory. API clients may still
+  use `Authorization: Bearer`. The cookie name is `__Host-dsh_gw_session` when the Secure flag
+  is on and no explicit `COOKIE_NAME` is set.
+- **Why:** tokens never appear in URLs or JS-readable storage, the cookie value is useless if
+  leaked outside the gateway session table, sessions can be revoked server-side (logout,
+  user delete, recreate, expiry), and a cookie cannot be reused as a bearer token for another
+  user's path. `SameSite=Lax` plus a strict `Origin`/`Referer` check on cookie-authenticated
+  mutations blocks basic CSRF.
+- **Cost:** stateful auth in a single process: a restart logs everyone out and horizontal
+  scaling needs a shared session store. Cookie-based auth also needs TLS and the correct
+  `COOKIE_SECURE` setting; the gateway refuses to start with `COOKIE_SECURE=false` unless
+  `ALLOW_INSECURE_COOKIES=1` is set for a local HTTP demo.
 
 ## Security and RBAC
 
@@ -305,33 +350,52 @@ Notes and limits:
   permission is scoped to one namespace, but anyone who can read gateway memory or logs can
   impersonate users. Prefer the upstream token API when available.
 - **No cluster-wide access, no secret reads.** The gateway does not read `dsh-provider-keys`.
-- **Browser-facing hardening:** `HttpOnly`/`SameSite=Lax`/optional `Secure` cookies,
-  timing-safe SHA-256 token comparison, strict same-origin check on cookie-auth mutations,
-  request-body limit (`MAX_BODY_MB`), hop-by-hop header stripping, upstream `Set-Cookie`
-  dropped, DSH `Location` headers rewritten under `/u/<user>/`.
+  (It does read the optional signup invite code if it is mounted as an env var.)
+- **Browser-facing hardening:** opaque server-side sessions instead of token-bearing cookies,
+  `HttpOnly`/`SameSite=Lax`/optional `Secure` (+ `__Host-` prefix when secure),
+  timing-safe SHA-256 bearer-token comparison, timing-safe invite-code comparison, strict
+  same-origin check on cookie-auth mutations, request-body limit (`MAX_BODY_MB`), hop-by-hop
+  header stripping, client identity/hop headers (`Forwarded`, `X-Forwarded-User`,
+  `X-Auth-Request-*`, `x-forwarded-*`/`x-auth-request-*`) stripped on HTTP and WebSocket,
+  upstream `Set-Cookie` dropped, DSH `Location` headers rewritten under `/u/<user>/`.
+- **Session lifecycle:** login/signup mint an opaque sid; logout and user delete revoke it;
+  `/recreate` revokes every session for that user; expiry (`COOKIE_MAX_AGE`, default 7 days) is
+  enforced on lookup. The table is in memory, so a restart logs browsers out and a second
+  replica needs shared state.
+- **Abuse controls (per replica):** `AUTH_RATE_LIMIT`/`AUTH_RATE_WINDOW` throttle
+  unauthenticated signup/login per client with `429` + `Retry-After`; `SIGNUP_INVITE_CODE`
+  gates signup; `MAX_IN_FLIGHT_PER_USER` caps concurrent proxied requests + WebSockets per user;
+  `WS_MAX_MESSAGE_BYTES` caps messages received from DSH; browser-to-DSH frames are bounded by
+  uvicorn. These are in-process guards, not an ingress rate limiter or audit log.
 - **Host allow-list:** DSH rejects unknown `Host` headers. The gateway forwards the browser's
   `Host`, so every public hostname must be in `DSH_TRUSTED_HOSTS`; `localhost`/`127.0.0.1` are
   always trusted.
 - **TLS is external.** The gateway serves plain HTTP; terminate TLS at the Ingress and set
-  `COOKIE_SECURE=true`. Without TLS, session cookies are replayable on the network.
+  `COOKIE_SECURE=true`. The base demo sets `COOKIE_SECURE=false` with
+  `ALLOW_INSECURE_COOKIES=1` for the port-forward walkthrough; without TLS, session cookies are
+  replayable on the network and that combination must never be exposed.
 - **Tenant isolation** is pod + PVC separation; all tenants share one namespace, one DSH binary,
   and the shared provider keys (`dsh-provider-keys` plus the optional
-  `dsh-provider-keys-extra`). `manifests/optional/network-policy/` adds an opt-in sandbox
-  NetworkPolicy, and gVisor/`nodeSelector` are opt-in PodSpec fields. Add per-tenant
-  credentials before calling it multi-tenant-grade.
+  `dsh-provider-keys-extra`). The base example is demo-only: production requires gVisor for the
+  sandboxes, the sandbox NetworkPolicy, the gateway egress policy and the exposure NetworkPolicy,
+  plus per-tenant credentials or an egress proxy. See the
+  [production checklist](optional-hardening.md#6-production-checklist).
 - **DSH's inner file sandbox is disabled by deployment override.** The template sets
   `DSH_PERMISSION_MODE=danger-full-access` because the in-container backends are unusable here:
   `bubblewrap` ships in the image but is unsetuid and cannot create an unprivileged user namespace
   under the pod's seccomp/capability surface, and no Landlock runner is available; the confined
   executor would otherwise fail closed on every command. The pod remains the boundary, so an
-  agent can read its own `DSH_HOME`. Hosts with a working backend can keep a confined mode.
+  agent can read its own `DSH_HOME`. Hosts with a working backend can keep a confined mode;
+  multi-tenant deployments must put the pod in gVisor and a NetworkPolicy.
 - **Optional hardening is opt-in.** gVisor, node selection, the sandbox/exposure NetworkPolicies,
   extra provider keys and failed-Pod recovery are documented in
   [optional hardening](optional-hardening.md). The base manifests stay portable (no gVisor
   RuntimeClass, no active node labels, no NetworkPolicy, no extra Secret required, and the
   controller's default `failedPodPolicy: Retain`).
-- **No gateway rate limiting.** Signup can create claims until the cluster or warm pool is
-  exhausted; put limits at the ingress for real deployments.
+- **SSO is trust-on-hop.** `AUTH_PROXY_HEADER` makes the gateway trust the proxy-asserted
+  identity; the SSO variant must remain the only path to the Service, and its NetworkPolicy is
+  required, not optional. Run [`scripts/preflight-sso.sh`](../scripts/preflight-sso.sh) after
+  applying it.
 
 ## Failure modes
 
@@ -340,7 +404,14 @@ Notes and limits:
 | DSH log line changed or rotated away | Proxy returns `503` (missing launch token) | Fix the parser or restart the pod so the token line is re-emitted |
 | Probe on `/` | Pod `CrashLoopBackOff`, `401` in probe logs | Use `/favicon.svg` for readiness/liveness (shipped templates do) |
 | Warm pool exhausted | JSON signup returns `202` (state `Waking`); form signup is slow | Increase `replicas` in the warm pool |
-| Gateway restart | Idle sandboxes stop suspending; handshake cache lost | Rebuilt lazily on next request; consider a shared store for production |
+| Gateway restart | Idle sandboxes stop suspending; handshake cache and browser sessions lost | Idle clocks and handshake cache rebuild lazily; sessions do not, so browsers must sign in again after a rollout. Use a shared session store for production |
+| Gateway configured `COOKIE_SECURE=false` without `ALLOW_INSECURE_COOKIES=1` | Gateway pod exits at startup / `CrashLoopBackOff` | Intentional guard against an insecure cookie on an HTTPS deployment; set `ALLOW_INSECURE_COOKIES=1` only for the local plain-HTTP demo, or set `COOKIE_SECURE=true` |
+| Auth rate limit hit | `429` + `Retry-After` on signup/login | Per-client in-memory bucket (`AUTH_RATE_LIMIT`/`AUTH_RATE_WINDOW`); wait for the window or tune it. Behind a proxy, keying uses the rightmost `X-Forwarded-For` entry |
+| Signup invite missing/wrong | `403` before the claim is created | `SIGNUP_INVITE_CODE` is set; send the `invite` form field or `X-Signup-Invite` header |
+| Per-user concurrency cap hit | HTTP `503` + `Retry-After`, or WebSocket close `1011` | `MAX_IN_FLIGHT_PER_USER` protects the single gateway from one busy tenant; reduce concurrency or raise the cap deliberately. These are per replica |
+| Oversized WebSocket message from DSH | Connection closes | `WS_MAX_MESSAGE_BYTES` (16 MiB) is enforced on upstream messages; raise it only if DSH legitimately needs larger frames |
+| Session expiry / revocation | `401` (HTTP) or close `4401` (WebSocket) | Expected after logout, user delete, `/recreate`, `COOKIE_MAX_AGE` expiry or a gateway restart; sign in again |
+| SSO variant applied without its NetworkPolicy (or with an Ingress) | Gateway accepts spoofed `X-Forwarded-User` | Demo-only configuration; keep `75-networkpolicies.yaml`, remove the second path, and run `scripts/preflight-sso.sh` |
 | Browser aborts a request (tab reload, back navigation) during a slow wake or handshake | No response reaches the client; nothing appears in the access log | If the abort lands before the response starts, the body read raises `ClientDisconnect` and the app answers `499` (`CLIENT_CLOSED_REQUEST`), which cannot reach the departed peer. Nothing reached DSH, no ERROR traceback is logged, and the in-flight slot is released. A request already streaming ends with its upstream status. |
 | DSH auth cookie expired mid-session | Proxy `401` once, then recovers | Gateway refreshes the handshake once |
 | Upstream pod name changed after resume | Cached cookie keyed by old pod UID is useless | Cache is invalidated on suspend; next request re-handshakes |
@@ -372,10 +443,11 @@ single-retry refresh are the supported workaround.
 ## Evolution path
 
 1. Replace log scraping with the upstream token API (above), deleting the `pods/log` permission.
-2. Move idle clocks, in-flight tracking, and handshake cache to a shared store; then scale the
-   gateway horizontally (sticky routing not required if state is shared).
+2. Move idle clocks, in-flight tracking, handshake cache **and sessions** to a shared store; then
+   scale the gateway horizontally (sticky routing not required if state is shared).
 3. Add per-tenant API keys or an egress proxy so a single key is not shared by all sandboxes.
-4. Add NetworkPolicies (gateway → sandboxes only), TLS everywhere, rate limits, and audit
-   logging at the ingress.
+4. Add NetworkPolicies (gateway → sandboxes only, plus the documented gateway egress policy),
+   gVisor for sandbox pods, TLS everywhere, ingress-level rate limits/quota and audit logging.
+   The gateway's in-process limits are not a substitute.
 5. If DSH grows absolute URLs or per-user cookies that cannot be rewritten, switch to
    per-user subdomains with wildcard DNS/TLS.

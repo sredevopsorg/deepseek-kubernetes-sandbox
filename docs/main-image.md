@@ -11,12 +11,16 @@ The image is image-first: it is the product, and the examples under
 
 ## What the build does
 
-The Dockerfile is a two-stage build:
+The Dockerfile is a two-stage build. Both stages use the `node` images pinned by
+digest in [versions.env](../versions.env): a mutable tag alone is not trusted, and
+`./scripts/check-versions.sh` rejects an image reference without a `@sha256:` digest.
 
-1. **Build stage** (`node:24-trixie`) clones DSH at the pinned git ref, installs
+1. **Build stage** (`NODE_BUILD_IMAGE`) clones DSH at the pinned git ref, verifies
+   that the clone's `HEAD` is exactly `DSH_COMMIT` (the build fails otherwise, so a
+   moved upstream tag cannot silently change what the image packages), installs
    dependencies with pnpm, runs the production build, packages the `@deepseek-ai/dsh`
    CLI with `pnpm pack`, and installs its production dependencies with npm.
-2. **Runtime stage** (`node:24-trixie-slim`) copies `/opt/dsh` to `/app`, adds the
+2. **Runtime stage** (`NODE_RUNTIME_IMAGE`) copies `/opt/dsh` to `/app`, adds the
    CLI tools DSH agents commonly use (`git`, `ripgrep`, `jq`, `yq`, `curl`, `wget`,
    `gh`, `tini`, `uv`), installs `bubblewrap` as DSH's preferred command-sandbox
    runner, and starts `dsh web` through a small entrypoint.
@@ -36,6 +40,7 @@ To reproduce the equivalent by hand:
 ```bash
 docker build \
   --build-arg DSH_VERSION=dsh-v0.2.1-rc.5 \
+  --build-arg DSH_COMMIT=b830ec950faba0a46dda564be3e2d854afed94f1 \
   --build-arg RELEASE_REVISION= \
   --build-arg PNPM_VERSION=11.28.5 \
   --build-arg VCS_REF="$(git rev-parse --short HEAD)" \
@@ -48,11 +53,17 @@ docker build \
 | --- | --- | --- |
 | `DSH_REPO` | `https://github.com/deepseek-ai/deepseek-harness.git` | Upstream DSH repository to clone. |
 | `DSH_VERSION` | `DSH_VERSION` in [versions.env](../versions.env) | Upstream DSH git tag/ref to package. The Dockerfile records it as `io.sredevopsorg.dsh.version` and (for local builds) `org.opencontainers.image.version`; published builds set the version label to the full release identity. |
+| `DSH_COMMIT` | `DSH_COMMIT` in [versions.env](../versions.env) | Full commit SHA `DSH_VERSION` must resolve to upstream. The build stage fails unless `git rev-parse HEAD` in the clone equals this value, which pins the source independently of a movable tag. |
 | `RELEASE_REVISION` | `RELEASE_REVISION` in [versions.env](../versions.env) | Repository revision suffix (`rN`), recorded in `io.sredevopsorg.release.revision`. The release identity is `DSH_VERSION` plus `-RELEASE_REVISION` when set. See [versioning](versioning.md). |
 | `PNPM_VERSION` | `PNPM_VERSION` in [versions.env](../versions.env) | pnpm version activated with corepack in both stages. |
 | `VCS_REF` | `git rev-parse --short HEAD` (via `make image`) | Source revision recorded for traceability. |
-| `NODE_BUILD_IMAGE` | `docker.io/node:24-trixie` | Build-stage base image. |
-| `NODE_RUNTIME_IMAGE` | `docker.io/node:24-trixie-slim` | Runtime-stage base image. |
+| `NODE_BUILD_IMAGE` | `docker.io/node:24-trixie@sha256:8c761eca2bf7eec965f946cf47b8090143cb41f45f2f8699af0cc0298d2d2d19` | Build-stage base image, pinned to the multi-arch index digest. |
+| `NODE_RUNTIME_IMAGE` | `docker.io/node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446` | Runtime-stage base image, pinned to the multi-arch index digest. |
+
+Base images are pinned by digest because tags are mutable: `node:24-trixie` can be
+re-pointed at a new build at any time. Bumping the tag and its digest is a
+deliberate, reviewable change in [versions.env](../versions.env); environments that
+mirror the image should also mirror the `node` digest they build from.
 
 Never hard-code a version outside [versions.env](../versions.env):
 `./scripts/check-versions.sh` (and `make check`) fails when a pin drifts.

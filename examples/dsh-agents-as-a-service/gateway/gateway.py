@@ -7,9 +7,12 @@ single teaching-friendly module with three jobs:
   (only its SHA-256 is stored, as a claim annotation), report derived state,
   and delete the claim (which cascades the sandbox and its PVC).
 * **Browser sessions** -- exchange a user token for an HttpOnly session cookie
-  so the DSH UI can be opened in a browser at ``/u/<user>/``.  Browser requests
-  authenticate with that cookie; automation can keep using
-  ``Authorization: Bearer <token>``.
+  whose value is an opaque, server-side session id (the user and expiry live in
+  memory) so the DSH UI can be opened in a browser at ``/u/<user>/``.  Browser
+  requests authenticate with that cookie; automation can keep using
+  ``Authorization: Bearer <token>``.  Sessions are revoked on logout, user
+  deletion, recreate and expiry, and a cookie is never accepted as a bearer
+  token (nor the other way around).
 * **Reverse proxy** -- HTTP (including SSE) and WebSocket proxying to the
   sandbox's DSH Web server on ``:3080``.  DSH itself is cookie-gated: the
   gateway scrapes the launch token from the pod logs, performs the ``?token=``
@@ -38,6 +41,7 @@ import contextlib
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import secrets
@@ -120,6 +124,19 @@ OWNED_REQUEST_HEADERS = HOP_BY_HOP | {
     "x-forwarded-proto",
     "x-real-ip",
 }
+
+# Default session cookie names.  ``__Host-`` is only legal over HTTPS and pins
+# the cookie to Path=/ with no Domain attribute; the insecure default keeps the
+# example usable over plain HTTP behind a port-forward.
+DEFAULT_COOKIE_NAME = "dsh_gw_session"
+SECURE_COOKIE_NAME = "__Host-dsh_gw_session"
+
+# Header prefixes a client must never be able to smuggle upstream.  The gateway
+# derives its own X-Forwarded-* values from the connection; anything the browser
+# sends with these names is attacker-controlled and is dropped in both the HTTP
+# and WebSocket proxy paths.
+FORWARDING_HEADER_PREFIXES = ("x-forwarded-", "x-auth-request-")
+FORWARDING_HEADERS = frozenset({"forwarded"})
 
 _DSH_WEB_LINE = re.compile(r"dsh web:\s+(?P<url>https?://\S+)")
 
@@ -249,6 +266,33 @@ def same_origin(headers) -> bool:
     return False
 
 
+def strip_forwarding_header(name: str) -> bool:
+    """True for client-supplied identity/forwarding headers we never forward.
+
+    ``X-Forwarded-User`` and ``X-Auth-Request-*`` carry identities an
+    authenticating proxy or the gateway itself owns; ``Forwarded`` /
+    ``X-Forwarded-*`` describe the hop chain.  Forwarding any of them lets a
+    browser spoof its origin or a trusted SSO user upstream.
+    """
+    lowered = name.lower()
+    return lowered in FORWARDING_HEADERS or lowered.startswith(FORWARDING_HEADER_PREFIXES)
+
+
+def client_identity(headers, client) -> str:
+    """The rate-limit bucket for a request.
+
+    The rightmost ``X-Forwarded-For`` entry is the address the last trusted
+    proxy saw (each proxy appends), so it cannot be spoofed by prepending
+    arbitrary values.  Without the header fall back to the socket peer.
+    """
+    forwarded = (headers.get("x-forwarded-for") or "").strip()
+    if forwarded:
+        parts = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if parts:
+            return parts[-1]
+    return getattr(client, "host", None) or "unknown"
+
+
 def rewrite_location(location: str, user: str) -> str:
     """Prefix absolute-path redirects so the browser stays under ``/u/<user>/``."""
     if not location.startswith("/") or location.startswith("//"):
@@ -306,6 +350,14 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_allowlist(name: str) -> frozenset[str] | None:
+    """Parse a comma-separated header allowlist; unset means "denylist mode"."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
 # --- Settings --------------------------------------------------------------
 
 
@@ -325,7 +377,7 @@ class Settings:
     dsh_port: int = 3080
     dsh_container: str = "dsh-web"
     dsh_log_tail_lines: int = 2000
-    cookie_name: str = "dsh_gw_session"
+    cookie_name: str = DEFAULT_COOKIE_NAME
     cookie_secure: bool = False
     cookie_max_age: int = 7 * 24 * 60 * 60
     max_body_bytes: int = 32 * 1024 * 1024
@@ -339,9 +391,36 @@ class Settings:
     # valid user in this header are treated as authenticated (SSO); unset (None)
     # disables SSO entirely and the header is never trusted.
     auth_proxy_header: str | None = None
+    # Abuse controls. AUTH_RATE_LIMIT applies to the unauthenticated auth routes
+    # (POST /users and POST /login) per client and window; 0 disables it.
+    auth_rate_limit: int = 30
+    auth_rate_window: int = 60
+    # When set, signup requires this invite code (form field ``invite`` or the
+    # ``X-Signup-Invite`` header). None keeps signup open, as in the demo.
+    signup_invite_code: str | None = None
+    # Optional allowlist of client request headers to forward upstream. None
+    # keeps the default denylist behavior; a set (possibly empty) forwards only
+    # the named headers (plus the gateway's own X-Forwarded-* values).
+    upstream_header_allowlist: frozenset[str] | None = None
+    # Concurrent proxied requests per user before 503/1011 is returned.
+    max_in_flight_per_user: int = 32
+    # Largest WebSocket message accepted from DSH, in bytes. Browser-to-DSH
+    # frames are bounded by the ASGI server's own WebSocket limit.
+    ws_max_message_bytes: int = 16 * 1024 * 1024
 
     @classmethod
     def from_env(cls) -> Settings:
+        cookie_secure = _env_bool("COOKIE_SECURE", False)
+        allow_insecure = _env_bool("ALLOW_INSECURE_COOKIES", False)
+        if not cookie_secure and not allow_insecure:
+            raise RuntimeError(
+                "refusing to start with an insecure session cookie: set "
+                "COOKIE_SECURE=true behind TLS, or ALLOW_INSECURE_COOKIES=1 "
+                "for a local plain-HTTP demo"
+            )
+        cookie_name = os.environ.get("COOKIE_NAME") or (
+            SECURE_COOKIE_NAME if cookie_secure else DEFAULT_COOKIE_NAME
+        )
         return cls(
             namespace=os.environ.get("NAMESPACE", "dsh-demo"),
             pool=os.environ.get("POOL", "dsh-pool"),
@@ -350,13 +429,19 @@ class Settings:
             dsh_port=_env_int("DSH_PORT", 3080),
             dsh_container=os.environ.get("DSH_CONTAINER", "dsh-web"),
             dsh_log_tail_lines=_env_int("DSH_LOG_TAIL_LINES", 2000),
-            cookie_name=os.environ.get("COOKIE_NAME", "dsh_gw_session"),
-            cookie_secure=_env_bool("COOKIE_SECURE", False),
+            cookie_name=cookie_name,
+            cookie_secure=cookie_secure,
             cookie_max_age=_env_int("COOKIE_MAX_AGE", 7 * 24 * 60 * 60),
             max_body_bytes=_env_int("MAX_BODY_MB", 32) * 1024 * 1024,
             http_timeout=_env_float("HTTP_TIMEOUT", 300.0),
             sweep_interval=_env_float("SWEEP_INTERVAL", 15.0),
             auth_proxy_header=os.environ.get("AUTH_PROXY_HEADER") or None,
+            auth_rate_limit=_env_int("AUTH_RATE_LIMIT", 30),
+            auth_rate_window=_env_int("AUTH_RATE_WINDOW", 60),
+            signup_invite_code=os.environ.get("SIGNUP_INVITE_CODE") or None,
+            upstream_header_allowlist=_env_allowlist("UPSTREAM_HEADER_ALLOWLIST"),
+            max_in_flight_per_user=_env_int("MAX_IN_FLIGHT_PER_USER", 32),
+            ws_max_message_bytes=_env_int("WS_MAX_MESSAGE_BYTES", 16 * 1024 * 1024),
         )
 
 
@@ -546,6 +631,19 @@ class Kubernetes:
 # --- Gateway ---------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Session:
+    """A browser session stored server-side, keyed by an opaque random id.
+
+    The cookie only carries the id; the user and the expiry stay in memory, so
+    a cookie can never be edited into another user's credentials and a stolen
+    token is not recoverable from the browser.
+    """
+
+    user: str
+    expires_at: float
+
+
 @dataclass
 class GatewayState:
     """In-memory, per-process state (single replica by design)."""
@@ -555,6 +653,10 @@ class GatewayState:
     maintenance: dict[str, bool] = field(default_factory=dict)
     # (user, pod UID, browser Host) -> "dsh-auth-a=...; dsh-auth-b=..."
     handshake: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    # Opaque session id -> server-side session (user + expiry).
+    sessions: dict[str, Session] = field(default_factory=dict)
+    # Auth rate limiting: client -> (window start, attempts in window).
+    auth_rate: dict[str, tuple[float, int]] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -576,17 +678,40 @@ class Gateway:
 
     # -- credentials -------------------------------------------------------
 
+    def session_for(self, sid: str | None) -> Session | None:
+        """Look up a live session, dropping it when it has expired."""
+        if not sid:
+            return None
+        session = self.state.sessions.get(sid)
+        if session is None:
+            return None
+        if session.expires_at <= time.time():
+            self.state.sessions.pop(sid, None)
+            return None
+        return session
+
+    def revoke_session(self, sid: str | None) -> None:
+        if sid:
+            self.state.sessions.pop(sid, None)
+
+    def revoke_sessions(self, user: str) -> None:
+        for sid in [key for key, session in self.state.sessions.items() if session.user == user]:
+            self.state.sessions.pop(sid, None)
+
     def credentials(self, headers, cookies) -> tuple[str | None, str | None]:
-        """Return ``(token, cookie_user)``; bearer wins over the session cookie."""
+        """Return ``(token, session_user)``; bearer wins over the session cookie.
+
+        A bearer token is never resolved from a cookie and a session id is never
+        accepted as a bearer token.  An unknown or expired session is treated as
+        anonymous (and the expired entry is dropped).
+        """
         auth = headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             return auth[7:].strip(), None
-        raw = cookies.get(self.settings.cookie_name)
-        if raw:
-            user, sep, token = raw.partition(":")
-            if sep and user and token:
-                return token, user
-        return None, None
+        session = self.session_for(cookies.get(self.settings.cookie_name))
+        if session is None:
+            return None, None
+        return None, session.user
 
     def remote_user(self, headers) -> str | None:
         """The user asserted by a trusted reverse proxy, when SSO is enabled.
@@ -605,31 +730,37 @@ class Gateway:
         self,
         claim: dict,
         token: str | None,
-        cookie_user: str | None,
+        session_user: str | None,
         user: str,
         remote: str | None = None,
     ) -> bool:
         if remote == user:
             return True  # identity asserted by the authenticating proxy
-        if cookie_user is not None and cookie_user != user:
-            return False  # a session for another user never authorizes this one
+        if session_user is not None:
+            return session_user == user  # server-side session bound to this user
         return token_matches(claim, token)
 
     async def _sso_session(self, remote: str, headers, cookies, response: Response) -> dict | None:
-        """Provision ``remote`` idempotently and mint/refresh a session token.
+        """Provision ``remote`` idempotently and mint/refresh a session.
 
         The authenticating proxy has already verified ``remote``, so it is
         trusted. A brand-new user is provisioned (claim created, token minted);
-        an existing user whose session cookie is missing or no longer matches
-        gets a rotated token so a fresh cookie can be issued. A still-valid
-        session is reused untouched. Provisioning is non-blocking: the sandbox
-        is awaited by the proxy path (``_resolve_sandbox``), so the landing page
-        can report "Provisioning" instead of stalling for ``WAKE_TIMEOUT``.
+        an existing user whose session cookie is missing, foreign or no longer
+        matches gets a rotated token so a fresh cookie can be issued. A still-valid
+        session for the same user is reused untouched. Provisioning is
+        non-blocking: the sandbox is awaited by the proxy path
+        (``_resolve_sandbox``), so the landing page can report "Provisioning"
+        instead of stalling for ``WAKE_TIMEOUT``.
         """
         claim = await self.k8s.get_claim(remote)
-        token, cookie_user = self.credentials(headers, cookies)
-        if claim is not None and cookie_user == remote and token_matches(claim, token):
-            return claim
+        sid = cookies.get(self.settings.cookie_name)
+        session = self.session_for(sid)
+        if session is not None:
+            if session.user != remote:
+                # A session for another identity never authorizes this user.
+                self.revoke_session(sid)
+            elif claim is not None:
+                return claim
         token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         is_new = claim is None
@@ -645,7 +776,7 @@ class Gateway:
         else:
             await self.k8s.patch_token(remote, token_hash)
             await self._touch(remote)
-        self.set_session(response, remote, token)
+        self.set_session(response, remote)
         return await self.k8s.get_claim(remote) if is_new else claim
 
     @staticmethod
@@ -656,16 +787,73 @@ class Gateway:
             and not same_origin(headers)
         )
 
-    def set_session(self, response: Response, user: str, token: str) -> None:
+    def set_session(self, response: Response, user: str) -> str:
+        """Mint an opaque server-side session and set the browser cookie."""
+        sid = secrets.token_urlsafe(32)
+        self.state.sessions[sid] = Session(
+            user=user,
+            expires_at=time.time() + self.settings.cookie_max_age,
+        )
         response.set_cookie(
             self.settings.cookie_name,
-            f"{user}:{token}",
+            sid,
             max_age=self.settings.cookie_max_age,
             path="/",
             httponly=True,
             samesite="lax",
             secure=self.settings.cookie_secure,
         )
+        return sid
+
+    # -- abuse controls ----------------------------------------------------
+
+    def _rate_limit(self, request: Request) -> Response | None:
+        """Return a 429 response when this client is over the auth budget."""
+        limit = self.settings.auth_rate_limit
+        if limit <= 0:
+            return None
+        window = max(1, self.settings.auth_rate_window)
+        key = client_identity(request.headers, request.client)
+        now = time.time()
+        bucket = self.state.auth_rate.get(key)
+        if bucket is None or now - bucket[0] >= window:
+            self.state.auth_rate[key] = (now, 1)
+            return None
+        start, count = bucket
+        if count >= limit:
+            retry_after = max(1, math.ceil(start + window - now))
+            return self._error(
+                429,
+                "too many authentication attempts, retry shortly",
+                {"Retry-After": str(retry_after)},
+            )
+        self.state.auth_rate[key] = (start, count + 1)
+        return None
+
+    def _invite_allowed(self, request: Request, payload: dict) -> bool:
+        """Check the signup invite code, when one is configured."""
+        expected = self.settings.signup_invite_code
+        if expected is None:
+            return True
+        provided = payload.get("invite")
+        if not isinstance(provided, str) or not provided:
+            provided = request.headers.get("x-signup-invite", "")
+        if not isinstance(provided, str) or not provided:
+            return False
+        return secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+    def _form_cross_origin(self, request: Request) -> bool:
+        """Reject a form signup/login whose Origin/Referer contradicts Host.
+
+        Only checked when the browser actually sent one: non-browser clients
+        (automation, tests) commonly omit both headers and must keep working.
+        """
+        if not self._wants_form(request):
+            return False
+        headers = request.headers
+        if not (headers.get("origin") or headers.get("referer")):
+            return False
+        return not same_origin(headers)
 
     # -- activity / maintenance -------------------------------------------
 
@@ -674,12 +862,21 @@ class Gateway:
             self.state.last_activity[user] = time.time()
 
     async def _acquire(self, user: str) -> bool:
-        """Reserve an in-flight slot, waiting out a concurrent suspend."""
+        """Reserve an in-flight slot, waiting out a concurrent suspend.
+
+        Returns False when the user already has ``MAX_IN_FLIGHT_PER_USER``
+        requests in flight (an abuse guard, not a transient error) or when a
+        suspend does not finish within ``WAKE_TIMEOUT``.
+        """
         deadline = time.monotonic() + self.settings.wake_timeout
+        cap = self.settings.max_in_flight_per_user
         while True:
             async with self.state.lock:
                 if not self.state.maintenance.get(user):
-                    self.state.in_flight[user] = self.state.in_flight.get(user, 0) + 1
+                    current = self.state.in_flight.get(user, 0)
+                    if cap > 0 and current >= cap:
+                        return False
+                    self.state.in_flight[user] = current + 1
                     self.state.last_activity[user] = time.time()
                     return True
             if time.monotonic() > deadline:
@@ -759,14 +956,19 @@ class Gateway:
         host: str,
         force: bool = False,
     ) -> tuple[str, tuple[str, str, str], bool]:
-        """Return ``(cookie, cache_key, was_cached)``, handshaking on a miss."""
+        """Return ``(cookie, cache_key, was_cached)``, handshaking on a miss.
+
+        Every failure raises ``HandshakeError`` with a fixed, credential-free
+        message: the exception reaches the browser in the 503 body, so it must
+        never carry the launch token, the handshake URL or pod details.
+        """
         pod_name = self._pod_name(sandbox)
         try:
             pod = await self.k8s.get_pod(pod_name)
         except ApiException as exc:
-            raise HandshakeError(f"could not read pod {pod_name}: {exc}") from exc
+            raise HandshakeError("could not read the DSH handshake pod") from exc
         if pod is None:
-            raise HandshakeError(f"pod {pod_name} not found")
+            raise HandshakeError("the DSH handshake pod is not available")
         uid = (pod.get("metadata") or {}).get("uid") or pod_name
         key = (user, uid, host)
         if not force:
@@ -780,7 +982,7 @@ class Gateway:
                 self.settings.dsh_log_tail_lines,
             )
         except ApiException as exc:
-            raise HandshakeError(f"could not read logs for {pod_name}: {exc}") from exc
+            raise HandshakeError("could not read the pod logs for the handshake") from exc
         launch_token = parse_dsh_launch_token(logs)
         if not launch_token:
             raise HandshakeError("DSH launch token not found in pod logs")
@@ -798,12 +1000,12 @@ class Gateway:
                 timeout=self.settings.http_timeout,
             )
         except httpx.HTTPError as exc:
-            raise HandshakeError(f"DSH handshake failed: {exc}") from exc
+            raise HandshakeError("the DSH handshake request failed") from exc
         if response.status_code >= 400:
-            raise HandshakeError(f"DSH handshake returned {response.status_code}")
+            raise HandshakeError("the DSH handshake returned an error status")
         cookie = extract_dsh_cookies(response.headers.get_list("set-cookie"))
         if not cookie:
-            raise HandshakeError("DSH handshake set no dsh-auth cookie")
+            raise HandshakeError("the DSH handshake set no auth cookie")
         self.state.handshake[key] = cookie
         return cookie, key, False
 
@@ -879,9 +1081,9 @@ class Gateway:
             if "set-cookie" in response.headers:
                 page.headers["set-cookie"] = response.headers["set-cookie"]
             return page
-        token, user = self.credentials(request.headers, request.cookies)
+        _token, user = self.credentials(request.headers, request.cookies)
         session = ""
-        if user and token:
+        if user:
             safe_user = html.escape(user)
             session = (
                 f'<p class="session">Signed in as <strong>{safe_user}</strong>. '
@@ -889,6 +1091,11 @@ class Gateway:
                 '<form method="post" action="/logout">'
                 '<button type="submit">Sign out</button></form>'
             )
+        invite_input = (
+            '<input name="invite" type="password" placeholder="invite code" required>'
+            if self.settings.signup_invite_code is not None
+            else ""
+        )
         body = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -911,6 +1118,7 @@ class Gateway:
 <h2>Create a sandbox</h2>
 <form method="post" action="/users">
   <input name="user" placeholder="username (dns-1123 label)" required>
+  {invite_input}
   <button type="submit">Create</button>
 </form>
 </section>
@@ -970,11 +1178,18 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
     # -- users -------------------------------------------------------------
 
     async def signup(self, request: Request) -> Response:
+        limited = self._rate_limit(request)
+        if limited is not None:
+            return limited
+        if self._form_cross_origin(request):
+            return self._error(403, "cross-origin request rejected")
         wants_form = self._wants_form(request)
         try:
             payload = await self._read_payload(request)
         except BodyTooLarge:
             return self._error(413, "request body too large")
+        if not self._invite_allowed(request, payload):
+            return self._error(403, "invalid or missing invite code")
         user = payload.get("user", "")
         if not valid_user(user):
             return self._error(400, "body must be {'user': '<dns-1123 label>'}")
@@ -992,16 +1207,21 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         sandbox_name = (sandbox or {}).get("metadata", {}).get("name")
         if wants_form:
             response = RedirectResponse(f"/u/{user}/", status_code=303)
-            self.set_session(response, user, token)
+            self.set_session(response, user)
             return response
         response = JSONResponse(
             {"user": user, "token": token, "state": state, "sandbox": sandbox_name},
             status_code=201 if state == "Ready" else 202,
         )
-        self.set_session(response, user, token)
+        self.set_session(response, user)
         return response
 
     async def login(self, request: Request) -> Response:
+        limited = self._rate_limit(request)
+        if limited is not None:
+            return limited
+        if self._form_cross_origin(request):
+            return self._error(403, "cross-origin request rejected")
         wants_form = self._wants_form(request)
         try:
             payload = await self._read_payload(request)
@@ -1012,21 +1232,29 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         if not isinstance(user, str) or not isinstance(token, str):
             return self._error(400, "user and token are required")
         claim = await self.k8s.get_claim(user)
-        if claim is None:
-            return self._error(404, "not found")
-        if not token_matches(claim, token):
+        # An unknown user is indistinguishable from a bad token to the client:
+        # never reveal which usernames exist.
+        if claim is None or not token_matches(claim, token):
             return self._error(401, "unauthorized")
         await self._touch(user)
         if wants_form:
             response = RedirectResponse(f"/u/{user}/", status_code=303)
         else:
             response = JSONResponse({"user": user, "state": "ok"})
-        self.set_session(response, user, token)
+        self.set_session(response, user)
         return response
 
     async def logout(self, request: Request) -> Response:
+        self.revoke_session(request.cookies.get(self.settings.cookie_name))
         response = RedirectResponse("/", status_code=303)
-        response.delete_cookie(self.settings.cookie_name, path="/")
+        # Match the attributes the cookie was set with: a __Host- cookie
+        # deletion that lacks Secure is rejected by browsers, leaving a stale
+        # (though already revoked) cookie behind.
+        response.delete_cookie(
+            self.settings.cookie_name,
+            path="/",
+            secure=self.settings.cookie_secure,
+        )
         return response
 
     async def get_user(self, request: Request) -> Response:
@@ -1061,6 +1289,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         if self._mutation_from_cookie(request.headers, "DELETE", cookie_user):
             return self._error(403, "cross-origin request rejected")
         await self.k8s.delete_claim(user)
+        self.revoke_sessions(user)
         self._clear_handshake(user)
         async with self.state.lock:
             self.state.last_activity.pop(user, None)
@@ -1084,6 +1313,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         if self._mutation_from_cookie(request.headers, "POST", cookie_user):
             return self._error(403, "cross-origin request rejected")
         await self.k8s.delete_claim(remote)
+        self.revoke_sessions(remote)
         self._clear_handshake(remote)
         async with self.state.lock:
             self.state.last_activity.pop(remote, None)
@@ -1111,7 +1341,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 return RedirectResponse("/", status_code=303)
             return self._error(404, "unknown user")
         token, cookie_user = self.credentials(request.headers, request.cookies)
-        if remote == user and not (cookie_user == user and token_matches(claim, token)):
+        if remote == user and cookie_user != user:
             # SSO user without a valid session cookie: bootstrap, then continue.
             return RedirectResponse("/", status_code=303)
         if not self._authorized(claim, token, cookie_user, user, remote):
@@ -1171,11 +1401,17 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         if query:
             url = f"{url}?{query}"
 
-        headers = {
-            key: value
-            for key, value in request.headers.items()
-            if key.lower() not in OWNED_REQUEST_HEADERS and key.lower() != "content-length"
-        }
+        headers = {}
+        allowlist = self.settings.upstream_header_allowlist
+        for key, value in request.headers.items():
+            lowered = key.lower()
+            if lowered in OWNED_REQUEST_HEADERS or lowered == "content-length":
+                continue
+            if strip_forwarding_header(lowered):
+                continue  # client-supplied identity/hop-chain headers are spoofable
+            if allowlist is not None and lowered not in allowlist:
+                continue
+            headers[key] = value
         host = request.headers.get("host", "")
         headers["host"] = host
         headers["cookie"] = cookie  # only the cached DSH auth cookie
@@ -1309,13 +1545,19 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 query = filtered_query(websocket.url.query)
                 if query:
                     url = f"{url}?{query}"
-                headers = {
-                    key: value
-                    for key, value in websocket.headers.items()
-                    if key.lower() not in OWNED_REQUEST_HEADERS
-                    and key.lower() != "origin"
-                    and not key.lower().startswith("sec-websocket-")
-                }
+                headers = {}
+                allowlist = self.settings.upstream_header_allowlist
+                for key, value in websocket.headers.items():
+                    lowered = key.lower()
+                    if lowered in OWNED_REQUEST_HEADERS or lowered == "origin":
+                        continue
+                    if lowered.startswith("sec-websocket-"):
+                        continue
+                    if strip_forwarding_header(lowered):
+                        continue  # client-supplied identity/hop-chain headers
+                    if allowlist is not None and lowered not in allowlist:
+                        continue
+                    headers[key] = value
                 headers["cookie"] = cookie
                 headers["x-forwarded-host"] = host
                 headers["x-forwarded-proto"] = websocket.url.scheme
@@ -1331,7 +1573,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                     additional_headers=headers,
                     subprotocols=subprotocols or None,
                     open_timeout=self.settings.wake_timeout,
-                    max_size=None,
+                    max_size=self.settings.ws_max_message_bytes,
                     proxy=None,
                 )
                 upstream = await upstream_cm.__aenter__()
@@ -1391,8 +1633,41 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
 
     # -- idle sweeper ------------------------------------------------------
 
+    def _prune_state(self, claims: list[dict]) -> None:
+        """Drop state that can no longer be reached.
+
+        Sessions and activity clocks for a user whose claim is gone, expired
+        sessions and expired rate-limit buckets would otherwise accumulate for
+        the lifetime of the process.  In-flight counters are only pruned at
+        zero, and a user with work in flight is always preserved.
+        """
+        now = time.time()
+        present = set()
+        for claim in claims:
+            name = (claim.get("metadata") or {}).get("name") or ""
+            if name.startswith("dsh-"):
+                present.add(name[len("dsh-") :])
+        for user in [user for user in self.state.last_activity if user not in present]:
+            self.state.last_activity.pop(user, None)
+        for user, count in list(self.state.in_flight.items()):
+            if user not in present and count == 0:
+                self.state.in_flight.pop(user, None)
+        for user, flag in list(self.state.maintenance.items()):
+            if user not in present and not flag:
+                self.state.maintenance.pop(user, None)
+        for key in [key for key in self.state.handshake if key[0] not in present]:
+            self.state.handshake.pop(key, None)
+        for sid, session in list(self.state.sessions.items()):
+            if session.user not in present or session.expires_at <= now:
+                self.state.sessions.pop(sid, None)
+        window = max(1, self.settings.auth_rate_window)
+        for key, (start, _count) in list(self.state.auth_rate.items()):
+            if now - start >= window:
+                self.state.auth_rate.pop(key, None)
+
     async def sweep_once(self) -> None:
         claims = await self.k8s.list_claims()
+        self._prune_state(claims)
         for claim in claims:
             # Only suspend claims this gateway created.  Everything else in
             # the namespace (resource-layer claims from the README walkthrough,

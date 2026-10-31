@@ -1,5 +1,5 @@
-# OPTIONAL with the SSO exposure variant: enforce the trust boundary at the
-# network layer.
+# REQUIRED with the SSO exposure variant: enforce the trust boundary at the
+# network layer. Applying the SSO variant without this file is demo-only.
 #
 # The chain is Traefik (Gateway API) -> oauth2-proxy -> dsh-gateway. These
 # policies make it the ONLY chain:
@@ -8,8 +8,9 @@
 #   - oauth2-proxy egress is limited to DNS, public HTTPS (GitHub) and the
 #     gateway.
 # The gateway's own egress (Kubernetes API, sandbox pods) is intentionally not
-# restricted here: the API-server endpoint is cluster-specific. See
-# ../../../docs/optional-hardening.md for that recipe.
+# restricted here: the API-server endpoint is cluster-specific. Add it for
+# production. See
+# ../../../docs/optional-hardening.md#gateway-egress-required-for-production.
 #
 # This manifest assumes Traefik, matching gatewayClassName: traefik in
 # 70-gateway.yaml. Adjust the app.kubernetes.io/name selector for another

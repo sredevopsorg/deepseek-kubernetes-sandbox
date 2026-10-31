@@ -23,6 +23,12 @@ It requires a CNI that enforces `NetworkPolicy`. The selector uses the
 agent-sandbox controller's pod tracking label, so the policy applies to
 existing warm-pool and claimed sandboxes without recreation.
 
+**This is opt-in for the demo but required for production.** Without it every
+tenant can reach every other tenant and cluster-internal endpoints. Production
+also needs the gateway egress policy (cluster-specific API-server endpoint) and
+the exposure variant's policy; see the
+[production checklist](../../docs/optional-hardening.md#6-production-checklist).
+
 ## gVisor, nodeSelector and provider keys
 
 These are configured in the main manifests or with an extra Secret:

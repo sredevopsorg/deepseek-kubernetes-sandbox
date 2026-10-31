@@ -35,6 +35,7 @@ jobs:
     outputs:
       identity: ${{ steps.meta.outputs.identity }}
       dsh_version: ${{ steps.meta.outputs.dsh_version }}
+      dsh_commit: ${{ steps.meta.outputs.dsh_commit }}
       pnpm_version: ${{ steps.meta.outputs.pnpm_version }}
       release_revision: ${{ steps.meta.outputs.release_revision }}
       ghcr_image: ${{ steps.meta.outputs.ghcr_image }}
@@ -88,13 +89,28 @@ jobs:
             echo "tag '$tag' does not exist in this repository" >&2
             exit 1
           fi
-          if ! git ls-remote --tags --exit-code "$DSH_REPO" "$DSH_VERSION" >/dev/null; then
+          if ! upstream="$(git ls-remote --tags --exit-code "$DSH_REPO" \
+                "refs/tags/$DSH_VERSION^{}" "refs/tags/$DSH_VERSION")"; then
             echo "upstream ref '$DSH_VERSION' not found in $DSH_REPO" >&2
+            exit 1
+          fi
+          # Never release a ref that no longer resolves to the pinned commit: an
+          # annotated tag has a peeled ^{} line, a lightweight tag only the ref.
+          resolved="$(printf '%s\n' "$upstream" \
+            | awk -v t="refs/tags/$DSH_VERSION^{}" '$2 == t {print $1}' | head -n1)"
+          if [ -z "$resolved" ]; then
+            resolved="$(printf '%s\n' "$upstream" \
+              | awk -v t="refs/tags/$DSH_VERSION" '$2 == t {print $1}' | head -n1)"
+          fi
+          if [ "$resolved" != "$DSH_COMMIT" ]; then
+            echo "upstream $DSH_REPO@$DSH_VERSION resolved to '$resolved'," \
+              "versions.env pins DSH_COMMIT=$DSH_COMMIT" >&2
             exit 1
           fi
           {
             echo "identity=$identity"
             echo "dsh_version=$DSH_VERSION"
+            echo "dsh_commit=$DSH_COMMIT"
             echo "pnpm_version=$PNPM_VERSION"
             echo "release_revision=$RELEASE_REVISION"
             echo "ghcr_image=$GHCR_IMAGE"
@@ -136,7 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install --require-hashes -r requirements.txt -r requirements-dev.txt
       - name: Lint
         if: needs.meta.outputs.run_tests == 'true'
         run: |
@@ -163,6 +179,7 @@ jobs:
       dockerfile: Dockerfile
       build-args: |
         DSH_VERSION=${{ needs.meta.outputs.dsh_version }}
+        DSH_COMMIT=${{ needs.meta.outputs.dsh_commit }}
         RELEASE_REVISION=${{ needs.meta.outputs.release_revision }}
         PNPM_VERSION=${{ needs.meta.outputs.pnpm_version }}
         VCS_REF=${{ github.sha }}
