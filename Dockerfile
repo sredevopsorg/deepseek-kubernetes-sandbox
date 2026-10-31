@@ -68,7 +68,7 @@ RUN cd /opt/dsh \
 FROM $NODE_RUNTIME_IMAGE AS runtime
 
 ARG DSH_VERSION=dsh-v0.2.1-rc.5
-ARG RELEASE_REVISION=
+ARG RELEASE_REVISION=r6
 ARG PNPM_VERSION=11.28.5
 ARG VCS_REF=unknown
 
@@ -106,8 +106,11 @@ RUN apt-get update \
       tini \
       gh \
       bubblewrap \
+      python3 \
+      python3-pip \
+      python3-venv \
  && rm -rf /var/lib/apt/lists/* \
- && curl -LsSf https://astral.sh/uv/install.sh | sh \
+ && apt-get autoclean -y \
      && install -d -o node -g node -m 0755 /workspace "$DSH_HOME" \
      && corepack enable \
      && corepack prepare "pnpm@$PNPM_VERSION" --activate \
@@ -160,6 +163,6 @@ WORKDIR /workspace
 USER node
 
 EXPOSE 3080
-VOLUME ["/home/node/.dsh"]
+VOLUME ["/home/node/.dsh", "/workspace"]
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/dsh-entrypoint"]
