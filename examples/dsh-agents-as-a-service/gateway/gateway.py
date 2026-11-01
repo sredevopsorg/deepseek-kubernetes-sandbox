@@ -1510,7 +1510,13 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         user = websocket.path_params["user"]
         if not valid_user(user):
             return await self._ws_reject(websocket, 4401)
-        claim = await self.k8s.get_claim(user)
+        try:
+            claim = await self.k8s.get_claim(user)
+        except ApiException:
+            # Starlette has no exception handler for WebSocket scopes, so an
+            # unhandled API error would escape as a traceback and an unclean
+            # close.  1011 keeps the HTTP 503 meaning on the WS channel.
+            return await self._ws_reject(websocket, 1011)
         if claim is None:
             return await self._ws_reject(websocket, 4401)
         token, cookie_user = self.credentials(websocket.headers, websocket.cookies)
@@ -1746,6 +1752,28 @@ async def client_gone(request: Request, exc: ClientDisconnect) -> Response:
     return Response(status_code=CLIENT_CLOSED_REQUEST)
 
 
+async def k8s_api_error(request: Request, exc: ApiException) -> Response:
+    """Answer a Kubernetes API failure with 503 instead of a bare 500.
+
+    The gateway is the only path between the browser and the cluster, so an
+    API outage, a throttle or a missing RBAC verb is a server-side
+    availability problem, not a client error.  A 503 keeps ingress and
+    browser retry semantics honest, and the body is a fixed message: the
+    Kubernetes ``Status`` payload can name cluster objects and is never
+    proxied.  The API ``status``/``reason`` is logged once, credential-free.
+    """
+    print(
+        "gateway: kubernetes API error: "
+        f"status={getattr(exc, 'status', None)} reason={getattr(exc, 'reason', None)}",
+        flush=True,
+    )
+    return JSONResponse(
+        {"error": "cluster API unavailable, retry shortly"},
+        status_code=503,
+        headers={"Retry-After": "10"},
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     k8s=None,
@@ -1778,7 +1806,7 @@ def create_app(
     ]
     app = Starlette(
         routes=routes,
-        exception_handlers={ClientDisconnect: client_gone},
+        exception_handlers={ClientDisconnect: client_gone, ApiException: k8s_api_error},
         lifespan=_lifespan(gateway, http_client if owns_http_client else None),
     )
     app.state.gateway = gateway
