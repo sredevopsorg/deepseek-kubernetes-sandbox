@@ -339,7 +339,7 @@ The gateway runs with a namespace-scoped ServiceAccount (`manifests/50-gateway.y
 
 | API group | Resource | Verbs | Why |
 | --- | --- | --- | --- |
-| `extensions.agents.x-k8s.io` | `sandboxclaims` | `get`, `list`, `create`, `delete` | signup, state, account deletion |
+| `extensions.agents.x-k8s.io` | `sandboxclaims` | `get`, `list`, `create`, `patch`, `delete` | signup, state, account deletion, token rotation |
 | `agents.x-k8s.io` | `sandboxes` | `get`, `list`, `patch` | resolve DNS/pod, wake/suspend |
 | `""` (core) | `pods` | `get`, `list` | resolve the pod behind a sandbox |
 | `""` (core) | `pods/log` | `get` | launch-token handshake |

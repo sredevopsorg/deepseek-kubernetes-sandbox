@@ -230,7 +230,8 @@ would never be sent). HTTPS deployments must set `COOKIE_SECURE=true`.
 
 The gateway's ServiceAccount needs, in its namespace:
 
-* `sandboxclaims` (`extensions.agents.x-k8s.io`): get, list, create, delete
+* `sandboxclaims` (`extensions.agents.x-k8s.io`): get, list, create, patch, delete
+  (patch rotates the token-hash annotation when a session is minted)
 * `sandboxes` (`agents.x-k8s.io`): get, list, patch
 * `pods`: get, list
 * `pods/log`: get
