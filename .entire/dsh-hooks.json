@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "agent": "dsh",
+  "bridge": "@sredevopsorg/dsh-entire-bridge",
+  "hook_names": [
+    "session-start",
+    "turn-start",
+    "turn-end",
+    "compaction",
+    "session-end",
+    "subagent-start",
+    "subagent-end"
+  ],
+  "installed_at": "2026-11-02T06:02:27.816Z",
+  "local_dev": false
+}
