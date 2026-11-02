@@ -175,9 +175,11 @@ oauth2-proxy's egress to the gateway, DNS and public HTTPS.
 | Sandbox not provisioned, wake timeout, handshake failure | `503` + `Retry-After: 10`. The handshake error body is a fixed message: it never contains the launch token, the handshake URL or pod/credential details. |
 | User over `MAX_IN_FLIGHT_PER_USER` | `503` + `Retry-After` (HTTP); the existing in-flight requests are untouched |
 | Upstream connection/protocol failure | `502` |
+| Kubernetes API error (API unreachable/throttled, RBAC `403`, `5xx`) | `503` + `Retry-After: 10`. The body is a fixed message; the Kubernetes `Status` payload (which can name cluster objects) is never proxied, and the API `status`/`reason` is logged once |
 | WS auth failure (unknown user, bad token, cross-origin) | accept, then close `4401` |
 | WS per-user concurrency cap | accept, then close `1011` |
 | WS upstream/handshake failure | accept, then close `1011` |
+| WS Kubernetes API error | accept, then close `1011` |
 | WS message from DSH over `WS_MAX_MESSAGE_BYTES` | the upstream/relay closes the connection (websockets' message-too-big path) |
 
 A close code can only be delivered after the WebSocket upgrade is accepted;
@@ -230,7 +232,8 @@ would never be sent). HTTPS deployments must set `COOKIE_SECURE=true`.
 
 The gateway's ServiceAccount needs, in its namespace:
 
-* `sandboxclaims` (`extensions.agents.x-k8s.io`): get, list, create, delete
+* `sandboxclaims` (`extensions.agents.x-k8s.io`): get, list, create, patch, delete
+  (patch rotates the token-hash annotation when a session is minted)
 * `sandboxes` (`agents.x-k8s.io`): get, list, patch
 * `pods`: get, list
 * `pods/log`: get

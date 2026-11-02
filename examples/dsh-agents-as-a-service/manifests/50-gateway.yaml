@@ -26,7 +26,8 @@ metadata:
   namespace: dsh-demo
 ---
 # Least privilege:
-#   - claims are created/deleted per user (signup/delete);
+#   - claims are created/deleted per user (signup/delete) and patched only to
+#     rotate the token-hash annotation when a session is minted;
 #   - sandboxes are read, and patched only to flip operatingMode (suspend/resume);
 #   - pods are read, and pods/log is read to capture DSH's launch token from
 #     the startup log line (`dsh web: ...?token=...`).
@@ -39,7 +40,7 @@ metadata:
 rules:
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
-    verbs: ["get", "list", "create", "delete"]
+    verbs: ["get", "list", "create", "patch", "delete"]
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
     verbs: ["get", "list", "patch"]

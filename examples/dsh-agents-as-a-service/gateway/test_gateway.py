@@ -1176,12 +1176,14 @@ async def test_delete_missing_claim_is_404(env):
 
 
 @pytest.mark.asyncio
-async def test_unexpected_api_error_propagates(env):
+async def test_unexpected_api_error_returns_503(env):
     add_user(env.k8s)
     env.k8s.get_claim_error = ApiException(status=500)
     async with asgi_client(env) as client:
-        with pytest.raises(ApiException):
-            await client.get("/users/alice")
+        response = await client.get("/users/alice")
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "10"
+    assert response.json() == {"error": "cluster API unavailable, retry shortly"}
 
 
 @pytest.mark.asyncio
@@ -1831,6 +1833,16 @@ def test_ws_unauthenticated_closes_4401(env):
     assert exc.value.code == 4401
 
 
+def test_ws_kubernetes_api_error_closes_1011(env):
+    add_user(env.k8s)
+    env.k8s.get_claim_error = ApiException(status=503)
+    with TestClient(env.app) as client:
+        with client.websocket_connect("/u/alice/api/remote.mux") as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_text()
+    assert exc.value.code == 1011
+
+
 def test_ws_cookie_cross_origin_closes_4401(env):
     add_user(env.k8s)
     with TestClient(env.app) as client:
@@ -2147,6 +2159,19 @@ def test_remote_user_returns_valid_and_rejects_invalid(env):
     assert g.remote_user({"X-Forwarded-User": "bad name"}) is None
     assert g.remote_user({"X-Forwarded-User": ""}) is None
     assert g.remote_user({}) is None
+
+
+@pytest.mark.asyncio
+async def test_sso_landing_returns_503_when_claim_patch_is_forbidden(env):
+    """A missing RBAC verb on ``patch sandboxclaims`` used to escape as a 500."""
+    enable_sso(env)
+    env.k8s.claims["alice"] = {"metadata": {"name": claim_name("alice")}}
+    env.k8s.patch_error = ApiException(status=403)
+    async with asgi_client(env) as client:
+        response = await client.get("/", headers={"X-Forwarded-User": "alice"})
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "10"
+    assert response.json() == {"error": "cluster API unavailable, retry shortly"}
 
 
 @pytest.mark.asyncio
