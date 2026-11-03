@@ -1,5 +1,6 @@
 # REQUIRED with the SSO exposure variant: enforce the trust boundary at the
 # network layer. Applying the SSO variant without this file is demo-only.
+# `scripts/preflight-sso.sh` fails while either policy below is missing.
 #
 # The chain is Traefik (Gateway API) -> oauth2-proxy -> dsh-gateway. These
 # policies make it the ONLY chain:

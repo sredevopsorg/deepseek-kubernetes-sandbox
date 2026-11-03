@@ -139,13 +139,15 @@ kubectl apply -f manifests/exposure/gateway-api-sso/
 
 # 5. Preflight: fails loudly on missing Secrets, a bad oauth2-proxy cookie
 #    secret, missing gateway SSO env, a dangling TLS reference, leftover
-#    placeholders, or a second path to the gateway.
+#    placeholders, a second path to the gateway, a Role without `patch` on
+#    sandboxclaims, or missing SSO NetworkPolicies.
 ./scripts/preflight-sso.sh
 ```
 
 The preflight is read-only and exits non-zero on any failure, naming the exact
 fix. Run it again after rotating a Secret or changing the public host; it also
-verifies that the oauth2-proxy cookie secret decodes to 16, 24 or 32 bytes.
+verifies that the oauth2-proxy cookie secret is a valid AES key length (16, 24
+or 32 raw bytes, or URL-safe unpadded base64 that decodes to one of those).
 
 ### SSO trust boundary
 

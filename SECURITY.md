@@ -35,7 +35,8 @@ disclosure once a fix is available.
   exposure variant's policy is required, not optional: an exposure without it
   is demo-only. Run `examples/dsh-agents-as-a-service/scripts/preflight-sso.sh`
   after applying the variant; it checks the Secrets, gateway env, TLS
-  reference, leftover placeholders and accidental second paths.
+  reference, leftover placeholders, accidental second paths, the gateway
+  Role's `patch` verb on `sandboxclaims` and the variant NetworkPolicies.
 - **Insecure-cookie guard.** TLS terminates outside the gateway. Set
   COOKIE_SECURE=true for HTTPS and remove ALLOW_INSECURE_COOKIES; the gateway
   refuses to start with COOKIE_SECURE=false unless ALLOW_INSECURE_COOKIES=1 is

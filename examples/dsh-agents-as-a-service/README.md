@@ -518,8 +518,10 @@ front of **oauth2-proxy**, which authenticates the browser against GitHub
    reports **before** pointing real traffic at the Gateway. It verifies the
    Secrets (including a valid oauth2-proxy cookie secret length), the gateway's
    `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, that the Gateway's TLS certificate
-   reference resolves, and that no `your-github-org`/`dsh-demo.example.com`
-   placeholder was left applied. Full verification steps are in the
+   reference resolves, that the gateway ServiceAccount may `patch`
+   `sandboxclaims` (SSO token rotation), that the variant's NetworkPolicies are
+   applied, and that no `your-github-org`/`dsh-demo.example.com` placeholder was
+   left applied. Full verification steps are in the
    [exposure README](manifests/exposure/README.md).
 
 > **Exposure without the variant NetworkPolicy is demo-only.** The SSO
@@ -599,7 +601,7 @@ applied by the base step.
 | Every browser is logged out after a gateway rollout/restart | Expected: sessions are opaque ids in gateway memory and a restart drops them. Sign in again; a production deployment needs shared session state or per-request re-authentication. The DSH sandboxes and their data are unaffected |
 | WebSocket closes with `1011` for a busy client | `MAX_IN_FLIGHT_PER_USER` (per-user connection cap) or an upstream/handshake failure closed the socket; check the gateway logs to tell them apart |
 | WebSocket closes after a very large message from DSH | A message received from DSH exceeded `WS_MAX_MESSAGE_BYTES` (16 MiB), so the relay closed it instead of buffering; raise the limit only if DSH legitimately sends larger frames. Browser-to-DSH frames are bounded by uvicorn's own limit |
-| `scripts/preflight-sso.sh` exits non-zero | It names the failing item: a missing Secret/key, a bad oauth2-proxy cookie-secret length, missing `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, a dangling Gateway TLS reference, a leftover `your-github-org`/`dsh-demo.example.com` placeholder, or a second path to the gateway (an Ingress). Fix all items before exposing the SSO variant |
+| `scripts/preflight-sso.sh` exits non-zero | It names the failing item: a missing Secret/key, a bad oauth2-proxy cookie-secret length, missing `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, a dangling Gateway TLS reference, a leftover `your-github-org`/`dsh-demo.example.com` placeholder, a second path to the gateway (an Ingress), a gateway Role without `patch` on `sandboxclaims`, or a missing SSO NetworkPolicy. Fix all items before exposing the SSO variant |
 | `409` on signup | User already has a claim; use `POST /login` with the existing token or delete the user first |
 | Cookie set but browser keeps getting `401` | `COOKIE_SECURE=true` while serving over plain HTTP (secure cookies are not sent); use HTTPS or set `false` **and** `ALLOW_INSECURE_COOKIES=1` for local demos |
 | WebSocket closes immediately (`4401`) | Missing/expired gateway cookie, or the upgrade's `Origin` does not match `Host` (CSWSH check); DSH rejecting `Host` instead surfaces as close `1011` — add the host to `DSH_TRUSTED_HOSTS` |

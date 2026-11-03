@@ -338,8 +338,10 @@ The SSO policy is what turns the trust boundary in the
 The `dsh-gateway` Service must still stay ClusterIP; do not apply both exposure
 variants. After applying the SSO variant, run
 [`scripts/preflight-sso.sh`](../scripts/preflight-sso.sh): it checks the
-gateway's SSO env, the Secrets, the TLS reference, leftover placeholders and
-accidental second paths (such as an Ingress).
+gateway's SSO env, the Secrets, the TLS reference, leftover placeholders,
+accidental second paths (such as an Ingress), the gateway Role's `patch` verb on
+`sandboxclaims` (SSO token rotation) and that both SSO NetworkPolicies are
+applied.
 
 Verify the negative case from a sandbox pod (it is not the proxy):
 
