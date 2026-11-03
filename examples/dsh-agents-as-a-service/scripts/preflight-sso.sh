@@ -20,7 +20,14 @@
 #      applied oauth2-proxy args, Gateway listeners or HTTPRoute hostnames;
 #   6. (warning) no Ingress in the namespace creates a second path to
 #      dsh-gateway. With SSO enabled the Service must be reachable only through
-#      oauth2-proxy.
+#      oauth2-proxy;
+#   7. the gateway ServiceAccount may `patch` sandboxclaims. The SSO landing
+#      path rotates the token-hash annotation whenever the browser has no valid
+#      gateway session (first visit, expired/foreign cookie, gateway restart),
+#      so without that verb every such sign-in answers 503;
+#   8. the SSO variant's required NetworkPolicies are applied. Without them any
+#      Pod in the cluster can reach dsh-gateway:8080 and spoof the identity
+#      header, so the exposure is demo-only.
 #
 # Exit status: 0 when every check passes (warnings allowed), 1 on any failure.
 # Every failure prints the fix. This script only reads cluster state.
@@ -35,6 +42,9 @@
 #   OAUTH_SECRET     oauth2-proxy Secret name (default: oauth2-proxy)
 #   TLS_SECRET       TLS Secret name the Gateway should reference (default:
 #                    dsh-demo-tls)
+#   GATEWAY_ROLE     Role/RoleBinding name that grants the gateway access
+#                    (default: dsh-gateway; only used when impersonation is
+#                    unavailable and the permission must be read statically)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -43,6 +53,7 @@ GATEWAY_DEPLOY="${GATEWAY_DEPLOY:-dsh-gateway}"
 OAUTH_DEPLOY="${OAUTH_DEPLOY:-oauth2-proxy}"
 OAUTH_SECRET="${OAUTH_SECRET:-oauth2-proxy}"
 TLS_SECRET="${TLS_SECRET:-dsh-demo-tls}"
+GATEWAY_ROLE="${GATEWAY_ROLE:-dsh-gateway}"
 
 FAILED=0
 pass() { printf 'PASS  %s\n' "$*"; }
@@ -83,21 +94,38 @@ check_secret_key "$OAUTH_SECRET" client-secret \
 check_secret_key "$OAUTH_SECRET" cookie-secret \
   "Create it from manifests/exposure/gateway-api-sso/73-oauth2-proxy-secret.yaml.example."
 
-# The cookie secret must be URL-safe unpadded base64 of 16, 24 or 32 bytes;
-# oauth2-proxy refuses anything else (the classic error is "44 bytes").
+# oauth2-proxy accepts the cookie secret either as raw bytes of length 16, 24
+# or 32, or as URL-safe unpadded base64 that decodes to one of those lengths
+# (pkg/encryption.SecretBytes). The documented generator,
+# `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`, produces the
+# second form: 43 base64 characters that decode to 32 bytes.
 if COOKIE_B64=$(kubectl -n "$NS" get secret "$OAUTH_SECRET" \
   -o jsonpath='{.data.cookie-secret}' 2>/dev/null); then
   if [ -n "$COOKIE_B64" ]; then
-    if ! COOKIE_LEN=$(printf '%s' "$COOKIE_B64" | base64 -d 2>/dev/null | wc -c); then
-      fail "Secret $OAUTH_SECRET key 'cookie-secret' is not valid base64. Generate it with: python3 -c 'import secrets; print(secrets.token_urlsafe(32))'"
-    else
-      case "$COOKIE_LEN" in
-        16 | 24 | 32) pass "oauth2-proxy cookie-secret decodes to $COOKIE_LEN bytes" ;;
-        *)
-          fail "oauth2-proxy cookie-secret decodes to $COOKIE_LEN bytes; it must be 16, 24 or 32. Generate a URL-safe unpadded value with: python3 -c 'import secrets; print(secrets.token_urlsafe(32))'"
-          ;;
-      esac
-    fi
+    COOKIE_RAW=$(printf '%s' "$COOKIE_B64" | base64 -d 2>/dev/null || true)
+    COOKIE_LEN=${#COOKIE_RAW}
+    COOKIE_FORM=raw
+    case "$COOKIE_LEN" in
+      16 | 24 | 32) ;;
+      *)
+        # Mirror SecretBytes: only a strictly URL-safe base64 string is decoded;
+        # anything else is used as raw bytes (and is then the wrong length).
+        COOKIE_FORM=base64
+        case "$COOKIE_RAW" in
+          "" | *[!A-Za-z0-9_=-]*) COOKIE_LEN=0 ;;
+          *)
+            COOKIE_LEN=$(printf '%s' "$COOKIE_RAW" | tr -- '-_' '+/' | tr -d '=\n' \
+              | base64 -d 2>/dev/null | wc -c || true)
+            ;;
+        esac
+        ;;
+    esac
+    case "$COOKIE_LEN" in
+      16 | 24 | 32) pass "oauth2-proxy cookie-secret is $COOKIE_FORM with a $COOKIE_LEN-byte key" ;;
+      *)
+        fail "oauth2-proxy cookie-secret is not a valid length ($COOKIE_LEN bytes). It must be 16, 24 or 32 raw bytes, or URL-safe unpadded base64 that decodes to one of those lengths. Generate it with: python3 -c 'import secrets; print(secrets.token_urlsafe(32))'"
+        ;;
+    esac
   fi
 fi
 
@@ -137,6 +165,51 @@ fi
 
 if env_is_set ALLOW_INSECURE_COOKIES; then
   warn "ALLOW_INSECURE_COOKIES is still set on deploy/$GATEWAY_DEPLOY. It is ignored while COOKIE_SECURE=true but is a footgun: remove it with 'kubectl -n $NS set env deploy/$GATEWAY_DEPLOY ALLOW_INSECURE_COOKIES-'."
+fi
+
+echo
+echo "== Gateway RBAC (SSO token rotation)"
+# The SSO landing path patches the token-hash annotation on the user's claim
+# whenever the browser has no valid gateway session: first visit, an expired or
+# foreign cookie, or a gateway restart (sessions live in the gateway's memory).
+# Without `patch` every such GET / answers 503 and the user cannot sign in.
+GATEWAY_SA=$(kubectl -n "$NS" get deployment "$GATEWAY_DEPLOY" \
+  -o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null || true)
+GATEWAY_SA=${GATEWAY_SA:-default}
+CAN_I=$(kubectl auth can-i patch sandboxclaims.extensions.agents.x-k8s.io \
+  -n "$NS" --as="system:serviceaccount:$NS:$GATEWAY_SA" 2>&1 || true)
+
+# read_gateway_rules: one "apiGroups|resources|verbs" line per rule of the
+# Role (or ClusterRole) the gateway RoleBinding points at. Used only when
+# `kubectl auth can-i --as` is unavailable (a read-only kubeconfig cannot
+# impersonate); it is a static check, not an authoritative one.
+read_gateway_rules() {
+  local rules_jsonpath kind name
+  rules_jsonpath='{range .rules[*]}{range .apiGroups[*]}{@}{","}{end}{"|"}{range .resources[*]}{@}{","}{end}{"|"}{range .verbs[*]}{@}{","}{end}{"\n"}{end}'
+  kind=$(kubectl -n "$NS" get rolebinding "$GATEWAY_ROLE" \
+    -o jsonpath='{.roleRef.kind}' 2>/dev/null || true)
+  name=$(kubectl -n "$NS" get rolebinding "$GATEWAY_ROLE" \
+    -o jsonpath='{.roleRef.name}' 2>/dev/null || true)
+  case "$kind" in
+    Role) kubectl -n "$NS" get role "$name" -o jsonpath="$rules_jsonpath" 2>/dev/null || true ;;
+    ClusterRole) kubectl get clusterrole "$name" -o jsonpath="$rules_jsonpath" 2>/dev/null || true ;;
+  esac
+}
+
+if [ "$CAN_I" = "yes" ]; then
+  pass "ServiceAccount $GATEWAY_SA can patch sandboxclaims (token rotation)"
+elif [ "$CAN_I" = "no" ]; then
+  fail "ServiceAccount $GATEWAY_SA cannot patch sandboxclaims: SSO sign-in answers 503 whenever the browser has no valid gateway session (after a gateway restart, cookie expiry or in a new browser). Fix: grant 'patch' on sandboxclaims to Role $GATEWAY_ROLE (the shipped Role in manifests/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
+else
+  RULES=$(read_gateway_rules)
+  if printf '%s\n' "$RULES" | awk -F'|' \
+    '$1 ~ /(^|,)extensions\.agents\.x-k8s\.io(,|$)/ && $2 ~ /(^|,)sandboxclaims(,|$)/ && $3 ~ /(^|,)patch(,|$)/ { found = 1 } END { exit found ? 0 : 1 }'; then
+    pass "the gateway Role grants patch on sandboxclaims (static check; impersonation unavailable)"
+  elif [ -n "$RULES" ]; then
+    fail "Role $GATEWAY_ROLE does not grant 'patch' on sandboxclaims: SSO sign-in answers 503 whenever the browser has no valid gateway session. Fix: grant that verb to the Role (the shipped Role in manifests/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
+  else
+    warn "could not verify that ServiceAccount $GATEWAY_SA may patch sandboxclaims ($CAN_I). Check manually that Role $GATEWAY_ROLE grants 'patch' on extensions.agents.x-k8s.io/sandboxclaims."
+  fi
 fi
 
 echo
@@ -225,6 +298,18 @@ if kubectl -n "$NS" get ingress >/dev/null 2>&1; then
     fail "an Ingress in namespace $NS also routes to dsh-gateway. With SSO enabled the gateway must be reachable only through oauth2-proxy: delete the Ingress variant (kubectl delete -f manifests/exposure/ingress/)."
   fi
 fi
+
+# The SSO variant's policies are part of the variant: without them the
+# gateway Service is reachable by any Pod, which can spoof the identity header.
+echo
+echo "== SSO NetworkPolicies (required with this variant)"
+for POLICY in dsh-gateway-ingress oauth2-proxy-ingress; do
+  if kubectl -n "$NS" get networkpolicy "$POLICY" >/dev/null 2>&1; then
+    pass "NetworkPolicy $POLICY exists"
+  else
+    fail "NetworkPolicy $POLICY is missing: any Pod in the cluster can reach dsh-gateway:8080 and spoof X-Forwarded-User, so the SSO identity is not trustworthy. Fix: kubectl apply -f manifests/exposure/gateway-api-sso/75-networkpolicies.yaml"
+  fi
+done
 
 echo
 if [ "$FAILED" -ne 0 ]; then

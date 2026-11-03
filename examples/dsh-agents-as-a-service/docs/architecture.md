@@ -395,7 +395,8 @@ Notes and limits:
 - **SSO is trust-on-hop.** `AUTH_PROXY_HEADER` makes the gateway trust the proxy-asserted
   identity; the SSO variant must remain the only path to the Service, and its NetworkPolicy is
   required, not optional. Run [`scripts/preflight-sso.sh`](../scripts/preflight-sso.sh) after
-  applying it.
+  applying it: it fails when the Role does not grant `patch` on `sandboxclaims` (SSO token
+  rotation) or when the variant's NetworkPolicies are missing.
 
 ## Failure modes
 
@@ -412,7 +413,7 @@ Notes and limits:
 | Per-user concurrency cap hit | HTTP `503` + `Retry-After`, or WebSocket close `1011` | `MAX_IN_FLIGHT_PER_USER` protects the single gateway from one busy tenant; reduce concurrency or raise the cap deliberately. These are per replica |
 | Oversized WebSocket message from DSH | Connection closes | `WS_MAX_MESSAGE_BYTES` (16 MiB) is enforced on upstream messages; raise it only if DSH legitimately needs larger frames |
 | Session expiry / revocation | `401` (HTTP) or close `4401` (WebSocket) | Expected after logout, user delete, `/recreate`, `COOKIE_MAX_AGE` expiry or a gateway restart; sign in again |
-| SSO variant applied without its NetworkPolicy (or with an Ingress) | Gateway accepts spoofed `X-Forwarded-User` | Demo-only configuration; keep `75-networkpolicies.yaml`, remove the second path, and run `scripts/preflight-sso.sh` |
+| SSO variant applied without its NetworkPolicy (or with an Ingress) | Gateway accepts spoofed `X-Forwarded-User` | Demo-only configuration; keep `75-networkpolicies.yaml`, remove the second path, and run `scripts/preflight-sso.sh`, which fails when either policy is missing |
 | Browser aborts a request (tab reload, back navigation) during a slow wake or handshake | No response reaches the client; nothing appears in the access log | If the abort lands before the response starts, the body read raises `ClientDisconnect` and the app answers `499` (`CLIENT_CLOSED_REQUEST`), which cannot reach the departed peer. Nothing reached DSH, no ERROR traceback is logged, and the in-flight slot is released. A request already streaming ends with its upstream status. |
 | DSH auth cookie expired mid-session | Proxy `401` once, then recovers | Gateway refreshes the handshake once |
 | Upstream pod name changed after resume | Cached cookie keyed by old pod UID is useless | Cache is invalidated on suspend; next request re-handshakes |
