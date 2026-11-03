@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "01M6FEAD3BSQN646MGNTP9YAZZ",
+  "session_id": "session-e777dce8-e4d4-4033-97a6-8eff3c9b9ce1",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-03T00:53:04.561619793Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 1,
+  "files_touched": [
+    "README.md"
+  ],
+  "agent": "DeepSeek Harness",
+  "model": "",
+  "turn_id": "6b73e63ff413",
+  "token_usage": {
+    "input_tokens": 95829,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 6253312,
+    "output_tokens": 15765,
+    "api_call_count": 88
+  },
+  "redaction": {
+    "replacements": 11,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 11,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 2
+  }
+}
