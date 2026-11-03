@@ -1,0 +1,5 @@
+/dsh-agent-sandbox-platform check resources in namespace dsh-demo and dsh-gateway logs for warnings and error, then explain the root cause and propose fixes
+
+---
+
+implement the proposed fixes in a new branch then create a pr. The only exception is for whatever change or test needed in the cluster, you must provide me the required commands for me to execute them because your credentials allows read access only. Ask me to run at any time

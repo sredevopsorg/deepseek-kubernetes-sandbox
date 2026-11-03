@@ -1,0 +1,70 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "01M6FNY2WTC4GMAJ8BAHABN88M",
+  "session_id": "session-b5202e30-5a64-476e-bc4d-e2f76928f1b8",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-03T03:06:09.134686634Z",
+  "branch": "fix/sso-preflight-rbac-netpol",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "SECURITY.md",
+    "examples/dsh-agents-as-a-service/README.md",
+    "examples/dsh-agents-as-a-service/docs/architecture.md",
+    "examples/dsh-agents-as-a-service/docs/optional-hardening.md",
+    "examples/dsh-agents-as-a-service/manifests/exposure/README.md",
+    "examples/dsh-agents-as-a-service/manifests/exposure/gateway-api-sso/75-networkpolicies.yaml",
+    "examples/dsh-agents-as-a-service/scripts/preflight-sso.sh"
+  ],
+  "agent": "DeepSeek Harness",
+  "model": "",
+  "turn_id": "de4a3ad240e0",
+  "token_usage": {
+    "input_tokens": 58062,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1558016,
+    "output_tokens": 23045,
+    "api_call_count": 30
+  },
+  "redaction": {
+    "replacements": 0,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-dsh-dsh-agent-sandbox-platform-2026-11-03T02:48:27.099Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "dsh-agent-sandbox-platform"
+      },
+      "source": {
+        "agent": "dsh",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "9cfdc75273ac",
+      "timestamp": "2026-11-03T02:48:27.099Z",
+      "native": {
+        "command": "/dsh-agent-sandbox-platform"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/dsh-agent-sandbox-platform",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  }
+}
