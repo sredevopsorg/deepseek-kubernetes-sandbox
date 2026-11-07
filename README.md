@@ -1,5 +1,7 @@
 # deepseek-kubernetes-sandbox
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sredevopsorg/deepseek-kubernetes-sandbox)
+
 **DeepSeek Harness Web, packaged as a container.** This repository's primary
 artifact is a slim, non-root, multi-arch image of
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web
