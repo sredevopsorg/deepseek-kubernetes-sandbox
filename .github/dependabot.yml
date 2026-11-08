@@ -7,30 +7,27 @@ updates:
       interval: weekly
     groups:
       actions:
+        applies-to: version-updates
         patterns: ["*"]
     commit-message:
-      prefix: "chore: "
+      prefix: "chore(deps)"
 
   - package-ecosystem: pip
     directory: /examples/dsh-agents-as-a-service/gateway
     schedule:
       interval: weekly
     groups:
+      # Security fixes get their own PR so they are not bundled with, or
+      # delayed by, routine weekly bumps. The first matching group wins.
+      gateway-python-security:
+        applies-to: security-updates
+        patterns: ["*"]
       gateway-python:
+        applies-to: version-updates
         patterns: ["*"]
     commit-message:
-      prefix: "chore: "
+      prefix: "chore(deps)"
 
-  - package-ecosystem: docker
-    directory: /
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: "chore: "
-
-  - package-ecosystem: docker
-    directory: /examples/dsh-agents-as-a-service/gateway
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: "chore: "
+# Container base images are deliberately bumped by hand in versions.env:
+# Dependabot's Docker parser only recognizes literal FROM references, and both
+# Dockerfiles select their base image through an ARG. See docs/versioning.md.

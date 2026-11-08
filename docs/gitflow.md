@@ -142,7 +142,7 @@ Configure these on the repository before relying on the workflow:
       permissions do this) and protect the
       `ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox` packages from deletion.
 - [ ] **Security**: enable CodeQL default setup **or** keep the advanced
-      `codeql.yml` workflow (not both), enable Dependabot alerts and
-      dependency review.
+      `codeql.yml` workflow (not both), enable Dependabot alerts, Dependabot
+      security updates and dependency review.
 - [ ] **Secrets/Variables**: none are needed for image publishing; the workflows
       use `GITHUB_TOKEN`.
