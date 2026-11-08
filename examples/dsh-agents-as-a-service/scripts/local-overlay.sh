@@ -115,11 +115,12 @@ if [ -n "${RUNTIME_CLASS:-}" ]; then
 fi
 
 if [ -n "${NODE_SELECTOR_KEY:-}" ] && [ -n "${NODE_SELECTOR_VALUE:-}" ]; then
-  # JSON pointer escaping: '~' -> '~0' first, then '/' -> '~1'.
-  NODE_KEY_ESCAPED=${NODE_SELECTOR_KEY//~/~0}
-  NODE_KEY_ESCAPED=${NODE_KEY_ESCAPED//\//~1}
+  # The key is a JSON VALUE here, not a JSON-pointer segment: do not escape
+  # '/' as '~1' (that produced nodeSelector keys like
+  # "kubernetes.io~1hostname", which the API server rejects when the
+  # controller builds the Pod).
   patch_json sandboxtemplate "$TEMPLATE_NAME" \
-    "[{\"op\":\"add\",\"path\":\"/spec/podTemplate/spec/nodeSelector\",\"value\":{\"$NODE_KEY_ESCAPED\":\"$NODE_SELECTOR_VALUE\"}}]"
+    "[{\"op\":\"add\",\"path\":\"/spec/podTemplate/spec/nodeSelector\",\"value\":{\"$NODE_SELECTOR_KEY\":\"$NODE_SELECTOR_VALUE\"}}]"
 fi
 
 if [ -n "${DSH_TRUSTED_HOSTS:-}" ]; then
