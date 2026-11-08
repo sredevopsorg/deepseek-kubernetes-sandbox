@@ -403,6 +403,9 @@ class Settings:
     max_body_bytes: int = 32 * 1024 * 1024
     http_timeout: float = 300.0
     sweep_interval: float = 15.0
+    # Upper bound, in seconds, for the single Kubernetes API call behind
+    # GET /readyz. Kept small so a dead API fails the probe quickly.
+    ready_check_timeout: float = 2.0
     # Connection retries while a Ready pod is still binding its port.
     upstream_attempts: int = 3
     upstream_retry_delay: float = 1.0
@@ -460,6 +463,7 @@ class Settings:
             max_body_bytes=_env_int("MAX_BODY_MB", 32) * 1024 * 1024,
             http_timeout=_env_float("HTTP_TIMEOUT", 300.0),
             sweep_interval=_env_float("SWEEP_INTERVAL", 15.0),
+            ready_check_timeout=_env_float("READY_CHECK_TIMEOUT", 2.0),
             auth_proxy_header=os.environ.get("AUTH_PROXY_HEADER") or None,
             auth_rate_limit=_env_int("AUTH_RATE_LIMIT", 30),
             auth_rate_window=_env_int("AUTH_RATE_WINDOW", 60),
@@ -476,7 +480,8 @@ class Settings:
 # The official Kubernetes client is synchronous.  Every call is pushed onto a
 # worker thread with anyio.to_thread so it never blocks the event loop.  The
 # client and its credentials are loaded lazily, on the first real call: that
-# keeps ``GET /healthz`` (and importing this module) cluster-free.
+# keeps ``GET /healthz`` (and importing this module) cluster-free, while
+# ``GET /readyz`` pays for exactly one bounded call.
 
 
 class Kubernetes:
@@ -585,6 +590,24 @@ class Kubernetes:
             "sandboxclaims",
         )
         return result.get("items", [])
+
+    async def check_api(self, timeout: float = 2.0) -> None:
+        """One bounded, cheap API call for ``GET /readyz``.
+
+        A one-item claim list proves both that the API server is reachable and
+        that the ServiceAccount can still read the CRDs the gateway needs.
+        Raises on failure; the readiness handler maps that to 503.
+        """
+        await self._call(
+            "crd",
+            "list_namespaced_custom_object",
+            GROUP,
+            VERSION,
+            self.namespace,
+            "sandboxclaims",
+            limit=1,
+            _request_timeout=timeout,
+        )
 
     # -- sandboxes ---------------------------------------------------------
 
@@ -1083,6 +1106,26 @@ class Gateway:
         return RedirectResponse(target, status_code=308)
 
     async def healthz(self, request: Request) -> JSONResponse:
+        """Liveness: process-only, never touches the cluster."""
+        return JSONResponse({"status": "ok"})
+
+    async def readyz(self, request: Request) -> JSONResponse:
+        """Readiness: liveness plus a bounded Kubernetes API dependency check.
+
+        ``/healthz`` stays cluster-free so a transient API outage does not get
+        the pod killed. ``/readyz`` reports the dependency instead: while the
+        API is unreachable the gateway cannot resolve claims or provision
+        users, so it should leave the Service endpoints rather than keep
+        serving 500s. ``READY_CHECK_TIMEOUT`` bounds the check.
+        """
+        timeout = self.settings.ready_check_timeout
+        try:
+            await asyncio.wait_for(self.k8s.check_api(timeout), timeout=timeout + 1.0)
+        except Exception as exc:  # a probe must never raise
+            # Do not echo the exception: the text can contain API URLs and
+            # other cluster details that are meaningless to a probe client.
+            print(f"readyz: cluster API check failed: {type(exc).__name__}", flush=True)
+            return JSONResponse({"status": "unavailable"}, status_code=503)
         return JSONResponse({"status": "ok"})
 
     @staticmethod
@@ -1864,6 +1907,7 @@ def create_app(
     gateway = Gateway(settings, k8s, http_client, ws_connect or websockets.connect)
     routes = [
         Route("/healthz", gateway.healthz),
+        Route("/readyz", gateway.readyz),
         Route("/", gateway.landing),
         Route("/users", gateway.signup, methods=["POST"]),
         Route("/login", gateway.login, methods=["POST"]),

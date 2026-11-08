@@ -1,7 +1,9 @@
 # The gateway: control+data plane that turns the resources into a usable
 # browser-facing service. It is a Starlette ASGI app (see gateway/) listening
 # on :8080 and exposing:
-#   GET /healthz                     unauthenticated health probe
+#   GET /healthz                     unauthenticated liveness probe (no cluster)
+#   GET /readyz                      unauthenticated readiness probe (bounded
+#                                    Kubernetes API check; 503 when unreachable)
 #   GET /                            landing page (signup / token login)
 #   POST /users, POST /login, ...    session cookie auth
 #   /u/<user>/...                    HTTP + WebSocket proxy to the user's DSH
@@ -220,11 +222,16 @@ spec:
             # streamed without this cap.
             # - name: WS_MAX_MESSAGE_BYTES
             #   value: "16777216"
-          # /healthz is unauthenticated and returns 200 without touching the
-          # cluster, so it is safe for both readiness and liveness.
+          # /healthz is unauthenticated, returns 200 without touching the
+          # cluster, and is the right liveness signal. /readyz additionally
+          # performs one bounded Kubernetes API read (READY_CHECK_TIMEOUT,
+          # default 2s), so a gateway whose API access is blocked is removed
+          # from the Service endpoints instead of answering 500s while still
+          # looking alive. Keep readiness API-aware and liveness cluster-free:
+          # a transient API outage must not restart the process.
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5

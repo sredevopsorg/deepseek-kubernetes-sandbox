@@ -68,11 +68,16 @@ class FakeK8s:
         self.conflict_on_create = False
         self.get_claim_error = None
         self.patch_error = None
+        self.api_error = None
 
     async def get_claim(self, user):
         if self.get_claim_error is not None:
             raise self.get_claim_error
         return self.claims.get(user)
+
+    async def check_api(self, timeout=2.0):
+        if self.api_error is not None:
+            raise self.api_error
 
     async def create_claim(self, user, token_hash, pool):
         if self.conflict_on_create:
@@ -693,6 +698,27 @@ async def test_healthz_needs_no_auth_and_no_cluster(env):
         response = await client.get("/healthz")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_readyz_needs_no_auth_and_checks_the_cluster_api(env):
+    # The fake tracks the call; readiness must be probeable without credentials.
+    async with asgi_client(env) as client:
+        response = await client.get("/readyz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_readyz_is_503_when_the_cluster_api_is_unreachable(env):
+    # This is the incident /readyz exists for: the gateway process is alive and
+    # /healthz is green, but it cannot resolve claims, so it must leave the
+    # Service endpoints instead of routing users into 500s.
+    env.k8s.api_error = ConnectionError("cluster API unreachable")
+    async with asgi_client(env) as client:
+        response = await client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
 
 
 @pytest.mark.asyncio

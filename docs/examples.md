@@ -75,7 +75,13 @@ make check
 - **Cluster-specific state stays out.** Node affinity, replica counts tuned for a
   cluster, and similar fields belong in a local patch, not in the shipped
   manifest. Optional scheduler/runtime hints may ship **commented out** with
-  placeholder labels; they must not be active.
+  placeholder labels; they must not be active. When an example needs recurring
+  per-cluster values, ship a documented local-overlay mechanism applied with
+  plain `kubectl` — for example
+  [`dsh-agents-as-a-service/manifests/local/`](../examples/dsh-agents-as-a-service/manifests/local/README.md)
+  plus its `scripts/local-overlay.sh`. A read-only
+  [`scripts/cluster-drift.sh`](../examples/dsh-agents-as-a-service/scripts/cluster-drift.sh)
+  is the companion check.
 - **Optional manifests are opt-in.** Put them under
   `manifests/optional/<feature>/`, document them in
   `manifests/optional/README.md`, and apply them by path. The top-level
@@ -125,6 +131,10 @@ nesting.
   even on failure;
 - **non-interactive** — usable in CI, with environment-variable knobs instead of
   prompts.
+
+Read-only verification scripts (for example `preflight-sso.sh` and
+`cluster-drift.sh`) are allowed alongside mutating ones; they must state that
+they change nothing and must exit non-zero on the condition they check.
 
 `examples/dsh-agents-as-a-service/scripts/e2e-kind.sh` is the reference
 implementation: it runs the README walkthrough and deletes everything it created.
