@@ -115,7 +115,7 @@ jobs:
           name: digests-${{ env.ARTIFACT_PREFIX }}-${{ env.PLATFORM_PAIR }}
           path: /tmp/digests/*
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 5
 
   merge:
     name: Merge manifest list
