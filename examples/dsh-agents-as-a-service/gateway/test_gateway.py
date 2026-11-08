@@ -13,6 +13,7 @@ import hashlib
 import json
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -1046,7 +1047,7 @@ async def test_auth_rate_limit_returns_429_with_retry_after(env):
 
 @pytest.mark.asyncio
 async def test_auth_rate_limit_is_per_client_via_rightmost_forwarded_for(env):
-    configure(env, auth_rate_limit=1, auth_rate_window=60)
+    configure(env, auth_rate_limit=1, auth_rate_window=60, trusted_proxy_hops=1)
     add_user(env.k8s)
     async with asgi_client(env) as client:
         first = await client.post(
@@ -2138,6 +2139,170 @@ async def test_sweeper_prunes_orphan_and_expired_state(env):
     assert expired_sid not in env.gateway.state.sessions
 
 
+# --- security regressions (audit fixes) ------------------------------------
+
+
+def unbound_claim(user="bob"):
+    """A claim applied by hand (resource-layer manifest): no gateway marker."""
+    return {"metadata": {"name": claim_name(user)}, "status": {}}
+
+
+def test_settings_trusted_proxy_hops_defaults_to_zero(monkeypatch):
+    monkeypatch.delenv("TRUSTED_PROXY_HOPS", raising=False)
+    with monkeypatch.context() as patch:
+        patch.setenv("COOKIE_SECURE", "true")
+        assert Settings.from_env().trusted_proxy_hops == 0
+
+
+def test_client_identity_ignores_forwarded_for_without_trusted_proxies():
+    from gateway import client_identity
+
+    peer = SimpleNamespace(host="203.0.113.9")
+    headers = {"X-Forwarded-For": "1.1.1.1"}
+    assert client_identity(headers, peer) == "203.0.113.9"
+    assert client_identity({"X-Forwarded-For": "2.2.2.2"}, peer, 0) == "203.0.113.9"
+
+
+def test_client_identity_uses_the_declared_hop_count():
+    from gateway import client_identity
+
+    peer = SimpleNamespace(host="203.0.113.9")
+    assert client_identity({"X-Forwarded-For": "1.1.1.1, 10.0.0.1"}, peer, 1) == "10.0.0.1"
+    assert client_identity({"X-Forwarded-For": "1.1.1.1, 10.0.0.1"}, peer, 2) == "1.1.1.1"
+    # A header shorter than the declared hop count is never trusted.
+    assert client_identity({"X-Forwarded-For": "1.1.1.1"}, peer, 2) == "203.0.113.9"
+    assert client_identity({}, peer, 1) == "203.0.113.9"
+
+
+@pytest.mark.asyncio
+async def test_sso_landing_refuses_a_claim_the_gateway_never_minted(env):
+    enable_sso(env)
+    env.k8s.claims["alice"] = unbound_claim("alice")
+    async with asgi_client(env) as client:
+        landing = await client.get("/", headers={"X-Forwarded-User": "alice"})
+    assert landing.status_code == 403
+    assert env.k8s.created == []
+    assert env.k8s.token_patches == []
+    assert landing.headers.get("set-cookie") is None
+
+
+@pytest.mark.asyncio
+async def test_sso_proxy_refuses_an_unbound_claim(env):
+    enable_sso(env)
+    env.k8s.claims["alice"] = unbound_claim("alice")
+    async with asgi_client(env) as client:
+        # The proxy path alone must not authorize the header against a foreign
+        # claim (it bootstraps to the landing page, which refuses the claim).
+        response = await client.get("/u/alice/api/state", headers={"X-Forwarded-User": "alice"})
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+    assert env.upstream.proxy_requests == []
+    assert env.gateway.state.sessions == {}
+    assert env.upstream.requests == []
+
+
+@pytest.mark.asyncio
+async def test_sso_header_does_not_authorize_another_users_claim(env):
+    enable_sso(env)
+    add_user(env.k8s)  # alice's claim, minted for alice
+    async with asgi_client(env) as client:
+        users = await client.get("/users/alice", headers={"X-Forwarded-User": "bob"})
+        landing = await client.get("/", headers={"X-Forwarded-User": "bob"})
+    # bob has no claim of his own yet: landing provisions one, /users/alice is
+    # never authorized by bob's header.
+    assert users.status_code == 401
+    assert landing.status_code == 200
+    assert [c[0] for c in env.k8s.created] == ["bob"]
+
+
+@pytest.mark.asyncio
+async def test_recreate_requires_same_origin_without_a_cookie(env):
+    """The identity header alone must not let a cross-site POST wipe the PVC."""
+    enable_sso(env)
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.post("/recreate", headers={"X-Forwarded-User": "alice"})
+    assert response.status_code == 403
+    assert env.k8s.deleted == []
+    assert env.k8s.created == []
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_cannot_be_escaped_by_rotating_forwarded_for(env):
+    configure(env, auth_rate_limit=2, auth_rate_window=60)
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        codes = [
+            (
+                await client.post(
+                    "/login",
+                    json={"user": "alice", "token": "nope"},
+                    headers={"X-Forwarded-For": f"10.9.0.{i}"},
+                )
+            ).status_code
+            for i in range(5)
+        ]
+    assert codes == [401, 401, 429, 429, 429]
+
+
+@pytest.mark.asyncio
+async def test_proxy_never_forwards_the_forwarded_header(env):
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        await client.get(
+            "/u/alice/api/state",
+            headers={
+                "Authorization": f"Bearer {TOKEN}",
+                "Forwarded": "for=6.6.6.6;proto=https",
+            },
+        )
+    proxy = env.upstream.proxy_requests[0]
+    assert "forwarded" not in proxy.headers
+    assert proxy.headers["x-forwarded-for"] == "127.0.0.1"
+
+
+@pytest.mark.asyncio
+async def test_proxy_allowlist_still_injects_the_dsh_auth_cookie(env):
+    """The allowlist narrows client headers; gateway-owned ones are never dropped."""
+    configure(env, upstream_header_allowlist=frozenset())
+    add_user(env.k8s)
+    async with asgi_client(env) as client:
+        response = await client.get(
+            "/u/alice/api/state", headers={"Authorization": f"Bearer {TOKEN}"}
+        )
+    assert response.status_code == 200
+    proxy = env.upstream.proxy_requests[0]
+    assert proxy.headers["cookie"] == "dsh-auth-a=one"
+    assert proxy.headers["host"] == "gateway.test"
+
+
+@pytest.mark.asyncio
+async def test_handshake_error_never_contains_pod_log_text(env):
+    add_user(env.k8s)
+    env.k8s.logs = {"dsh-alice-sbx": "boot\ndsh web: http://10.0.0.7:3080/?token=SECRET-LAUNCH\n"}
+    env.upstream.handshake_status = 500
+    async with asgi_client(env) as client:
+        response = await client.get("/u/alice/", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert response.status_code == 503
+    assert "SECRET-LAUNCH" not in response.text
+    assert "token" not in response.text.lower().replace("retry shortly", "")
+
+
+def test_preflight_checks_every_shipped_sso_network_policy():
+    """The preflight must verify all three policies the variant ships."""
+    script = (Path(__file__).resolve().parent.parent / "scripts" / "preflight-sso.sh").read_text()
+    for policy in ("dsh-gateway-ingress", "oauth2-proxy-ingress", "oauth2-proxy-egress"):
+        assert policy in script
+
+
+def test_sandbox_template_disables_the_service_account_token():
+    """A tenant pod must never carry a token that can read pods/log."""
+    template = (
+        Path(__file__).resolve().parent.parent / "manifests" / "10-sandboxtemplate.yaml"
+    ).read_text()
+    assert "automountServiceAccountToken: false" in template
+
+
 # --- SSO (reverse-proxy identity) ------------------------------------------
 
 
@@ -2162,11 +2327,11 @@ def test_remote_user_returns_valid_and_rejects_invalid(env):
 
 
 @pytest.mark.asyncio
-async def test_sso_landing_returns_503_when_claim_patch_is_forbidden(env):
-    """A missing RBAC verb on ``patch sandboxclaims`` used to escape as a 500."""
+async def test_k8s_forbidden_on_a_claim_read_is_503_not_500(env):
+    """A missing RBAC verb on sandboxclaims used to escape as an unhandled 500."""
     enable_sso(env)
-    env.k8s.claims["alice"] = {"metadata": {"name": claim_name("alice")}}
-    env.k8s.patch_error = ApiException(status=403)
+    add_user(env.k8s)
+    env.k8s.get_claim_error = ApiException(status=403)
     async with asgi_client(env) as client:
         response = await client.get("/", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 503
@@ -2208,16 +2373,24 @@ async def test_sso_landing_ready_connects_and_offers_recreate_only(env):
 
 
 @pytest.mark.asyncio
-async def test_sso_landing_rotates_token_when_session_missing(env):
+async def test_sso_landing_never_rotates_the_claim_marker_when_session_missing(env):
+    """The token-hash annotation is the claim's identity: visiting must not rotate it.
+
+    A spoofed identity header could otherwise rewrite a claim an operator bound
+    to another identity.
+    """
     enable_sso(env)
     add_user(env.k8s)
+    before = env.k8s.claims["alice"]["metadata"]["annotations"]["aaas.example.com/token-sha256"]
     async with asgi_client(env) as client:
         response = await client.get("/", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 200
     assert "Recreate sandbox" in response.text
     assert response_session_user(env, response) == "alice"
-    assert [p[0] for p in env.k8s.token_patches] == ["alice"]
+    assert env.k8s.token_patches == []
     assert env.k8s.created == []
+    after = env.k8s.claims["alice"]["metadata"]["annotations"]["aaas.example.com/token-sha256"]
+    assert after == before
 
 
 @pytest.mark.asyncio
@@ -2269,7 +2442,10 @@ async def test_recreate_deletes_and_reprovisions(env):
     enable_sso(env)
     add_user(env.k8s)
     async with asgi_client(env) as client:
-        response = await client.post("/recreate", headers={"X-Forwarded-User": "alice"})
+        response = await client.post(
+            "/recreate",
+            headers={"X-Forwarded-User": "alice", "Origin": "http://gateway.test"},
+        )
     assert response.status_code == 303
     assert response.headers["location"] == "/u/alice/"
     assert env.k8s.deleted == ["alice"]

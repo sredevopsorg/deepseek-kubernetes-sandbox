@@ -39,6 +39,16 @@ for path in FILES:
         metadata = document["metadata"]
         if not isinstance(metadata, dict) or not metadata.get("name"):
             errors.append(f"{relative} document {position}: metadata.name is required")
+        # A SandboxTemplate is the blueprint for every tenant pod, and the
+        # gateway ServiceAccount can read pods/log in this namespace (DSH launch
+        # tokens). The template must keep the SA token out of the sandbox.
+        if document.get("kind") == "SandboxTemplate":
+            pod_spec = ((document.get("spec") or {}).get("podTemplate") or {}).get("spec") or {}
+            if pod_spec.get("automountServiceAccountToken") is not False:
+                errors.append(
+                    f"{relative} document {position}: SandboxTemplate must set "
+                    "spec.podTemplate.spec.automountServiceAccountToken: false"
+                )
 
 if errors:
     print("\n".join(errors), file=sys.stderr)

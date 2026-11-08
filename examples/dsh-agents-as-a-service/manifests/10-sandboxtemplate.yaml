@@ -40,6 +40,11 @@ spec:
 
   podTemplate:
     spec:
+      # The sandbox never talks to the Kubernetes API.  Keeping the SA token
+      # out of the pod is what stops a tenant agent (which runs with
+      # DSH_PERMISSION_MODE=danger-full-access) from reading every other
+      # user's pod logs - those contain each sandbox's DSH launch token.
+      automountServiceAccountToken: false
       # DSH Web is multi-arch (amd64 + arm64); no arch nodeSelector is needed.
       #
       # OPTIONAL: run the sandbox under gVisor. Requires a RuntimeClass named

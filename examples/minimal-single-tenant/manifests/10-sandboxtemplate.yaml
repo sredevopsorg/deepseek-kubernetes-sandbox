@@ -32,6 +32,8 @@ spec:
   # failedPodPolicy: Recreate
   podTemplate:
     spec:
+      # The sandbox never talks to the Kubernetes API; no SA token belongs in it.
+      automountServiceAccountToken: false
       # OPTIONAL: run under gVisor. gVisor breaks `kubectl port-forward`, so
       # this quickstart's only access path will not work; use the multi-tenant
       # gateway example or a Service/NodePort instead.

@@ -272,25 +272,45 @@ def strip_forwarding_header(name: str) -> bool:
     ``X-Forwarded-User`` and ``X-Auth-Request-*`` carry identities an
     authenticating proxy or the gateway itself owns; ``Forwarded`` /
     ``X-Forwarded-*`` describe the hop chain.  Forwarding any of them lets a
-    browser spoof its origin or a trusted SSO user upstream.
+    browser spoof its origin, its client address (the one DSH records for
+    ``X-Forwarded-For``-based rules) or a trusted SSO user upstream.
     """
     lowered = name.lower()
-    return lowered in FORWARDING_HEADERS or lowered.startswith(FORWARDING_HEADER_PREFIXES)
+    if lowered in FORWARDING_HEADERS:
+        return True
+    return lowered.startswith(FORWARDING_HEADER_PREFIXES)
 
 
-def client_identity(headers, client) -> str:
+def client_identity(headers, client, trusted_hops: int = 0) -> str:
     """The rate-limit bucket for a request.
 
-    The rightmost ``X-Forwarded-For`` entry is the address the last trusted
-    proxy saw (each proxy appends), so it cannot be spoofed by prepending
-    arbitrary values.  Without the header fall back to the socket peer.
+    ``headers`` may be a Starlette ``Headers`` (case-insensitive) or a plain
+    ``dict`` (as the unit tests pass); the lookup normalises both.
+
+    ``X-Forwarded-For`` is client-controlled: a caller can send any value,
+    and a bogus one yields a fresh rate-limit bucket per request.  Trust it
+    only for the hops an operator declares in ``TRUSTED_PROXY_HOPS``: each
+    trusted proxy appends one entry, so ``parts[-trusted_hops]`` is the
+    address the outermost trusted proxy saw.  With the default of 0 (no
+    proxy in front of the gateway - the base manifests expose a bare
+    ClusterIP) the header is ignored entirely and the socket peer is used.
+    A header shorter than the declared hop count is not trusted at all:
+    falling back to its first entry would hand the bucket back to the caller.
     """
-    forwarded = (headers.get("x-forwarded-for") or "").strip()
-    if forwarded:
-        parts = [part.strip() for part in forwarded.split(",") if part.strip()]
-        if parts:
-            return parts[-1]
-    return getattr(client, "host", None) or "unknown"
+    peer = getattr(client, "host", None) or "unknown"
+    if trusted_hops <= 0:
+        return peer
+    raw = next(
+        (value for key, value in headers.items() if key.lower() == "x-forwarded-for"),
+        None,
+    )
+    forwarded = raw.strip() if isinstance(raw, str) else ""
+    if not forwarded:
+        return peer
+    parts = [part.strip() for part in forwarded.split(",") if part.strip()]
+    if len(parts) >= trusted_hops:
+        return parts[-trusted_hops]
+    return peer
 
 
 def rewrite_location(location: str, user: str) -> str:
@@ -395,6 +415,11 @@ class Settings:
     # (POST /users and POST /login) per client and window; 0 disables it.
     auth_rate_limit: int = 30
     auth_rate_window: int = 60
+    # Reverse proxies in front of the gateway that append to X-Forwarded-For.
+    # 0 (the default) ignores the header: the socket peer is the only client
+    # identity that cannot be forged. Set it to the real hop count, e.g. 1
+    # behind one ingress; the header is still never trusted beyond it.
+    trusted_proxy_hops: int = 0
     # When set, signup requires this invite code (form field ``invite`` or the
     # ``X-Signup-Invite`` header). None keeps signup open, as in the demo.
     signup_invite_code: str | None = None
@@ -438,6 +463,7 @@ class Settings:
             auth_proxy_header=os.environ.get("AUTH_PROXY_HEADER") or None,
             auth_rate_limit=_env_int("AUTH_RATE_LIMIT", 30),
             auth_rate_window=_env_int("AUTH_RATE_WINDOW", 60),
+            trusted_proxy_hops=_env_int("TRUSTED_PROXY_HOPS", 0),
             signup_invite_code=os.environ.get("SIGNUP_INVITE_CODE") or None,
             upstream_header_allowlist=_env_allowlist("UPSTREAM_HEADER_ALLOWLIST"),
             max_in_flight_per_user=_env_int("MAX_IN_FLIGHT_PER_USER", 32),
@@ -726,6 +752,24 @@ class Gateway:
         raw = (headers.get(name) or "").strip()
         return raw if valid_user(raw) else None
 
+    def sso_claim_bound(self, claim: dict | None, user: str) -> bool:
+        """True only for a claim this gateway minted for ``user``.
+
+        The SSO header alone is not a credential: it is an assertion from a
+        trusted hop that the proxy already authenticated this request.  What
+        makes it usable here is the claim's server-side marker: ``create_claim``
+        stamps ``aaas.example.com/token-sha256`` with a random token only this
+        gateway ever generated, so a claim carrying it is one this gateway
+        provisioned for a gateway user.  Claims without the marker (applied by
+        hand from the resource-layer manifests, or created by another tool)
+        are never reachable through the SSO identity header: fail closed rather
+        than let any identity header select an arbitrary tenant.
+        """
+        if not valid_user(user) or claim is None:
+            return False
+        annotations = (claim.get("metadata") or {}).get("annotations") or {}
+        return bool(annotations.get(TOKEN_ANNOTATION))
+
     def _authorized(
         self,
         claim: dict,
@@ -734,8 +778,12 @@ class Gateway:
         user: str,
         remote: str | None = None,
     ) -> bool:
-        if remote == user:
-            return True  # identity asserted by the authenticating proxy
+        if remote is not None:
+            # Identity asserted by the authenticating proxy.  It still has to
+            # name a claim this gateway minted (see ``sso_claim_bound``): the
+            # header alone authorizes nothing, and it never falls through to
+            # a bearer/cookie check for a *different* user.
+            return remote == user and self.sso_claim_bound(claim, user)
         if session_user is not None:
             return session_user == user  # server-side session bound to this user
         return token_matches(claim, token)
@@ -744,13 +792,21 @@ class Gateway:
         """Provision ``remote`` idempotently and mint/refresh a session.
 
         The authenticating proxy has already verified ``remote``, so it is
-        trusted. A brand-new user is provisioned (claim created, token minted);
-        an existing user whose session cookie is missing, foreign or no longer
-        matches gets a rotated token so a fresh cookie can be issued. A still-valid
-        session for the same user is reused untouched. Provisioning is
+        trusted to NAME a user.  What authorizes that name is the claim this
+        gateway minted for it: ``sso_claim_bound``.  A brand-new user is
+        provisioned (claim created, token minted); a claim the gateway did not
+        mint is refused (``None``) rather than adopted, because adopting it
+        would let any identity header select an arbitrary tenant.  A still-valid
+        session for the same user is reused untouched.  Provisioning is
         non-blocking: the sandbox is awaited by the proxy path
         (``_resolve_sandbox``), so the landing page can report "Provisioning"
         instead of stalling for ``WAKE_TIMEOUT``.
+
+        The marker token is NEVER rotated for an existing claim: it is the
+        server-side identity of that claim, and the browser authenticates with
+        the gateway session cookie, not with it.  Rotating it on every visit
+        would let a spoofed identity header take over a claim an operator had
+        bound to a different identity.
         """
         claim = await self.k8s.get_claim(remote)
         sid = cookies.get(self.settings.cookie_name)
@@ -759,25 +815,30 @@ class Gateway:
             if session.user != remote:
                 # A session for another identity never authorizes this user.
                 self.revoke_session(sid)
-            elif claim is not None:
+            elif claim is not None and self.sso_claim_bound(claim, remote):
                 return claim
+        if claim is not None:
+            if not self.sso_claim_bound(claim, remote):
+                # Not ours: never adopt it just because the proxy said so.
+                return None
+            self.set_session(response, remote)
+            await self._touch(remote)
+            return claim
         token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(token.encode()).hexdigest()
-        is_new = claim is None
-        if is_new:
-            try:
-                await self.k8s.create_claim(remote, token_hash, self.settings.pool)
-            except UserExists:
-                # Lost a concurrent signup race: rotate the existing token.
-                is_new = False
-                await self.k8s.patch_token(remote, token_hash)
-            else:
-                await self._touch(remote)
+        try:
+            await self.k8s.create_claim(remote, token_hash, self.settings.pool)
+        except UserExists:
+            # Lost a concurrent signup race: use the winner's claim, never
+            # rotate its marker.
+            claim = await self.k8s.get_claim(remote)
+            if claim is None or not self.sso_claim_bound(claim, remote):
+                return None
         else:
-            await self.k8s.patch_token(remote, token_hash)
             await self._touch(remote)
+            claim = await self.k8s.get_claim(remote)
         self.set_session(response, remote)
-        return await self.k8s.get_claim(remote) if is_new else claim
+        return claim
 
     @staticmethod
     def _mutation_from_cookie(headers, method: str, cookie_user: str | None) -> bool:
@@ -813,7 +874,7 @@ class Gateway:
         if limit <= 0:
             return None
         window = max(1, self.settings.auth_rate_window)
-        key = client_identity(request.headers, request.client)
+        key = client_identity(request.headers, request.client, self.settings.trusted_proxy_hops)
         now = time.time()
         bucket = self.state.auth_rate.get(key)
         if bucket is None or now - bucket[0] >= window:
@@ -1076,7 +1137,14 @@ class Gateway:
             # once the sandbox state is known.
             response = HTMLResponse()
             claim = await self._sso_session(remote, request.headers, request.cookies, response)
-            sandbox = await self._sandbox_of(claim) if claim else None
+            if claim is None:
+                # The identity header names a claim this gateway did not mint
+                # (hand-applied manifest, foreign tool): never adopt it.
+                return self._error(
+                    403,
+                    "this sandbox is not managed by the gateway; sign in with a token",
+                )
+            sandbox = await self._sandbox_of(claim)
             page = HTMLResponse(self._sso_page(remote, derive_state(sandbox)))
             if "set-cookie" in response.headers:
                 page.headers["set-cookie"] = response.headers["set-cookie"]
@@ -1307,10 +1375,17 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         remote = self.remote_user(request.headers)
         if not remote:
             return self._error(401, "unauthorized")
+        claim = await self.k8s.get_claim(remote)
+        if not self.sso_claim_bound(claim, remote):
+            return self._error(401, "unauthorized")
         _token, cookie_user = self.credentials(request.headers, request.cookies)
         if cookie_user is not None and cookie_user != remote:
             return self._error(401, "unauthorized")
-        if self._mutation_from_cookie(request.headers, "POST", cookie_user):
+        # Every call must be same-origin, with or without a session cookie: the
+        # identity header is attached by the proxy to cross-site POSTs too, and
+        # this request destroys the PVC.  (``_mutation_from_cookie`` is stricter
+        # than needed here because it only guards cookie-authenticated calls.)
+        if not same_origin(request.headers):
             return self._error(403, "cross-origin request rejected")
         await self.k8s.delete_claim(remote)
         self.revoke_sessions(remote)

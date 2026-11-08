@@ -18,16 +18,17 @@
 #   4. the Gateway's TLS certificate reference resolves to an existing Secret;
 #   5. no your-github-org / dsh-demo.example.com placeholder is left in the
 #      applied oauth2-proxy args, Gateway listeners or HTTPRoute hostnames;
-#   6. (warning) no Ingress in the namespace creates a second path to
-#      dsh-gateway. With SSO enabled the Service must be reachable only through
-#      oauth2-proxy;
-#   7. the gateway ServiceAccount may `patch` sandboxclaims. The SSO landing
-#      path rotates the token-hash annotation whenever the browser has no valid
-#      gateway session (first visit, expired/foreign cookie, gateway restart),
-#      so without that verb every such sign-in answers 503;
-#   8. the SSO variant's required NetworkPolicies are applied. Without them any
-#      Pod in the cluster can reach dsh-gateway:8080 and spoof the identity
-#      header, so the exposure is demo-only.
+#   6. no Ingress in the namespace routes to dsh-gateway (matched on the
+#      backend Service, not the object name). With SSO enabled the Service must
+#      be reachable only through oauth2-proxy;
+#   7. the gateway ServiceAccount may `patch` sandboxclaims. It is required
+#      for the gateway's own control paths (and by the shipped Role, which
+#      still grants it); without the verb those calls answer 503;
+#   8. all three SSO NetworkPolicies shipped by the variant are applied, and
+#      oauth2-proxy-ingress does not accept every namespace. Without them any
+#      Pod in the cluster can reach dsh-gateway:8080 (directly, or through
+#      oauth2-proxy) and spoof the identity header, so the exposure is
+#      demo-only.
 #
 # Exit status: 0 when every check passes (warnings allowed), 1 on any failure.
 # Every failure prints the fix. This script only reads cluster state.
@@ -168,11 +169,11 @@ if env_is_set ALLOW_INSECURE_COOKIES; then
 fi
 
 echo
-echo "== Gateway RBAC (SSO token rotation)"
-# The SSO landing path patches the token-hash annotation on the user's claim
-# whenever the browser has no valid gateway session: first visit, an expired or
-# foreign cookie, or a gateway restart (sessions live in the gateway's memory).
-# Without `patch` every such GET / answers 503 and the user cannot sign in.
+echo "== Gateway RBAC (sandboxclaims write access)"
+# The gateway's control paths (account deletion, token rotation on a new
+# signup, operatingMode changes) need write access to sandboxclaims. Without
+# `patch` those calls answer 503. The SSO landing path itself never rotates the
+# token-hash annotation - it is the claim's server-side identity marker.
 GATEWAY_SA=$(kubectl -n "$NS" get deployment "$GATEWAY_DEPLOY" \
   -o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null || true)
 GATEWAY_SA=${GATEWAY_SA:-default}
@@ -197,7 +198,7 @@ read_gateway_rules() {
 }
 
 if [ "$CAN_I" = "yes" ]; then
-  pass "ServiceAccount $GATEWAY_SA can patch sandboxclaims (token rotation)"
+  pass "ServiceAccount $GATEWAY_SA can patch sandboxclaims"
 elif [ "$CAN_I" = "no" ]; then
   fail "ServiceAccount $GATEWAY_SA cannot patch sandboxclaims: SSO sign-in answers 503 whenever the browser has no valid gateway session (after a gateway restart, cookie expiry or in a new browser). Fix: grant 'patch' on sandboxclaims to Role $GATEWAY_ROLE (the shipped Role in manifests/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
 else
@@ -291,25 +292,67 @@ else
 fi
 
 # A second path to the gateway defeats SSO: anyone who can reach
-# dsh-gateway:8080 can spoof X-Forwarded-User. This is a best-effort check.
+# dsh-gateway:8080 can spoof X-Forwarded-User. Match on the routing backend,
+# not on the Ingress name: an Ingress called anything else still routes.
 if kubectl -n "$NS" get ingress >/dev/null 2>&1; then
   INGRESS_STATE=$(kubectl -n "$NS" get ingress -o json 2>/dev/null || true)
-  if printf '%s' "$INGRESS_STATE" | grep -q '"name":"dsh-gateway"'; then
-    fail "an Ingress in namespace $NS also routes to dsh-gateway. With SSO enabled the gateway must be reachable only through oauth2-proxy: delete the Ingress variant (kubectl delete -f manifests/exposure/ingress/)."
+  if INGRESS_HITS=$(printf '%s' "$INGRESS_STATE" | python3 -c '
+import json, sys
+try:
+    objects = json.load(sys.stdin).get("items", [])
+except ValueError:
+    objects = []
+for obj in objects:
+    spec = obj.get("spec") or {}
+    backends = []
+    default = spec.get("defaultBackend") or {}
+    if default:
+        backends.append(default)
+    for rule in spec.get("rules") or []:
+        for path in ((rule.get("http") or {}).get("paths") or []):
+            backends.append((path.get("backend") or {}))
+    for backend in backends:
+        service = (backend.get("service") or {}).get("name")
+        if service == "dsh-gateway":
+            print(obj.get("metadata", {}).get("name", "?"))
+            break
+'); then
+    if [ -n "$INGRESS_HITS" ]; then
+      fail "an Ingress in namespace $NS routes to Service dsh-gateway ($INGRESS_HITS). With SSO enabled the gateway must be reachable only through oauth2-proxy: delete the Ingress variant (kubectl delete -f manifests/exposure/ingress/)."
+    fi
   fi
 fi
 
 # The SSO variant's policies are part of the variant: without them the
 # gateway Service is reachable by any Pod, which can spoof the identity header.
+# All three shipped policies are checked - the egress one keeps a compromised
+# proxy from reaching anything but DNS, public HTTPS and the gateway.
 echo
 echo "== SSO NetworkPolicies (required with this variant)"
-for POLICY in dsh-gateway-ingress oauth2-proxy-ingress; do
+for POLICY in dsh-gateway-ingress oauth2-proxy-ingress oauth2-proxy-egress; do
   if kubectl -n "$NS" get networkpolicy "$POLICY" >/dev/null 2>&1; then
     pass "NetworkPolicy $POLICY exists"
   else
     fail "NetworkPolicy $POLICY is missing: any Pod in the cluster can reach dsh-gateway:8080 and spoof X-Forwarded-User, so the SSO identity is not trustworthy. Fix: kubectl apply -f manifests/exposure/gateway-api-sso/75-networkpolicies.yaml"
   fi
 done
+
+# An oauth2-proxy ingress rule that accepts traffic from every namespace makes
+# any pod a usable identity-header injector.
+if NS_JSON=$(kubectl -n "$NS" get networkpolicy oauth2-proxy-ingress -o json 2>/dev/null); then
+  if printf '%s' "$NS_JSON" | python3 -c '
+import json, sys
+policy = json.load(sys.stdin)
+for rule in ((policy.get("spec") or {}).get("ingress") or []):
+    for peer in rule.get("from") or []:
+        if "namespaceSelector" in peer and not (peer.get("namespaceSelector") or {}):
+            sys.exit(1)
+'; then
+    pass "oauth2-proxy-ingress restricts source namespaces"
+  else
+    fail "oauth2-proxy-ingress accepts traffic from every namespace (empty namespaceSelector): any pod in the cluster can reach oauth2-proxy and inject X-Forwarded-User. Fix: scope the namespaceSelector to the Gateway implementation's namespace in manifests/exposure/gateway-api-sso/75-networkpolicies.yaml, then re-apply it."
+  fi
+fi
 
 echo
 if [ "$FAILED" -ne 0 ]; then
