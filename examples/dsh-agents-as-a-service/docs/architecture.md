@@ -44,7 +44,7 @@ Responsibilities:
 | Component | Responsibility |
 | --- | --- |
 | **Browser** | Holds only the gateway session cookie (`dsh_gw_session`). Talks exclusively to the gateway. |
-| **Gateway** | Signup/login, session auth, `SandboxClaim` lifecycle, wake-on-connect, idle sweeper, HTTP/SSE/WebSocket reverse proxy, DSH launch-token handshake. |
+| **Gateway** | Signup/login, session auth, `SandboxClaim` lifecycle, wake-on-connect, idle sweeper, HTTP/SSE/WebSocket reverse proxy, DSH launch-token handshake. Liveness is `/healthz` (cluster-free); readiness is `/readyz` (one bounded Kubernetes API read, `503` when it fails), so an API outage removes the pod from the Service instead of restarting it or answering `500`s. |
 | **Kubernetes API** | Source of truth for claims, sandboxes, and pods; also the log source for the DSH launch token. |
 | **agent-sandbox controller** | Adopts warm spares on claim, flips `operatingMode` (Running/Suspended), garbage-collects sandbox + PVC on claim delete. |
 | **DSH Web pod** | One `dsh web` process per user, DSH state and the agent workspace on the per-user PVC (`/home/node/.dsh` + `/workspace`), listening on `3080`. |
@@ -172,7 +172,9 @@ field or `X-Signup-Invite`) and answers `403` otherwise. Proxied traffic is capp
 (`MAX_IN_FLIGHT_PER_USER`, default 32 concurrent HTTP requests + WebSockets: `503` for HTTP,
 close `1011` for WebSocket) and per WebSocket message received from DSH
 (`WS_MAX_MESSAGE_BYTES`, 16 MiB). These are in-process guards for a single replica, not an ingress
-rate limiter or quota system.
+rate limiter or quota system. The SSO variant has two proxies that append to
+`X-Forwarded-For` (Traefik and oauth2-proxy), so it must set `TRUSTED_PROXY_HOPS=2`; with the
+default `0` every request is attributed to the oauth2-proxy pod and all users share one bucket.
 
 ### Wake-on-connect and idle suspend
 
@@ -414,7 +416,8 @@ Notes and limits:
 | DSH log line changed or rotated away | Proxy returns `503` (missing launch token) | Fix the parser or restart the pod so the token line is re-emitted |
 | Probe on `/` | Pod `CrashLoopBackOff`, `401` in probe logs | Use `/favicon.svg` for readiness/liveness (shipped templates do) |
 | Warm pool exhausted | JSON signup returns `202` (state `Waking`); form signup is slow | Increase `replicas` in the warm pool |
-| Kubernetes API error (API down or throttled, missing RBAC verb) | HTTP `503` + `Retry-After`; WebSocket close `1011` | One credential-free log line with the API `status`/`reason`, plus a fixed body; the Kubernetes `Status` payload is never proxied. Check the ServiceAccount Role and the API server — RBAC is evaluated per request, so a Role fix needs no restart |
+| Kubernetes API error (API down or throttled, missing RBAC verb) | HTTP `503` + `Retry-After`; WebSocket close `1011` | One credential-free log line with the API `status`/`reason`, plus a fixed body; the Kubernetes `Status` payload is never proxied. Check the ServiceAccount Role and the API server — RBAC is evaluated per request, so a Role fix needs no restart. `/readyz` returns `503` and the pod leaves the Service endpoints, so users are not routed into `500`s |
+| Gateway egress NetworkPolicy blocks the API server | All user paths `500`, `MaxRetryError ... Connection refused` in the gateway log, while `/healthz` is still `200` and the pod is `Ready` | kube-router and other iptables CNIs enforce egress policy on the post-DNAT destination: allow the real `kubernetes` Service endpoint (`kubectl get endpoints kubernetes`, often `:6443`), not only the ClusterIP. `/readyz` exposes this condition; see the gateway-egress recipe in the hardening doc |
 | Gateway restart | Idle sandboxes stop suspending; handshake cache and browser sessions lost | Idle clocks and handshake cache rebuild lazily; sessions do not, so browsers must sign in again after a rollout. Use a shared session store for production |
 | Gateway configured `COOKIE_SECURE=false` without `ALLOW_INSECURE_COOKIES=1` | Gateway pod exits at startup / `CrashLoopBackOff` | Intentional guard against an insecure cookie on an HTTPS deployment; set `ALLOW_INSECURE_COOKIES=1` only for the local plain-HTTP demo, or set `COOKIE_SECURE=true` |
 | Auth rate limit hit | `429` + `Retry-After` on signup/login | Per-client in-memory bucket (`AUTH_RATE_LIMIT`/`AUTH_RATE_WINDOW`); wait for the window or tune it. Behind a proxy, set `TRUSTED_PROXY_HOPS` so the key is the real client, not the peer proxy address |

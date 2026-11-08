@@ -54,6 +54,9 @@ spec:
       # runtimeClassName: gvisor
       # nodeSelector:
       #   dsh.example.com/node-pool: dsh
+      # oauth2-proxy never talks to the Kubernetes API: the default
+      # ServiceAccount token is not needed and should not be mounted.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 2000
@@ -86,6 +89,13 @@ spec:
             - --set-xauthrequest
             # Single provider: skip the provider-selection page.
             - --skip-provider-button
+            # Keep the gateway's liveness/readiness endpoints reachable
+            # through the proxy so probes and external monitoring can use
+            # them: /healthz is cluster-free, /readyz reports the gateway's
+            # Kubernetes API dependency (503 when it cannot resolve claims).
+            # They expose no user data. Drop this only if every health check
+            # is done in-cluster.
+            - --skip-auth-route=^/(healthz|readyz)$
           env:
             - name: OAUTH2_PROXY_CLIENT_ID
               valueFrom:

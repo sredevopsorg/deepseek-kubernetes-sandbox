@@ -359,13 +359,36 @@ CNIs.
 ### Gateway egress (required for production)
 
 The gateway needs DNS, the Kubernetes API, and TCP `3080` to sandbox pods. An
-egress policy is **required for production** but is not shipped, because the API
-server endpoint is cluster-specific (Service CIDR or node IP/port) and a wrong
-value silently breaks signup/proxy. If your cluster has a stable API-server CIDR
-and port, add an egress policy like this (replace the placeholders; verify the
-port, commonly `443` or `6443`):
+egress policy is **required for production** but is not shipped, because the
+API-server address is cluster-specific and an over-eager policy breaks every
+user path while the pod still looks alive.
 
-```yaml
+**Resolve the real API endpoint first.** The gateway connects to
+`KUBERNETES_SERVICE_HOST` (normally the `kubernetes` Service ClusterIP, for
+example `10.96.0.1:443`), and kube-proxy DNATs that to the Service's endpoints:
+
+```bash
+kubectl -n default get endpoints kubernetes
+# NAME         ENDPOINTS
+# kubernetes   10.0.0.10:6443
+```
+
+Many iptables-based CNIs — including k3s's kube-router — enforce egress
+NetworkPolicy on the **post-DNAT destination**, so a rule written only for the
+ClusterIP (`10.96.0.1/32`, port `443`) matches nothing and the gateway gets
+`Connection refused` for every API call. `/healthz` is cluster-free, so the pod
+stays `Ready` and users see `500`s instead of an endpoint being pulled. Allow
+both addresses: the Service IP (for CNIs that match pre-DNAT) and the real
+endpoint from the command above. The manifest below generates the policy from
+the live endpoint instead of hard-coding it:
+
+```bash
+APISERVER=$(kubectl -n default get endpoints kubernetes \
+  -o jsonpath='{.subsets[0].addresses[0].ip}')
+APIPORT=$(kubectl -n default get endpoints kubernetes \
+  -o jsonpath='{.subsets[0].ports[0].port}')
+
+cat <<EOF | kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -390,9 +413,18 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # The API server after Service DNAT: the endpoint printed above.
     - to:
         - ipBlock:
-            cidr: 10.96.0.1/32   # placeholder: API-server Service/cluster endpoint
+            cidr: ${APISERVER}/32
+      ports:
+        - protocol: TCP
+          port: ${APIPORT}
+    # The ClusterIP, for CNIs that evaluate egress before DNAT. Replace the
+    # placeholder with your cluster's kubernetes Service IP if it differs.
+    - to:
+        - ipBlock:
+            cidr: 10.96.0.1/32
       ports:
         - protocol: TCP
           port: 443
@@ -404,11 +436,28 @@ spec:
       ports:
         - protocol: TCP
           port: 3080
+EOF
 ```
 
-Cilium users can express the API server as `toEntities: kube-apiserver` (or
-`toServices`) instead of a CIDR. Do not apply the sample blindly: a wrong CIDR
-or port silently breaks signup/proxy.
+Verify it from both sides (**required** — the failure is silent in the pod
+status):
+
+```bash
+# 1. The gateway must be Ready AND able to reach the API: /readyz is 503 while
+#    egress is broken, which empties the Service endpoints.
+kubectl -n dsh-demo rollout status deploy/dsh-gateway --timeout=120s
+kubectl -n dsh-demo get endpoints dsh-gateway
+# 2. No API retry errors in the log, and the user path still works.
+kubectl -n dsh-demo logs deploy/dsh-gateway --tail=40   # no MaxRetryError/transient error
+```
+
+Rollback: `kubectl -n dsh-demo delete networkpolicy dsh-gateway-egress` (do not
+leave it half-configured). Cilium users can express the API server as
+`toEntities: kube-apiserver` (or `toServices`) instead of the two `ipBlock`
+rules. If your `kubectl get endpoints kubernetes` returns several subsets (HA
+control plane), allow each endpoint or the control-plane CIDR on the API port.
+Service IPs and node IPs differ per cluster; never copy the placeholder above
+verbatim, and re-check it after a control-plane change.
 
 ## 4. Optional provider keys
 
@@ -634,8 +683,9 @@ below; the sections above give the commands and caveats.
       in this image; the pod is the boundary. (Section 1.)
 - [ ] The sandbox NetworkPolicy is applied and verified: no tenant→tenant,
       no tenant→cluster-Service/API, DNS + public HTTPS only. (Section 3.)
-- [ ] The gateway egress policy is applied with the cluster's real API-server
-      CIDR/port, scoped to DNS, the API server and sandbox pods on `3080`.
+- [ ] The gateway egress policy is applied with the cluster's **real API-server
+      endpoint** (post-DNAT; `kubectl get endpoints kubernetes`, not just the
+      ClusterIP), scoped to DNS, the API server and sandbox pods on `3080`.
       (Section 3, "Gateway egress".)
 - [ ] The exposure variant's NetworkPolicy is applied. An exposure without it is
       demo-only. For SSO, the gateway is reachable **only** through
@@ -644,7 +694,8 @@ below; the sections above give the commands and caveats.
       positive path).
 - [ ] The gateway and (optionally) oauth2-proxy run with `runAsNonRoot`,
       dropped capabilities, `RuntimeDefault` seccomp and a read-only root
-      filesystem, as shipped.
+      filesystem, as shipped. oauth2-proxy does not need a Kubernetes API
+      identity: keep `automountServiceAccountToken: false`.
 
 **Authentication, TLS and abuse controls**
 
@@ -654,6 +705,11 @@ below; the sections above give the commands and caveats.
 - [ ] SSO (or an equivalent authenticating proxy) is enabled with
       `AUTH_PROXY_HEADER=X-Forwarded-User`, and
       [`scripts/preflight-sso.sh`](../scripts/preflight-sso.sh) exits `0`.
+- [ ] `TRUSTED_PROXY_HOPS` matches the number of proxies that append to
+      `X-Forwarded-For` between the browser and the gateway (`2` for the shipped
+      Traefik + oauth2-proxy chain, plus any appending CDN/tunnel). Left at `0`,
+      the auth rate limiter keys on the proxy pod and all users share one
+      bucket.
 - [ ] No `your-github-org` / `dsh-demo.example.com` placeholder remains.
 - [ ] `SIGNUP_INVITE_CODE` is set from a Secret if the gateway's own signup form
       is reachable, and `AUTH_RATE_LIMIT` is set deliberately (`30`/60s shipped).
@@ -676,6 +732,15 @@ below; the sections above give the commands and caveats.
       is externalized.
 - [ ] `failedPodPolicy: Recreate` is set if node eviction/spot reclaim is
       expected.
+- [ ] The gateway's readiness probe uses `/readyz` (API-aware) while liveness
+      uses `/healthz`; alert on `/readyz` `503`, not only on pod restarts. An
+      egress or RBAC mistake otherwise leaves the pod `Ready` and users with
+      `500`s.
+- [ ] Per-user workspace PVCs use a `Delete`-reclaim StorageClass, or the
+      `Retain` class has a tested cleanup for `Released` PVs (see
+      [account deletion](../README.md#account-deletion-and-pv-cleanup)):
+      deleting a claim cascades to the PVC, but a `Retain` class leaves the PV
+      and the Longhorn volume behind.
 - [ ] Audit logging, alerting and backups of the PVCs are in place.
 
 ## 7. Verification summary
@@ -701,9 +766,16 @@ Manual checks, on a cluster with the relevant CNI/runtime:
 - nodeSelector: pods land on the intended nodes; no `Pending` events.
 - Sandbox policy: the allow/deny matrix above.
 - Gateway egress policy: signup and proxy still work; the gateway cannot reach
-  an arbitrary cluster Service or the metadata server.
+  an arbitrary cluster Service or the metadata server, and
+  `scripts/cluster-drift.sh` confirms the policy allows the real API endpoint
+  (`kubectl get endpoints kubernetes`) — the ClusterIP alone is not enough on
+  kube-router and other iptables CNIs.
 - Exposure policies: browser path works; a non-proxy pod cannot reach the
   gateway; probes stay healthy. `scripts/preflight-sso.sh` exits `0`.
+- Drift: `scripts/cluster-drift.sh` exits `0` against the deployed cluster. It
+  is read-only and flags untracked templates, a warm pool bound to the wrong
+  template, images that are not the release identity, a readiness probe that is
+  still `/healthz`, and a gateway egress policy that misses the API endpoint.
 - Cookie/TLS guard: with `COOKIE_SECURE=false` and no
   `ALLOW_INSECURE_COOKIES` the gateway refuses to start; with TLS it starts and
   the cookie is `Secure` (`__Host-` prefixed).

@@ -129,8 +129,13 @@ kubectl -n dsh-demo create secret tls dsh-demo-tls --cert=tls.crt --key=tls.key
 #    the real public host and allowed GitHub organization.
 
 # 3. Enable SSO on the gateway and trust the public host in the template.
+#    TRUSTED_PROXY_HOPS=2 counts the proxies that append to X-Forwarded-For on
+#    this path (Traefik + oauth2-proxy); add any CDN/tunnel in front of Traefik
+#    that appends rather than replaces the header. Without it the auth rate
+#    limit keys on the oauth2-proxy pod and every user shares one bucket.
 kubectl -n dsh-demo set env deploy/dsh-gateway \
-  AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-
+  AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true ALLOW_INSECURE_COOKIES- \
+  TRUSTED_PROXY_HOPS=2
 # then set DSH_TRUSTED_HOSTS=dsh-demo.example.com in the SandboxTemplate
 # (see ../10-sandboxtemplate.yaml) and re-apply it.
 
@@ -140,8 +145,8 @@ kubectl apply -f manifests/exposure/gateway-api-sso/
 # 5. Preflight: fails loudly on missing Secrets, a bad oauth2-proxy cookie
 #    secret, missing gateway SSO env, a dangling TLS reference, leftover
 #    placeholders, a second path to the gateway, a Role without `patch` on
-#    sandboxclaims, missing SSO NetworkPolicies, or an oauth2-proxy ingress
-#    that accepts every namespace.
+#    sandboxclaims, or missing SSO NetworkPolicies; warns when
+#    TRUSTED_PROXY_HOPS is unset or 0.
 ./scripts/preflight-sso.sh
 ```
 
@@ -178,6 +183,19 @@ takes all of these:
    direction unrestricted because the API-server endpoint is cluster-specific.
    See
    [gateway egress](../../docs/optional-hardening.md#gateway-egress-required-for-production).
+5. Set `TRUSTED_PROXY_HOPS` on `deploy/dsh-gateway` to the number of proxies
+   that append to `X-Forwarded-For` between the browser and the gateway (`2` for
+   the shipped Traefik + oauth2-proxy chain, plus any CDN/tunnel in front that
+   appends rather than replaces). Without it the auth rate limit keys on the
+   oauth2-proxy pod, so every user shares one bucket and a single client can
+   `429` the signup/login routes for everyone. `scripts/preflight-sso.sh`
+   warns when it is unset.
+
+The shipped oauth2-proxy skips authentication for `/healthz` and `/readyz`
+(`--skip-auth-route=^/(healthz|readyz)$`), so in-cluster and external probes can
+use them. They expose no user data: `/healthz` is cluster-free and `/readyz`
+returns only `200`/`503` plus the gateway's Kubernetes API status. Drop that
+argument if health checks are only done in-cluster.
 
 Also terminate TLS in front of the gateway (the Gateway listener does) and
 leave `COOKIE_SECURE=true` so the session cookie never travels in clear text.

@@ -382,6 +382,39 @@ token for a cookie, and `Authorization: Bearer <token>` on subsequent calls. A
 cookie/session value is never accepted as a bearer token, and a token for one
 user cannot read another user's path.
 
+### Account deletion and PV cleanup
+
+Deleting a user (`DELETE /users/{user}`, `POST /recreate`, or deleting the
+`SandboxClaim`) cascades to the Sandbox **and** its PVC. What happens to the
+volume after that is decided by the StorageClass `reclaimPolicy`:
+
+- `Delete` (the repo template omits `storageClassName`, so this is the cluster
+  default) removes the PV and its Longhorn volume.
+- `Retain` leaves the PV in `Released` and the Longhorn volume behind. This is
+  easy to miss on clusters whose default class is `Retain`, or when the
+  template pins one (for example a `longhorn-mysql-rwo*` class). Every deleted
+  account then leaks disk and keeps the tenant's workspace data.
+
+If you deliberately use a `Retain` class (snapshot/backup workflows), audit and
+clean it up as part of account deletion:
+
+```bash
+# PVs released by deleted claims in this namespace
+kubectl get pv -o custom-columns='PV:.metadata.name,STATUS:.status.phase,CLAIM:.spec.claimRef.name,NS:.spec.claimRef.namespace,CLASS:.spec.storageClassName' \
+  | awk '$2 == "Released" && $4 == "dsh-demo"'
+# The matching Longhorn volume has the PV's name and is usually detached.
+kubectl -n longhorn-system get volumes.longhorn.io
+
+# Only after confirming the claim/user is gone and the data is not needed:
+kubectl delete pv <pv-name>
+kubectl -n longhorn-system delete volumes.longhorn.io <pv-name>
+```
+
+Deleting a PV is irreversible and cluster-scoped; do it only after an explicit
+confirmation. For per-user workspaces the simpler answer is a `Delete`-reclaim
+StorageClass: set `storageClassName` in `manifests/10-sandboxtemplate.yaml`
+(affects newly created PVCs only), or change the cluster's default class.
+
 ### Auth abuse controls and proxy limits
 
 The gateway is a single process, so these limits are per replica. They stop
@@ -390,7 +423,7 @@ deployment still needs ingress-level rate limiting and an audit trail.
 
 | Setting | Default | Behavior |
 | --- | --- | --- |
-| `AUTH_RATE_LIMIT` / `AUTH_RATE_WINDOW` | `30` per `60` s | Throttles `/users` and `/login` per client and answers `429` + `Retry-After` before reading the body or touching the cluster. The client is the TCP peer unless `TRUSTED_PROXY_HOPS` names how many proxies append to `X-Forwarded-For` (`0` here: the Service is a bare ClusterIP, so the header is client-controlled and ignored). `0` disables the limiter. The base manifest sets it explicitly. |
+| `AUTH_RATE_LIMIT` / `AUTH_RATE_WINDOW` | `30` per `60` s | Throttles `/users` and `/login` per client and answers `429` + `Retry-After` before reading the body or touching the cluster. The client is the TCP peer unless `TRUSTED_PROXY_HOPS` names how many proxies append to `X-Forwarded-For` (`0` here: the Service is a bare ClusterIP, so the header is client-controlled and ignored). Behind the SSO variant there are two appending proxies (Traefik and oauth2-proxy), so set `TRUSTED_PROXY_HOPS=2` with `AUTH_PROXY_HEADER`; otherwise every user shares the proxy's single bucket and one client can `429` everyone. `0` disables the limiter. The base manifest sets it explicitly. |
 | `SIGNUP_INVITE_CODE` | unset | When set, `POST /users` requires the code as form field `invite` or header `X-Signup-Invite` (constant-time compare, `403` before user lookup). Put it in a Secret and restart the gateway to rotate. |
 | `MAX_IN_FLIGHT_PER_USER` | `32` | Caps concurrent proxied requests + WebSockets per user; excess HTTP gets `503` + `Retry-After`, excess WebSocket upgrades close with `1011`. |
 | `WS_MAX_MESSAGE_BYTES` | `16 MiB` | Largest WebSocket message received from DSH; oversized frames close the connection. Browser-to-DSH frames are bounded by uvicorn's own limit. HTTP/SSE streaming is not capped by this. |
@@ -489,7 +522,9 @@ and summarized in the [exposure README](manifests/exposure/README.md).
    Ingress serves HTTPS:
    `kubectl -n dsh-demo set env deploy/dsh-gateway COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-`.
 3. `kubectl apply -f manifests/exposure/ingress/`; verify
-   `curl -sI https://<host>/healthz` returns `200`.
+   `curl -sI https://<host>/healthz` returns `200` (liveness) and
+   `curl -s https://<host>/readyz` returns `{"status":"ok"}` (the gateway can
+   still reach the Kubernetes API; a `503` means it cannot).
 
 Keep the router free of buffering/compression middlewares: they break WebSocket
 upgrades and streaming. The variant's `61-networkpolicy.yaml` allows only Traefik
@@ -512,7 +547,12 @@ front of **oauth2-proxy**, which authenticates the browser against GitHub
    `73-oauth2-proxy-secret.yaml.example` and `74-tls-secret.yaml.example`.
 3. Replace `dsh-demo.example.com` and `your-github-org` in the variant
    manifests, set `DSH_TRUSTED_HOSTS` in the template, and enable SSO:
-   `kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-`.
+   `kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true ALLOW_INSECURE_COOKIES- TRUSTED_PROXY_HOPS=2`.
+   `TRUSTED_PROXY_HOPS=2` counts the two proxies that append to
+   `X-Forwarded-For` on this path (Traefik and oauth2-proxy); add any
+   CDN/tunnel in front of Traefik that appends rather than replaces the header.
+   With it left at `0`, the auth rate limit keys on the oauth2-proxy pod and
+   the whole install shares one bucket.
 4. `kubectl apply -f manifests/exposure/gateway-api-sso/`; then run
    [`scripts/preflight-sso.sh`](scripts/preflight-sso.sh) and fix everything it
    reports **before** pointing real traffic at the Gateway. It verifies the
@@ -563,13 +603,20 @@ hardened**: without the policies and gVisor it is demo-only, not a safe
 multi-tenant platform. [Optional hardening](docs/optional-hardening.md) has the
 settings and a production checklist. In short:
 
-- **gVisor** — uncomment `runtimeClassName: gvisor` before applying, or patch an
-  existing install. Requires a `gvisor` RuntimeClass and capable nodes.
-  `kubectl port-forward` does not work under gVisor; the gateway path does.
-  Required for untrusted agents in production.
-- **nodeSelector** — uncomment and replace the placeholder node label to pin
-  sandboxes and the gateway to a dedicated pool; add a toleration for tainted
-  pools.
+- **Local overlay** — cluster-specific values (gVisor, node-pool labels, storage
+  class/size, public host, SSO hop count, image pins) belong in
+  [`manifests/local/`](manifests/local/README.md): copy
+  `values.env.example` to `values.env` and run
+  `./scripts/local-overlay.sh --apply`. The script prints the patches without
+  `--apply`; keeping these values out of the shipped manifests is what makes a
+  re-apply safe and the cluster reproducible.
+- **gVisor** — set it through the local overlay (or uncomment
+  `runtimeClassName: gvisor` before applying). Requires a `gvisor` RuntimeClass
+  and capable nodes. `kubectl port-forward` does not work under gVisor; the
+  gateway path does. Required for untrusted agents in production.
+- **nodeSelector** — set it through the local overlay (or uncomment and replace
+  the placeholder node label) to pin sandboxes and the gateway to a dedicated
+  pool; add a toleration for tainted pools.
 - **Sandbox NetworkPolicy** —
   `kubectl apply -f manifests/optional/network-policy/` allows only
   gateway→sandbox on `3080` and sandbox→DNS/public `443`. Required for
@@ -603,7 +650,9 @@ applied by the base step.
 | Every browser is logged out after a gateway rollout/restart | Expected: sessions are opaque ids in gateway memory and a restart drops them. Sign in again; a production deployment needs shared session state or per-request re-authentication. The DSH sandboxes and their data are unaffected |
 | WebSocket closes with `1011` for a busy client | `MAX_IN_FLIGHT_PER_USER` (per-user connection cap) or an upstream/handshake failure closed the socket; check the gateway logs to tell them apart |
 | WebSocket closes after a very large message from DSH | A message received from DSH exceeded `WS_MAX_MESSAGE_BYTES` (16 MiB), so the relay closed it instead of buffering; raise the limit only if DSH legitimately sends larger frames. Browser-to-DSH frames are bounded by uvicorn's own limit |
-| `scripts/preflight-sso.sh` exits non-zero | It names the failing item: a missing Secret/key, a bad oauth2-proxy cookie-secret length, missing `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, a dangling Gateway TLS reference, a leftover `your-github-org`/`dsh-demo.example.com` placeholder, a second path to the gateway (an Ingress), a gateway Role without `patch` on `sandboxclaims`, or a missing SSO NetworkPolicy. Fix all items before exposing the SSO variant |
+| Every user path returns `500`, gateway log repeats `MaxRetryError ... host='10.43.0.1', port=443 ... Connection refused`, while `/healthz` is `200` | The gateway cannot reach the Kubernetes API. If an egress NetworkPolicy was just applied, it allows the `kubernetes` Service ClusterIP but not the real endpoint: kube-router enforces egress on the post-DNAT destination, so allow `kubectl -n default get endpoints kubernetes` (usually `:6443`) as well. `/readyz` returns `503` in this state; see the gateway-egress recipe in [optional hardening](docs/optional-hardening.md#gateway-egress-required-for-production) |
+| `/readyz` returns `503` but `/healthz` is `200` | The process is alive but its Kubernetes API dependency is not (policy, API outage, or a revoked RBAC verb). Kubernetes removes the pod from the Service endpoints, so fix the API path instead of restarting; `kubectl -n dsh-demo get endpoints dsh-gateway` is empty while this lasts |
+| `scripts/preflight-sso.sh` exits non-zero | It names the failing item: a missing Secret/key, a bad oauth2-proxy cookie-secret length, missing `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, a dangling Gateway TLS reference, a leftover `your-github-org`/`dsh-demo.example.com` placeholder, a second path to the gateway (an Ingress), a gateway Role without `patch` on `sandboxclaims`, or a missing SSO NetworkPolicy. It warns (does not fail) when `TRUSTED_PROXY_HOPS` is unset/`0`. Fix all items before exposing the SSO variant |
 | `409` on signup | User already has a claim; use `POST /login` with the existing token or delete the user first |
 | Cookie set but browser keeps getting `401` | `COOKIE_SECURE=true` while serving over plain HTTP (secure cookies are not sent); use HTTPS or set `false` **and** `ALLOW_INSECURE_COOKIES=1` for local demos |
 | WebSocket closes immediately (`4401`) | Missing/expired gateway cookie, or the upgrade's `Origin` does not match `Host` (CSWSH check); DSH rejecting `Host` instead surfaces as close `1011` — add the host to `DSH_TRUSTED_HOSTS` |
@@ -705,6 +754,11 @@ kubectl delete namespace dsh-demo
 If you created the oauth2-proxy/TLS Secrets or the GitHub OAuth App for step 9,
 delete the Secrets with the namespace and revoke the OAuth App in GitHub.
 
+Deleting the namespace removes the claims, sandboxes and PVCs, but a
+`Retain`-reclaim StorageClass can leave `Released` PVs and Longhorn volumes
+behind. Check and clean them up as described in
+[Account deletion and PV cleanup](#account-deletion-and-pv-cleanup).
+
 ## More
 
 - [Gateway README](gateway/README.md) — API, configuration, auth/SSO, failure
@@ -712,6 +766,12 @@ delete the Secrets with the namespace and revoke the OAuth App in GitHub.
 - [Architecture](docs/architecture.md) — container/sequence diagrams, ADRs,
   security and RBAC, failure modes, evolution path.
 - [Exposure README](manifests/exposure/README.md) — the two variants in detail.
+- [Local overlay](manifests/local/README.md) — where cluster-specific values
+  live; applied with `scripts/local-overlay.sh` (plain kubectl).
+- [Drift check](scripts/cluster-drift.sh) — read-only comparison of the live
+  cluster with the repo's expectations; flags untracked templates, a pool that
+  points elsewhere, unpinned images, a stale readiness probe and a gateway
+  egress policy that misses the real API endpoint.
 - [SSO preflight](scripts/preflight-sso.sh) — read-only checks for the SSO
   variant (Secrets, gateway env, TLS reference, placeholders, second paths).
 - [Optional hardening](docs/optional-hardening.md) — gVisor, nodeSelector,

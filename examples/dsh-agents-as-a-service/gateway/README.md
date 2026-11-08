@@ -64,7 +64,8 @@ token. A failed handshake returns `503` with `Retry-After: 10`.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/healthz` | none | Liveness/readiness. Never touches the cluster. |
+| `GET` | `/healthz` | none | Liveness. Never touches the cluster, so an API outage cannot get the process restarted. |
+| `GET` | `/readyz` | none | Readiness. Makes one bounded Kubernetes API read (a one-item claim list, `READY_CHECK_TIMEOUT` default `2` s) and returns `503` when the API is unreachable or the ServiceAccount lost access, so a gateway that cannot resolve claims is taken out of the Service endpoints instead of answering `500`. |
 | `GET` | `/` | none | Landing page with signup + token login forms (plus an invite-code input when `SIGNUP_INVITE_CODE` is set). With SSO it auto-provisions the proxy-identified user and redirects to their workspace. |
 | `POST` | `/users` | none | Signup. JSON body `{"user": "<dns-1123 label>"}` or form field `user`; when `SIGNUP_INVITE_CODE` is set, an `invite` form field or `X-Signup-Invite` header must match it (`403` otherwise, checked before the user lookup). JSON returns `201` when Ready, `202` when accepted but still Waking; form returns `303` to `/u/<user>/`. Both set the session cookie. `409` if the user exists, `400` if invalid, `413` if the body is too large, `429` when the auth rate limit is hit. |
 | `POST` | `/login` | none | Form (`user`, `token`) returns `303` to `/u/<user>/`; JSON returns `200`. Sets the session cookie. `401` on a bad token **and** for an unknown user (no username enumeration). `429` when the auth rate limit is hit. Both auth routes reject a form post whose `Origin`/`Referer` contradicts `Host` (`403`) when the browser sent one. |
@@ -219,10 +220,11 @@ can also be injected into `create_app` for tests.
 | `MAX_BODY_MB` | `32` | Maximum buffered request body (and `413` threshold). |
 | `HTTP_TIMEOUT` | `300` | Upstream connect/read timeout in seconds. Proxied streams (SSE, long responses) keep the connect/write budget but have **no read timeout**, so an idle event stream is not cut every five minutes. |
 | `SWEEP_INTERVAL` | `15` | Seconds between idle sweeps. Sweeps also prune expired sessions and rate buckets and orphaned per-user state. |
+| `READY_CHECK_TIMEOUT` | `2` | Upper bound in seconds for the single Kubernetes API call made by `GET /readyz`. Keep it well below the readiness probe timeout. |
 | `SIGNUP_INVITE_CODE` | unset | When set, `POST /users` requires the matching `invite` form field or `X-Signup-Invite` header (timing-safe compare); the landing page then shows an invite input. Unset leaves signup open. |
 | `AUTH_RATE_LIMIT` | `30` | Attempts allowed per client per `AUTH_RATE_WINDOW` on `POST /users` and `POST /login`; `0` disables the limit. |
 | `AUTH_RATE_WINDOW` | `60` | Rate-limit window in seconds. |
-| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the gateway that append to `X-Forwarded-For`. `0` (the default, and right for the base manifests, where the Service is a bare ClusterIP) ignores the header and keys the auth rate limit on the socket peer. Set it to the real hop count (for example `1` behind one ingress; Traefik replaces `X-Forwarded-For` rather than appending, so verify with `kubectl logs` before trusting it). The header is never trusted beyond this count. |
+| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the gateway that append an entry to `X-Forwarded-For`. `0` (the default, and right for the base manifests, where the Service is a bare ClusterIP) ignores the header and keys the auth rate limit on the socket peer. Behind the SSO variant there are two appending proxies (Traefik and oauth2-proxy), so set `2`; if a CDN/tunnel between the browser and Traefik also appends rather than replaces, count it too. A wrong count either keys the limiter on a proxy address (too few) or ignores the header entirely (too many), so verify independent rate-limit buckets for two client IPs. The header is never trusted beyond this count. |
 | `UPSTREAM_HEADER_ALLOWLIST` | unset | Comma-separated, case-insensitive allowlist of client headers to forward upstream. Unset keeps the denylist behavior; forwarding/identity headers are stripped in both modes. |
 | `MAX_IN_FLIGHT_PER_USER` | `32` | Concurrent proxied requests per user before `503`/WS `1011`. `0` disables the cap. |
 | `WS_MAX_MESSAGE_BYTES` | `16777216` | Largest WebSocket message (16 MiB) accepted from DSH. Browser-to-DSH frames are bounded by uvicorn's own limit. |

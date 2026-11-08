@@ -14,7 +14,9 @@
 #      that decodes to 16, 24 or 32 bytes; the TLS Secret exists;
 #   3. deploy/dsh-gateway has AUTH_PROXY_HEADER=X-Forwarded-User and
 #      COOKIE_SECURE=true (both are opt-in and both are required for SSO over
-#      TLS);
+#      TLS), and TRUSTED_PROXY_HOPS is set to the real number of appending
+#      proxies (a warning otherwise: with 0 every user shares the proxy's
+#      single auth-rate-limit bucket);
 #   4. the Gateway's TLS certificate reference resolves to an existing Secret;
 #   5. no your-github-org / dsh-demo.example.com placeholder is left in the
 #      applied oauth2-proxy args, Gateway listeners or HTTPRoute hostnames;
@@ -166,6 +168,25 @@ fi
 
 if env_is_set ALLOW_INSECURE_COOKIES; then
   warn "ALLOW_INSECURE_COOKIES is still set on deploy/$GATEWAY_DEPLOY. It is ignored while COOKIE_SECURE=true but is a footgun: remove it with 'kubectl -n $NS set env deploy/$GATEWAY_DEPLOY ALLOW_INSECURE_COOKIES-'."
+fi
+
+# The auth rate limit keys on the socket peer unless the hop count is declared.
+# With SSO every request arrives from the oauth2-proxy pod, so TRUSTED_PROXY_HOPS
+# unset/0 silently turns the per-client limiter into one global bucket.
+HOPS=$(env_value TRUSTED_PROXY_HOPS || true)
+if ! env_is_set TRUSTED_PROXY_HOPS; then
+  warn "TRUSTED_PROXY_HOPS is not set on deploy/$GATEWAY_DEPLOY (default 0). Behind the SSO chain every request arrives from oauth2-proxy, so the auth rate limit is one global bucket for all users. Fix: kubectl -n $NS set env deploy/$GATEWAY_DEPLOY TRUSTED_PROXY_HOPS=2 (count every proxy that appends to X-Forwarded-For; add a CDN/tunnel in front of Traefik if it appends rather than replaces the header)."
+elif [ "$HOPS" = "0" ]; then
+  warn "TRUSTED_PROXY_HOPS=0 on deploy/$GATEWAY_DEPLOY: the auth rate limit keys on the oauth2-proxy pod, not the browser, so all users share one bucket. Set it to the appending-proxy count (2 for Traefik + oauth2-proxy)."
+else
+  case "$HOPS" in
+    '' | *[!0-9]*)
+      fail "TRUSTED_PROXY_HOPS='$HOPS' is not a non-negative integer; Settings.from_env() refuses to start with a non-numeric value. Fix: kubectl -n $NS set env deploy/$GATEWAY_DEPLOY TRUSTED_PROXY_HOPS=2"
+      ;;
+    *)
+      pass "TRUSTED_PROXY_HOPS=$HOPS"
+      ;;
+  esac
 fi
 
 echo
