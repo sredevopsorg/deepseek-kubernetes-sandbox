@@ -34,22 +34,22 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install "yamllint==1.38.0" "pyyaml==6.0.3"
-      # - name: Install actionlint
-      #   env:
-      #     ACTIONLINT_VERSION: v1.7.12
-      #     # SHA-256 of actionlint_1.7.12_linux_amd64.tar.gz, published in the
-      #     # release's actionlint_1.7.12_checksums.txt. Update it with the version.
-      #     ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-      #   run: |
-      #     set -euo pipefail
-      #     version="${ACTIONLINT_VERSION#v}"
-      #     asset="actionlint_${version}_linux_amd64.tar.gz"
-      #     curl -fsSL --proto '=https' -o "/tmp/$asset" \
-      #       "https://github.com/rhysd/actionlint/releases/download/$ACTIONLINT_VERSION/$asset"
-      #     printf '%s  %s\n' "$ACTIONLINT_SHA256" "/tmp/$asset" | sha256sum -c -
-      #     tar -xzf "/tmp/$asset" -C /tmp actionlint
-      #     install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
-      #     actionlint -version
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: v1.7.12
+          # SHA-256 of actionlint_1.7.12_linux_amd64.tar.gz, published in the
+          # release's actionlint_1.7.12_checksums.txt. Update it with the version.
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          version="${ACTIONLINT_VERSION#v}"
+          asset="actionlint_${version}_linux_amd64.tar.gz"
+          curl -fsSL --proto '=https' -o "/tmp/$asset" \
+            "https://github.com/rhysd/actionlint/releases/download/$ACTIONLINT_VERSION/$asset"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "/tmp/$asset" | sha256sum -c -
+          tar -xzf "/tmp/$asset" -C /tmp actionlint
+          install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
+          actionlint -version
       - name: Install hadolint
         env:
           HADOLINT_VERSION: v2.12.0
@@ -70,11 +70,7 @@ jobs:
       - name: Shellcheck
         run: shellcheck -x build.sh scripts/*.sh examples/*/scripts/*.sh
       - name: Actionlint
-        # run: actionlint -color
-        continue-on-error: true
-        uses: docker://rhysd/actionlint:latest
-        with:
-          args: -color
+        run: actionlint -color
       - name: Yamllint
         run: yamllint .
       - name: Hadolint
