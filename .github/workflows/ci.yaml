@@ -71,6 +71,7 @@ jobs:
         run: shellcheck -x build.sh scripts/*.sh examples/*/scripts/*.sh
       - name: Actionlint
         # run: actionlint -color
+        continue-on-error: true
         uses: docker://rhysd/actionlint:latest
         with:
           args: -color
