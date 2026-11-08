@@ -61,6 +61,18 @@ spec:
       # nodeSelector:
       #   dsh.example.com/node-pool: dsh
       restartPolicy: "OnFailure"
+      # glibc resolves a name by sending its A and AAAA queries in parallel from
+      # one UDP socket. On some clusters (NetworkPolicy-enforcing CNIs, a
+      # CoreDNS pod on another node) one of the pair is intermittently dropped,
+      # so the first external lookup of any fresh process stalls for the 5 s
+      # resolver timeout. That is just long enough to trip DSH's plugin-manager
+      # GitHub preflight (`git ls-remote`, githubConnectionTimeoutMs = 5000 ms),
+      # which surfaces as "dsh: connection to github.com timed out after 5000ms"
+      # when adding a plugin. Serializing the two queries removes the stall
+      # (~5 s -> ~0.1 s) without disabling IPv6 DNS.
+      dnsConfig:
+        options:
+          - name: single-request-reopen
       securityContext:
         runAsUser: 1000   # the 'node' user in the DSH image
         runAsGroup: 1000
