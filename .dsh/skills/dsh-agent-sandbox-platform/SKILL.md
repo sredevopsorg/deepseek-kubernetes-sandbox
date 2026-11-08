@@ -104,7 +104,7 @@ Verified from the upstream server:
   `shutdown_after_seconds` defaults to 300 s (`null` disables it).
 - **Output:** servers before v1.0.8 return unbounded `execute_command` output.
   v1.0.8 adds `max_output_chars` (128-300,000, default 30,000) and truncation
-  metadata. The repository pins v1.0.8 (`AGENT_SANDBOX_VERSION`), so the
+  metadata. The repository pins `AGENT_SANDBOX_VERSION` (v1.0.10), so the
   documented deployment is bounded; never pass the new argument to an older
   server, and on one redirect verbose output and read a file instead.
 

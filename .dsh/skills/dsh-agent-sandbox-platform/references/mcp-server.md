@@ -74,9 +74,9 @@ DSH template.
 Never pass `max_output_chars` to a pre-v1.0.8 server. On older servers, redirect
 verbose output to a file and `download_file` it, or pipe through `tail`/`head`.
 
-The repository pins `AGENT_SANDBOX_VERSION=v1.0.8`, so the right-hand column is
-what the documented platform and a same-tag MCP build provide; keep the
-before-column for clusters still on v1.0.7.
+The repository pins `AGENT_SANDBOX_VERSION` (v1.0.10), so the right-hand column
+is what the documented platform and a same-tag MCP build provide; keep the
+before-column for older clusters.
 
 ## Safety and cleanup
 
