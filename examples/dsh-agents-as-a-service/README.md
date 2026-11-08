@@ -390,7 +390,7 @@ deployment still needs ingress-level rate limiting and an audit trail.
 
 | Setting | Default | Behavior |
 | --- | --- | --- |
-| `AUTH_RATE_LIMIT` / `AUTH_RATE_WINDOW` | `30` per `60` s | Throttles `/users` and `/login` per client (rightmost `X-Forwarded-For` when behind a proxy, else the TCP peer) and answers `429` + `Retry-After` before reading the body or touching the cluster. `0` disables it. The base manifest sets it explicitly. |
+| `AUTH_RATE_LIMIT` / `AUTH_RATE_WINDOW` | `30` per `60` s | Throttles `/users` and `/login` per client and answers `429` + `Retry-After` before reading the body or touching the cluster. The client is the TCP peer unless `TRUSTED_PROXY_HOPS` names how many proxies append to `X-Forwarded-For` (`0` here: the Service is a bare ClusterIP, so the header is client-controlled and ignored). `0` disables the limiter. The base manifest sets it explicitly. |
 | `SIGNUP_INVITE_CODE` | unset | When set, `POST /users` requires the code as form field `invite` or header `X-Signup-Invite` (constant-time compare, `403` before user lookup). Put it in a Secret and restart the gateway to rotate. |
 | `MAX_IN_FLIGHT_PER_USER` | `32` | Caps concurrent proxied requests + WebSockets per user; excess HTTP gets `503` + `Retry-After`, excess WebSocket upgrades close with `1011`. |
 | `WS_MAX_MESSAGE_BYTES` | `16 MiB` | Largest WebSocket message received from DSH; oversized frames close the connection. Browser-to-DSH frames are bounded by uvicorn's own limit. HTTP/SSE streaming is not capped by this. |
@@ -519,23 +519,25 @@ front of **oauth2-proxy**, which authenticates the browser against GitHub
    Secrets (including a valid oauth2-proxy cookie secret length), the gateway's
    `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, that the Gateway's TLS certificate
    reference resolves, that the gateway ServiceAccount may `patch`
-   `sandboxclaims` (SSO token rotation), that the variant's NetworkPolicies are
-   applied, and that no `your-github-org`/`dsh-demo.example.com` placeholder was
-   left applied. Full verification steps are in the
+   `sandboxclaims` (SSO token rotation), that all three of the variant's
+   NetworkPolicies are applied and that `oauth2-proxy-ingress` does not accept
+   every namespace, that no Ingress routes to `dsh-gateway`, and that no
+   `your-github-org`/`dsh-demo.example.com` placeholder was left applied. Full verification steps are in the
    [exposure README](manifests/exposure/README.md).
 
 > **Exposure without the variant NetworkPolicy is demo-only.** The SSO
 > variant's `75-networkpolicies.yaml` is not optional in practice: it is the
 > only thing that makes oauth2-proxy the sole path to the gateway. Applying
 > only the Gateway/HTTPRoute/oauth2-proxy objects leaves the trust boundary
-> unenforced, so anyone who can reach `dsh-gateway:8080` can send
-> `X-Forwarded-User` and impersonate the user they claim to be.
+> unenforced, so anyone who can reach `dsh-gateway:8080` — or any namespace
+> oauth2-proxy will forward for — can send `X-Forwarded-User`.
 >
 > **SSO trust boundary — read this before enabling it.** After SSO is on, the
 > `dsh-gateway` Service must be reachable **only** through oauth2-proxy (it is
 > ClusterIP). The variant's `75-networkpolicies.yaml` restricts pod traffic
 > accordingly: the gateway accepts traffic only from oauth2-proxy pods,
-> oauth2-proxy only from the Gateway implementation, and its egress only to DNS,
+> oauth2-proxy only from the Gateway implementation's namespace (the shipped
+> selector names the Traefik namespace; adjust it to yours), and its egress only to DNS,
 > public HTTPS and the gateway. The gateway's own egress (Kubernetes API,
 > sandbox pods) is not restricted by that file because the API-server endpoint is
 > cluster-specific; add the

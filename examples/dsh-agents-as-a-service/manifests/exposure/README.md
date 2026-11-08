@@ -140,7 +140,8 @@ kubectl apply -f manifests/exposure/gateway-api-sso/
 # 5. Preflight: fails loudly on missing Secrets, a bad oauth2-proxy cookie
 #    secret, missing gateway SSO env, a dangling TLS reference, leftover
 #    placeholders, a second path to the gateway, a Role without `patch` on
-#    sandboxclaims, or missing SSO NetworkPolicies.
+#    sandboxclaims, missing SSO NetworkPolicies, or an oauth2-proxy ingress
+#    that accepts every namespace.
 ./scripts/preflight-sso.sh
 ```
 
@@ -165,9 +166,12 @@ takes all of these:
    `dsh-gateway:8080` directly can set `X-Forwarded-User` itself and
    impersonate any user.
 3. Keep `75-networkpolicies.yaml` with the variant. It enforces the boundary in
-   the network layer (gateway ← oauth2-proxy ← Traefik, and limited oauth2-proxy
-   egress). This is required, not optional: an exposure without the policy is
-   demo-only, and a custom exposure without an equivalent policy has no network
+   the network layer (gateway ← oauth2-proxy ← the Gateway implementation's
+   namespace, and limited oauth2-proxy egress). The shipped
+   `oauth2-proxy-ingress` names the `traefik` namespace, not every namespace;
+   adjust the selector to wherever your Gateway implementation runs. This is
+   required, not optional: an exposure without the policy is demo-only, and a
+   custom exposure without an equivalent policy has no network
    enforcement.
 4. Apply the gateway egress policy too: the gateway talks to the Kubernetes API
    and to sandbox pods, and `75-networkpolicies.yaml` intentionally leaves that

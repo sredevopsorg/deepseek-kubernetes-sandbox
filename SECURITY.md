@@ -28,15 +28,19 @@ disclosure once a fix is available.
   but they live in gateway memory, so a gateway restart logs every browser out
   and scaling beyond one replica requires a shared store. Do not treat the
   cookie as durable or cross-replica state.
-- **SSO header trust boundary.** AUTH_PROXY_HEADER makes the gateway trust an
-  identity header (for example X-Forwarded-User). Enable it only when the
-  gateway Service is reachable exclusively through the authenticating proxy
-  and its NetworkPolicy; otherwise any client can spoof the header. The SSO
-  exposure variant's policy is required, not optional: an exposure without it
-  is demo-only. Run `examples/dsh-agents-as-a-service/scripts/preflight-sso.sh`
-  after applying the variant; it checks the Secrets, gateway env, TLS
-  reference, leftover placeholders, accidental second paths, the gateway
-  Role's `patch` verb on `sandboxclaims` and the variant NetworkPolicies.
+- **SSO header trust boundary.** AUTH_PROXY_HEADER makes the gateway accept an
+  identity header (for example X-Forwarded-User), but only to name a claim the
+  gateway itself minted: a claim without its token-hash marker is refused, so
+  neither a hand-applied claim nor a stolen DSH launch token becomes a gateway
+  credential. Enable SSO only when the gateway Service is reachable exclusively
+  through the authenticating proxy and its NetworkPolicies; otherwise any
+  client can spoof the header. The SSO exposure variant's policies are required,
+  not optional: an exposure without them is demo-only. Run
+  `examples/dsh-agents-as-a-service/scripts/preflight-sso.sh` after applying the
+  variant; it checks the Secrets, gateway env, TLS reference, leftover
+  placeholders, accidental second paths, the gateway Role's `patch` verb on
+  `sandboxclaims`, all three NetworkPolicies and that oauth2-proxy does not
+  accept every namespace.
 - **Insecure-cookie guard.** TLS terminates outside the gateway. Set
   COOKIE_SECURE=true for HTTPS and remove ALLOW_INSECURE_COOKIES; the gateway
   refuses to start with COOKIE_SECURE=false unless ALLOW_INSECURE_COOKIES=1 is

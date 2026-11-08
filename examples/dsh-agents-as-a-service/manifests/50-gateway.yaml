@@ -31,6 +31,9 @@ metadata:
 #   - sandboxes are read, and patched only to flip operatingMode (suspend/resume);
 #   - pods are read, and pods/log is read to capture DSH's launch token from
 #     the startup log line (`dsh web: ...?token=...`).
+# That pods/log grant covers EVERY pod in the namespace, so this
+# ServiceAccount is tenant-wide secret material: never mount it into a
+# sandbox (10-sandboxtemplate.yaml sets automountServiceAccountToken: false).
 # configmaps are not needed: all state is in memory / claim annotations.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -171,12 +174,17 @@ spec:
             #   value: X-Forwarded-User
             # Brute-force / abuse throttle for the unauthenticated auth
             # endpoints (/users and /login): at most N attempts per client per
-            # AUTH_RATE_WINDOW seconds (default 60). A client is the rightmost
-            # X-Forwarded-For entry (the one added by the trusted proxy) when
-            # present, otherwise the TCP peer. Over the limit the gateway
-            # answers 429 + Retry-After BEFORE reading the body or touching the
-            # cluster; 0 disables the limiter. This is a per-process bucket, so
-            # it is not a substitute for an ingress rate limit.
+            # AUTH_RATE_WINDOW seconds (default 60). A client is the TCP peer
+            # unless TRUSTED_PROXY_HOPS says how many proxies append to
+            # X-Forwarded-For; the header is never trusted past that many hops
+            # (a caller that sets it itself would otherwise pick a fresh
+            # bucket per attempt and never be limited). Over the limit the
+            # gateway answers 429 + Retry-After BEFORE reading the body or
+            # touching the cluster; 0 disables the limiter. This is a
+            # per-process bucket, so it is not a substitute for an ingress
+            # rate limit.
+            # - name: TRUSTED_PROXY_HOPS
+            #   value: "1"   # unset/0 here: this Service is a bare ClusterIP
             - name: AUTH_RATE_LIMIT
               value: "30"
             # Window in seconds for AUTH_RATE_LIMIT (default 60).

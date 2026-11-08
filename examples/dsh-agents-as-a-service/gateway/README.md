@@ -69,8 +69,8 @@ token. A failed handshake returns `503` with `Retry-After: 10`.
 | `POST` | `/users` | none | Signup. JSON body `{"user": "<dns-1123 label>"}` or form field `user`; when `SIGNUP_INVITE_CODE` is set, an `invite` form field or `X-Signup-Invite` header must match it (`403` otherwise, checked before the user lookup). JSON returns `201` when Ready, `202` when accepted but still Waking; form returns `303` to `/u/<user>/`. Both set the session cookie. `409` if the user exists, `400` if invalid, `413` if the body is too large, `429` when the auth rate limit is hit. |
 | `POST` | `/login` | none | Form (`user`, `token`) returns `303` to `/u/<user>/`; JSON returns `200`. Sets the session cookie. `401` on a bad token **and** for an unknown user (no username enumeration). `429` when the auth rate limit is hit. Both auth routes reject a form post whose `Origin`/`Referer` contradicts `Host` (`403`) when the browser sent one. |
 | `POST` | `/logout` | none | Revokes the server-side session, clears the cookie and `303`s to `/`. |
-| `POST` | `/recreate` | trusted proxy header | **SSO only.** Deletes the authenticated user's claim (cascading sandbox + PVC, so workspace data is wiped), waits out finalizers, provisions a fresh claim and `303`s to `/u/<user>/`. `401` without a valid identity header; cookie-authenticated calls must be same-origin. |
-| `GET` | `/users/{user}` | bearer or cookie | Derived state: `Provisioning`, `Waking`, `Ready`, `Suspending`, `Suspended`. |
+| `POST` | `/recreate` | trusted proxy header | **SSO only.** Deletes the authenticated user's claim (cascading sandbox + PVC, so workspace data is wiped), waits out finalizers, provisions a fresh claim and `303`s to `/u/<user>/`. `401` without a valid identity header for a gateway-managed claim; **every** call must be same-origin (`403` otherwise, cookie or not) because the proxy attaches the identity header to cross-site POSTs too. |
+| `GET` | `/users/{user}` | bearer or cookie (SSO header for gateway-managed claims) | Derived state: `Provisioning`, `Waking`, `Ready`, `Suspending`, `Suspended`. |
 | `DELETE` | `/users/{user}` | bearer or cookie | Delete the claim (sandbox + PVC cascade). Cookie-auth mutations require a same-origin `Origin`/`Referer`. |
 | `GET` | `/u/{user}` | — | `308` redirect to `/u/{user}/`. |
 | `*` | `/u/{user}/{path}` | bearer or cookie | HTTP proxy to DSH. Waits for a suspended sandbox to wake. Wakes on connect. |
@@ -101,10 +101,13 @@ token. A failed handshake returns `503` with `Retry-After: 10`.
   when the browser sent one, before the body is read.
 * `POST /users` and `POST /login` are rate limited per client:
   `AUTH_RATE_LIMIT` attempts per `AUTH_RATE_WINDOW` seconds (default 30/60,
-  `0` disables). The client key is the rightmost `X-Forwarded-For` entry when
-  present (the address the last trusted proxy saw, not a spoofable leftmost
-  value), else the socket peer. Over-limit requests get `429` +
-  `Retry-After` before the body is read.
+  `0` disables). The client key is the socket peer unless
+  `TRUSTED_PROXY_HOPS` declares how many proxies append to
+  `X-Forwarded-For`; then it is the entry the outermost trusted proxy saw
+  (`parts[-TRUSTED_PROXY_HOPS]`). The header is never trusted past that
+  count, and a header shorter than it is ignored, so a caller cannot rotate
+  the header to get a fresh bucket per attempt. Over-limit requests get
+  `429` + `Retry-After` before the body is read.
 * Proxy requests strip client-supplied forwarding/identity headers in both
   HTTP and WebSocket paths: `Forwarded`, every `X-Forwarded-*`
   (including `X-Forwarded-User`), every `X-Auth-Request-*`, and `X-Real-IP`.
@@ -135,11 +138,14 @@ oauth2-proxy:
 kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER=X-Forwarded-User
 ```
 
-When set, the gateway treats a request carrying that header as authenticated as
-that user, provided the value is a valid DNS-1123 label; the header is never
-trusted when the variable is unset. The landing page then auto-provisions the
-user (creates their claim idempotently, rotates the claim token when a new
-session is needed and mints an opaque session cookie) and
+When set, the gateway treats a request carrying that header as naming a user,
+provided the value is a valid DNS-1123 label; the header is never trusted when
+the variable is unset. The header alone authorizes nothing beyond that: it is
+only honored for a claim **this gateway minted** (one carrying the
+`aaas.example.com/token-sha256` marker), so a hand-applied claim or a claim from
+another tool is refused (`403` on `/`, `401` on the proxy). The landing page
+then auto-provisions the user (creates their claim idempotently and mints an
+opaque session cookie; the marker is never rotated) and
 redirects to `/u/<user>/`, and `POST /recreate` becomes available for a clean
 restart. The base manifests leave it unset on purpose; the
 [SSO exposure variant](../manifests/exposure/gateway-api-sso/) documents how to
@@ -216,6 +222,7 @@ can also be injected into `create_app` for tests.
 | `SIGNUP_INVITE_CODE` | unset | When set, `POST /users` requires the matching `invite` form field or `X-Signup-Invite` header (timing-safe compare); the landing page then shows an invite input. Unset leaves signup open. |
 | `AUTH_RATE_LIMIT` | `30` | Attempts allowed per client per `AUTH_RATE_WINDOW` on `POST /users` and `POST /login`; `0` disables the limit. |
 | `AUTH_RATE_WINDOW` | `60` | Rate-limit window in seconds. |
+| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the gateway that append to `X-Forwarded-For`. `0` (the default, and right for the base manifests, where the Service is a bare ClusterIP) ignores the header and keys the auth rate limit on the socket peer. Set it to the real hop count (for example `1` behind one ingress; Traefik replaces `X-Forwarded-For` rather than appending, so verify with `kubectl logs` before trusting it). The header is never trusted beyond this count. |
 | `UPSTREAM_HEADER_ALLOWLIST` | unset | Comma-separated, case-insensitive allowlist of client headers to forward upstream. Unset keeps the denylist behavior; forwarding/identity headers are stripped in both modes. |
 | `MAX_IN_FLIGHT_PER_USER` | `32` | Concurrent proxied requests per user before `503`/WS `1011`. `0` disables the cap. |
 | `WS_MAX_MESSAGE_BYTES` | `16777216` | Largest WebSocket message (16 MiB) accepted from DSH. Browser-to-DSH frames are bounded by uvicorn's own limit. |
@@ -296,10 +303,11 @@ uvicorn's access log so bearer tokens in URLs are not logged.
   unless `ALLOW_INSECURE_COOKIES=1` explicitly acknowledges plain-HTTP
   sessions.
 * **Origin-based CSRF protection only.** Cookie-auth mutations require a
-  same-origin `Origin`/`Referer`, and form signup/login reject a contradicting
-  origin when the browser sends one; there is no per-form CSRF token. Auth
-  routes have per-client rate limiting and login throttling, but the budget is
-  in-process (per replica) and keyed by the rightmost `X-Forwarded-For` value.
+  same-origin `Origin`/`Referer`, `POST /recreate` requires it on every call,
+  and form signup/login reject a contradicting origin when the browser sends
+  one; there is no per-form CSRF token. Auth routes have per-client rate
+  limiting and login throttling, but the budget is in-process (per replica)
+  and keyed on the socket peer unless `TRUSTED_PROXY_HOPS` is set.
 * **HTTP request bodies are buffered** up to `MAX_BODY_MB`; uploads are not
   streamed. Responses (including SSE) are streamed.
 * **Upstream cookies are not forwarded.** DSH cannot rotate its own
@@ -307,9 +315,14 @@ uvicorn's access log so bearer tokens in URLs are not logged.
   re-runs the handshake once and replays the request.
 * **Only DSH on `:3080` is proxied.** There is no dashboard/API-port split and
   no platform API key injection.
-* **SSO trusts a header.** With `AUTH_PROXY_HEADER` set, any client that can
-  reach the gateway Service directly can spoof the identity header. The gateway
-  cannot enforce the trust boundary itself: keep the Service ClusterIP and
-  reachable only through the authenticating proxy. The SSO exposure variant
-  ships a NetworkPolicy that restricts pod traffic to the proxy; without it
-  there is no mTLS or signed identity assertion.
+* **SSO trusts a header for the identity, not for the credential.** With
+  `AUTH_PROXY_HEADER` set, any client that can reach the gateway Service
+  directly can send the header. The claim binding bounds the damage: the
+  header is only honored for a claim this gateway minted (never for a
+  hand-applied or foreign claim), and reaching a sandbox still needs the
+  opaque session cookie the gateway issues after provisioning, so a leaked
+  DSH launch token is not a gateway credential. Keep the Service ClusterIP and reachable only
+  through the authenticating proxy anyway: the SSO exposure variant ships
+  NetworkPolicies that restrict pod traffic to the proxy (and oauth2-proxy
+  ingress to the Gateway implementation's namespace); without them there is no
+  mTLS or signed identity assertion.

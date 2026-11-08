@@ -115,14 +115,21 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 
 ## Security notes
 
-- AUTH_PROXY_HEADER is opt-in. Only enable it when the gateway Service is
-  reachable exclusively through the authenticating proxy; otherwise any client
-  can spoof X-Forwarded-User. The SSO variant's NetworkPolicy is required for
-  production, and `examples/dsh-agents-as-a-service/scripts/preflight-sso.sh`
+- AUTH_PROXY_HEADER is opt-in. The gateway only honors the identity header for
+  a claim it minted itself (the `aaas.example.com/token-sha256` marker); a
+  hand-applied or foreign claim is refused. It never rotates that marker. Still
+  enable SSO only when the gateway Service is reachable exclusively through the
+  authenticating proxy, and keep the SSO variant's NetworkPolicies for
+  production; `examples/dsh-agents-as-a-service/scripts/preflight-sso.sh`
   verifies the setup (Secrets, gateway env, TLS reference, placeholders, second
-  paths).
-- The example gateway reads the DSH launch token from pod logs. Treat pod logs
-  as sensitive and keep its RBAC namespace-scoped.
+  paths, all three policies).
+- The example gateway reads the DSH launch token from pod logs, and its RBAC
+  `pods`/`pods/log` grant is namespace-wide. Treat pod logs as sensitive and
+  keep that ServiceAccount out of sandboxes (`automountServiceAccountToken:
+  false`, enforced by `scripts/check-manifests.py`).
+- The auth rate limit keys on the socket peer by default; TRUSTED_PROXY_HOPS
+  declares how many proxies append to X-Forwarded-For. Never trust the header
+  without that declaration.
 - Browser sessions are opaque server-side ids held in gateway memory: they are
   revocable (logout/delete/recreate/expiry) but a gateway restart logs everyone
   out and horizontal scaling needs a shared store. Session cookies are never

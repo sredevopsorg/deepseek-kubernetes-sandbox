@@ -50,8 +50,17 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # The Gateway implementation's namespace ONLY.  An empty
+    # `namespaceSelector: {}` here would accept every namespace, and any pod in
+    # the cluster could then POST to oauth2-proxy with a forged
+    # X-Forwarded-User and be forwarded to the gateway as that user.
+    # The shipped default is the namespace Traefik commonly runs in; set it to
+    # whatever namespace your Gateway implementation actually uses and keep it
+    # non-empty. preflight-sso.sh fails on an empty selector.
     - from:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
           podSelector:
             matchLabels:
               app.kubernetes.io/name: traefik

@@ -63,8 +63,10 @@ nothing outside the cluster. Two **mutually exclusive** variants live under
 
 They are alternatives, not a stack: applying both creates a second path to the same gateway
 and defeats SSO. When SSO is enabled, the Service must stay ClusterIP and be reachable only
-through oauth2-proxy — otherwise any client can send `X-Forwarded-User` itself and be treated
-as that user. The gateway ignores the header unless `AUTH_PROXY_HEADER` is set. See the
+through oauth2-proxy — otherwise any client can send `X-Forwarded-User` itself. The gateway
+only honors that header for a claim it minted (the `aaas.example.com/token-sha256` marker),
+so a foreign or hand-applied claim is refused, and it ignores the header entirely unless
+`AUTH_PROXY_HEADER` is set. See the
 [exposure README](../manifests/exposure/README.md) and the
 [gateway README](../gateway/README.md#sso-opt-in).
 
@@ -161,8 +163,10 @@ for users whose claim no longer exists.
 ### Auth abuse controls and proxy limits
 
 Unauthenticated endpoints are throttled before the body is read: `AUTH_RATE_LIMIT` attempts per
-client per `AUTH_RATE_WINDOW` (defaults 30/60s; keyed on the rightmost `X-Forwarded-For` entry
-when present, else the peer address), answered with `429` + `Retry-After`. When
+client per `AUTH_RATE_WINDOW` (defaults 30/60s; keyed on the socket peer, or on
+`parts[-TRUSTED_PROXY_HOPS]` of `X-Forwarded-For` when that many proxies are declared in front of
+the gateway — the header is otherwise ignored, so a caller cannot rotate it for a fresh bucket),
+answered with `429` + `Retry-After`. When
 `SIGNUP_INVITE_CODE` is set, signup additionally requires a constant-time-matched code (form
 field or `X-Signup-Invite`) and answers `403` otherwise. Proxied traffic is capped per user
 (`MAX_IN_FLIGHT_PER_USER`, default 32 concurrent HTTP requests + WebSockets: `503` for HTTP,
@@ -344,6 +348,11 @@ The gateway runs with a namespace-scoped ServiceAccount (`manifests/50-gateway.y
 | `""` (core) | `pods` | `get`, `list` | resolve the pod behind a sandbox |
 | `""` (core) | `pods/log` | `get` | launch-token handshake |
 
+The `pods`/`pods/log` grant is namespace-wide: it covers every tenant's pod. The gateway's
+ServiceAccount is therefore tenant-wide secret material and must never be mounted into a
+sandbox; `10-sandboxtemplate.yaml` pins `automountServiceAccountToken: false` and
+`scripts/check-manifests.py` rejects a SandboxTemplate without it.
+
 Notes and limits:
 
 - **Pod logs are sensitive.** They contain the DSH launch token and possibly model output. The
@@ -408,12 +417,12 @@ Notes and limits:
 | Kubernetes API error (API down or throttled, missing RBAC verb) | HTTP `503` + `Retry-After`; WebSocket close `1011` | One credential-free log line with the API `status`/`reason`, plus a fixed body; the Kubernetes `Status` payload is never proxied. Check the ServiceAccount Role and the API server — RBAC is evaluated per request, so a Role fix needs no restart |
 | Gateway restart | Idle sandboxes stop suspending; handshake cache and browser sessions lost | Idle clocks and handshake cache rebuild lazily; sessions do not, so browsers must sign in again after a rollout. Use a shared session store for production |
 | Gateway configured `COOKIE_SECURE=false` without `ALLOW_INSECURE_COOKIES=1` | Gateway pod exits at startup / `CrashLoopBackOff` | Intentional guard against an insecure cookie on an HTTPS deployment; set `ALLOW_INSECURE_COOKIES=1` only for the local plain-HTTP demo, or set `COOKIE_SECURE=true` |
-| Auth rate limit hit | `429` + `Retry-After` on signup/login | Per-client in-memory bucket (`AUTH_RATE_LIMIT`/`AUTH_RATE_WINDOW`); wait for the window or tune it. Behind a proxy, keying uses the rightmost `X-Forwarded-For` entry |
+| Auth rate limit hit | `429` + `Retry-After` on signup/login | Per-client in-memory bucket (`AUTH_RATE_LIMIT`/`AUTH_RATE_WINDOW`); wait for the window or tune it. Behind a proxy, set `TRUSTED_PROXY_HOPS` so the key is the real client, not the peer proxy address |
 | Signup invite missing/wrong | `403` before the claim is created | `SIGNUP_INVITE_CODE` is set; send the `invite` form field or `X-Signup-Invite` header |
 | Per-user concurrency cap hit | HTTP `503` + `Retry-After`, or WebSocket close `1011` | `MAX_IN_FLIGHT_PER_USER` protects the single gateway from one busy tenant; reduce concurrency or raise the cap deliberately. These are per replica |
 | Oversized WebSocket message from DSH | Connection closes | `WS_MAX_MESSAGE_BYTES` (16 MiB) is enforced on upstream messages; raise it only if DSH legitimately needs larger frames |
 | Session expiry / revocation | `401` (HTTP) or close `4401` (WebSocket) | Expected after logout, user delete, `/recreate`, `COOKIE_MAX_AGE` expiry or a gateway restart; sign in again |
-| SSO variant applied without its NetworkPolicy (or with an Ingress) | Gateway accepts spoofed `X-Forwarded-User` | Demo-only configuration; keep `75-networkpolicies.yaml`, remove the second path, and run `scripts/preflight-sso.sh`, which fails when either policy is missing |
+| SSO variant applied without its NetworkPolicies (or with an Ingress) | Gateway accepts spoofed `X-Forwarded-User` | Demo-only configuration; keep all three policies in `75-networkpolicies.yaml`, remove the second path, and run `scripts/preflight-sso.sh`, which fails when any shipped policy is missing or `oauth2-proxy-ingress` accepts every namespace |
 | Browser aborts a request (tab reload, back navigation) during a slow wake or handshake | No response reaches the client; nothing appears in the access log | If the abort lands before the response starts, the body read raises `ClientDisconnect` and the app answers `499` (`CLIENT_CLOSED_REQUEST`), which cannot reach the departed peer. Nothing reached DSH, no ERROR traceback is logged, and the in-flight slot is released. A request already streaming ends with its upstream status. |
 | DSH auth cookie expired mid-session | Proxy `401` once, then recovers | Gateway refreshes the handshake once |
 | Upstream pod name changed after resume | Cached cookie keyed by old pod UID is useless | Cache is invalidated on suspend; next request re-handshakes |
