@@ -105,9 +105,11 @@ workflows with a literal version.
 - Repository-only change at the same DSH ref: keep `DSH_VERSION` and `DSH_COMMIT`,
   set `RELEASE_REVISION=r(N+1)`.
 - Base images (Node and Python) are bumped by hand: change the tag *and* the
-  `@sha256:` digest in `versions.env` together, then run `make check` and a build.
-  There is deliberately no automated digest refresh, because a silent base-image
-  change is exactly what digest pinning exists to prevent.
+  `@sha256:` digest in `versions.env` together with the matching `ARG ...=`
+  default in the root `Dockerfile` or the example gateway's `Dockerfile`, then
+  run `make check` and a build. There is deliberately no automated digest
+  refresh, because a silent base-image change is exactly what digest pinning
+  exists to prevent.
 
 ## Release checklist
 

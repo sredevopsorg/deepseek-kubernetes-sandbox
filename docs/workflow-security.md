@@ -18,7 +18,7 @@ notes in [SECURITY.md](../SECURITY.md) and the release procedure in
 | Download integrity | `ci.yaml`, `release.yaml` | actionlint, hadolint and git-cliff are downloaded with `curl --proto '=https'` and verified against a pinned SHA-256 with `sha256sum -c` before execution. |
 | Cluster manifest integrity | `ci-manifests.yaml`, `e2e-kind.yaml` | The agent-sandbox and Gateway API release manifests are downloaded and checked against the `*_MANIFEST_SHA256` pins in [versions.env](../versions.env) before `kubectl apply`. |
 | Log and artifact hygiene | `ci-image.yaml`, `e2e-kind.yaml` | Pod logs are truncated and token material is redacted before logs are printed or diagnostic files are uploaded as artifacts. |
-| Supply-chain monitoring | Repository settings | Dependabot (GitHub Actions, pip, Docker), CodeQL advanced setup and the dependency-review action run on every applicable change. CODEOWNERS covers the whole repository, including `.github/workflows/`. |
+| Supply-chain monitoring | Repository settings | Dependabot (GitHub Actions and pip; base-image digests are manual) updates pins weekly and opens security updates in their own group. CodeQL advanced setup and the dependency-review action run on every applicable change. CODEOWNERS covers the whole repository, including `.github/workflows/`. |
 
 ## Maintaining the pins
 
@@ -29,6 +29,12 @@ notes in [SECURITY.md](../SECURITY.md) and the release procedure in
   `AGENT_SANDBOX_MANIFEST_SHA256` or `GATEWAY_API_MANIFEST_SHA256` together with
   the corresponding version, otherwise CI fails the digest check by design.
 - GitHub Actions pins are updated by Dependabot; never replace a SHA with a tag.
+- Dependabot opens security updates in a dedicated group so a fix is not
+  bundled with routine weekly bumps. Every update PR still needs a review.
+- Container base images are not managed by Dependabot: its Docker parser
+  ignores `FROM ${ARG}` references, and [versioning.md](versioning.md) keeps
+  digest refreshes manual. Bump the image and digest in `versions.env` and the
+  matching Dockerfile ARG default together.
 
 ## Audit record (2026-10-30)
 
