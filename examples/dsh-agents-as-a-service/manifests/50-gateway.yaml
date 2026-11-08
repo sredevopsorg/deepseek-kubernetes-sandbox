@@ -229,6 +229,10 @@ spec:
           # from the Service endpoints instead of answering 500s while still
           # looking alive. Keep readiness API-aware and liveness cluster-free:
           # a transient API outage must not restart the process.
+          #
+          # /readyz may take READY_CHECK_TIMEOUT + 1s (3s by default), and the
+          # first call also loads the in-cluster client: the kubelet default
+          # timeout of 1s fails that first probe, so allow 4s.
           readinessProbe:
             httpGet:
               path: /readyz
@@ -236,6 +240,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 3
+            timeoutSeconds: 4
           livenessProbe:
             httpGet:
               path: /healthz
