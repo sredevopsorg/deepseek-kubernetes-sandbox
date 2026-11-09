@@ -27,9 +27,12 @@ before changing anything; it encodes the conventions the CI enforces.
 3. Never commit a real secret or usable credential. Secret-shaped YAML lives in
    *.yaml.example files; keys are documented in .env.sample only.
 4. Every manifest under examples/*/manifests/ must parse and pass a server-side
-   dry-run in CI. Keep manifests numbered (NN-*.yaml), and keep exposure
-   variants under manifests/exposure/<variant>/ documented by the single
-   manifests/exposure/README.md (variants are mutually exclusive).
+   dry-run in CI; kustomization files and `patches/` fragments are skipped there
+   because they are build inputs, not objects. Keep manifests numbered
+   (NN-*.yaml, under `manifests/` or `manifests/base/`), keep exposure variants
+   under manifests/exposure/<variant>/ documented by the single
+   manifests/exposure/README.md (variants are mutually exclusive), and make every
+   kustomization root render with `kubectl kustomize <root>`.
 5. Do not edit CHANGELOG.md, and do not move or delete published tags.
    Releasing is documented in docs/versioning.md.
 6. Keep the gateway HTTP/WebSocket contract stable unless the change is
@@ -71,7 +74,7 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 | Change | Minimum verification |
 | --- | --- |
 | Documentation only | make check; verify relative links |
-| Example manifest | make check; kubectl apply --dry-run=server in CI |
+| Example manifest | make check; kubectl apply --dry-run=server in CI; `kubectl kustomize <root>` for a Kustomize tree |
 | Optional hardening (gVisor, nodeSelector, NetworkPolicy, provider keys, failed-Pod recovery) | make check; server dry-run in CI; manual verification on a capable cluster |
 | Gateway code | make test; make lint; add or update tests |
 | Dockerfile / versions.env | make check; the CI `build-amd64` job (`ci-image.yaml`) builds and smoke-tests the image on the PR; run `make image` locally only when you need the image |
@@ -105,10 +108,12 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 ## Adding an example
 
 1. Read docs/examples.md and examples/README.md.
-2. Create examples/<name>/ with README.md, manifests/NN-*.yaml, optional
+2. Create examples/<name>/ with README.md, manifests/NN-*.yaml (plain layout) or
+   manifests/base/NN-*.yaml plus kustomization.yaml (Kustomize layout), optional
    manifests/optional/<feature>/ or manifests/exposure/<variant>/ (each with a
-   README), optional components with their own Dockerfile/README/tests, and
-   scripts/ (executable, idempotent, self-cleaning).
+   README and its own kustomization.yaml), optional components with their own
+   Dockerfile/README/tests, and scripts/ (executable, idempotent,
+   self-cleaning).
 3. Publish component images under <registry>/<owner>/<repo>/<example>/<component>.
 4. Add the example to examples/README.md; scripts/check-examples.sh enforces
    the layout.

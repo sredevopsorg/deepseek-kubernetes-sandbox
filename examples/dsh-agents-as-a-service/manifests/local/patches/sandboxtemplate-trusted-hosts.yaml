@@ -1,0 +1,29 @@
+# OPTIONAL: set DSH_TRUSTED_HOSTS on the sandbox pods for a CUSTOM exposure
+# that is not one of the manifests/exposure/ overlays.
+#
+# WARNING: the exposure overlays already copy the Ingress host / HTTPRoute
+# hostname into this value with a kustomize replacement. Enable this patch only
+# for a custom setup (for example a fixed host behind port-forward or your own
+# ingress); otherwise two transforms write the same field and the result is
+# order-dependent. A wrong value makes DSH reject /api requests.
+#
+# TODO: replace the placeholder with the public host browsers use
+# (comma-separated if there is more than one). The base declares
+# DSH_TRUSTED_HOSTS at env index 2; if you edit the base env list, update the
+# index here.
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/sandboxtemplate-trusted-hosts.yaml
+#       target:
+#         group: extensions.agents.x-k8s.io
+#         version: v1beta1
+#         kind: SandboxTemplate
+#         name: dsh-web
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: replace
+  path: /spec/podTemplate/spec/containers/0/env/2/value
+  value: dsh.example.com

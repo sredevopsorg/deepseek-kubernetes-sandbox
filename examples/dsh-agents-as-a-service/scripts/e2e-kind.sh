@@ -30,7 +30,7 @@
 # The DSH Web container port (3080) is in-cluster only and is never bound
 # on the local host.
 set -euo pipefail
-# Example root: paths below are manifests/... and gateway/... from here.
+# Example root: paths below are manifests/base/... and gateway/... from here.
 cd "$(dirname "$0")/.."
 
 NS=dsh-demo
@@ -44,14 +44,14 @@ cleanup() {
 trap cleanup EXIT
 
 echo "=== 1. install prereqs (throwaway key) + template + warm pool"
-kubectl apply -f manifests/00-prereqs.yaml
+kubectl apply -f manifests/base/00-prereqs.yaml
 # The provider key is never committed; generate a throwaway value.
 kubectl -n "$NS" delete secret dsh-provider-keys --ignore-not-found >/dev/null
 kubectl -n "$NS" create secret generic dsh-provider-keys \
   --from-literal=DEEPSEEK_API_KEY="sk-test-$(openssl rand -hex 16)"
 # dsh-provider-keys-extra is intentionally absent: the template's optional
 # envFrom reference must not block the warm pool.
-kubectl apply -f manifests/10-sandboxtemplate.yaml -f manifests/20-sandboxwarmpool.yaml
+kubectl apply -f manifests/base/10-sandboxtemplate.yaml -f manifests/base/20-sandboxwarmpool.yaml
 for _ in $(seq 1 120); do
   READY=$(kubectl -n "$NS" get sandboxes -l agents.x-k8s.io/warm-pool-sandbox \
     -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep -c True || true)
@@ -63,7 +63,7 @@ pass "warm pool: 2 spares Ready"
 
 echo "=== 2. signup via claim (warm adoption)"
 T0=$(date +%s)
-kubectl apply -f manifests/30-claim-alice.yaml
+kubectl apply -f manifests/base/30-claim-alice.yaml
 kubectl -n "$NS" wait sandboxclaim dsh-alice --for=condition=Ready --timeout=60s
 ELAPSED=$(( $(date +%s) - T0 ))
 SB=$(kubectl -n "$NS" get sandboxclaim dsh-alice -o jsonpath='{.status.sandbox.name}')
@@ -109,7 +109,7 @@ WS_MARKER=$(kubectl -n "$NS" exec "$POD" -- cat /workspace/marker.txt)
 pass "resumed: agent workspace survived on the PVC subPath"
 
 echo "=== 6. injection policy rejects env-carrying claims"
-kubectl apply -f manifests/40-claim-rejected.yaml
+kubectl apply -f manifests/base/40-claim-rejected.yaml
 # Wait for the POSITIVE rejection signal, not merely "not bound yet".
 REASON=""
 for _ in $(seq 1 12); do
@@ -122,7 +122,7 @@ done
   || fail "claim was not rejected (Ready reason='$REASON')"
 BOUND=$(kubectl -n "$NS" get sandboxclaim dsh-mallory -o jsonpath='{.status.sandbox.name}' 2>/dev/null || true)
 [ -z "$BOUND" ] || fail "env-carrying claim unexpectedly bound sandbox '$BOUND'"
-kubectl delete -f manifests/40-claim-rejected.yaml >/dev/null
+kubectl delete -f manifests/base/40-claim-rejected.yaml >/dev/null
 pass "claim rejected with EnvVarsInjectionRejected and never bound"
 
 echo "=== 7. gateway: browser signup, proxy, idle-suspend, wake-on-connect"
@@ -135,9 +135,9 @@ if command -v docker >/dev/null && command -v kind >/dev/null; then
   # makes the node use the loaded one.
   docker build -q -t "$GW_LOCAL_IMAGE" gateway/ >/dev/null
   kind load docker-image "$GW_LOCAL_IMAGE" --name "$KIND_CLUSTER" >/dev/null
-  kubectl apply -f manifests/50-gateway.yaml
+  kubectl apply -f manifests/base/50-gateway.yaml
   kubectl -n "$NS" set image deploy/dsh-gateway gateway="$GW_LOCAL_IMAGE"
-  # Override the demo timeouts from manifests/50-gateway.yaml (360/240) with the
+  # Override the demo timeouts from manifests/base/50-gateway.yaml (360/240) with the
   # gateway's working-tree defaults, so idle-suspend and wake-on-connect are
   # exercised in seconds instead of minutes.
   kubectl -n "$NS" set env deploy/dsh-gateway IDLE_TIMEOUT=60 WAKE_TIMEOUT=120

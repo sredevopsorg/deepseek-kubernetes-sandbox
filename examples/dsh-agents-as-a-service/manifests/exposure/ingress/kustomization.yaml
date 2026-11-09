@@ -1,0 +1,78 @@
+# Ingress exposure overlay for the DSH "Agents as a Service" platform.
+#
+# Includes the portable base (manifests/base/) and adds the plain Traefik
+# Ingress (no SSO) plus its required NetworkPolicy. Apply with:
+#
+#   kubectl apply -k manifests/exposure/ingress
+#
+# The overlay keeps the gateway and the sandbox template consistent with the
+# Ingress host, so there is no manual `kubectl set env` step:
+#   - gateway Deployment: COOKIE_SECURE="true" and ALLOW_INSECURE_COOKIES
+#     removed (the Ingress serves HTTPS, so the session cookie must be Secure);
+#   - the Ingress rule host is copied into the Ingress TLS SAN and into the
+#     SandboxTemplate DSH_TRUSTED_HOSTS env.
+# The single place to change the public host is 60-ingress.yaml.
+#
+# Serving plain HTTP (no TLS): drop the `tls:` block from 60-ingress.yaml AND
+# the Ingress TLS replacement target below, and set COOKIE_SECURE back to
+# "false" and replace the ALLOW_INSECURE_COOKIES `$patch: delete` entry with
+# `value: "1"` here. That is for the local demo only.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - 60-ingress.yaml
+  - 61-networkpolicy.yaml
+
+patches:
+  # HTTPS exposure. The base keeps COOKIE_SECURE=false + ALLOW_INSECURE_COOKIES=1
+  # for the plain-HTTP port-forward demo; env lists merge by name, so this
+  # touches only those two variables.
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: dsh-gateway
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: dsh-gateway
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: COOKIE_SECURE
+                    value: "true"
+                  - name: ALLOW_INSECURE_COOKIES
+                    $patch: delete
+
+replacements:
+  # The Ingress rule host is the single source of truth for the public host.
+  - source:
+      group: networking.k8s.io
+      version: v1
+      kind: Ingress
+      name: dsh-gateway
+      fieldPath: spec.rules.0.host
+    targets:
+      # The TLS certificate SAN must match the rule host (drop this target when
+      # you remove the `tls:` block for plain HTTP).
+      - select:
+          group: networking.k8s.io
+          version: v1
+          kind: Ingress
+          name: dsh-gateway
+        fieldPaths:
+          - spec.tls.0.hosts.0
+      # DSH Host/Origin fence: DSH must trust the host the browser uses on /api.
+      - select:
+          group: extensions.agents.x-k8s.io
+          version: v1beta1
+          kind: SandboxTemplate
+          name: dsh-web
+        fieldPaths:
+          - spec.podTemplate.spec.containers.[name=dsh-web].env.[name=DSH_TRUSTED_HOSTS].value

@@ -19,11 +19,11 @@ This document covers four **opt-in** controls plus failed-Pod recovery:
 
 | Setting | Where it lives | What it changes |
 | --- | --- | --- |
-| gVisor | commented `runtimeClassName` in the SandboxTemplates and Deployments | puts DSH and/or the gateway in a userspace kernel; required for untrusted agents in production |
-| nodeSelector | commented `nodeSelector` in the same files | pins pods to a chosen node pool |
-| NetworkPolicy | `manifests/optional/network-policy/`, `manifests/exposure/*/`, plus the gateway egress recipe | limits sandbox, gateway and proxy connectivity; the sandbox and gateway-egress policies are required for production |
+| gVisor | [`manifests/local/patches/`](../manifests/local/patches/) (commented out by default) | puts DSH and/or the gateway in a userspace kernel; required for untrusted agents in production |
+| nodeSelector | the local overlay's node-selector patches | pins pods to a chosen node pool |
+| NetworkPolicy | `manifests/optional/network-policy/` (Kustomize Component), `manifests/exposure/*/`, plus the gateway egress recipe | limits sandbox, gateway and proxy connectivity; the sandbox and gateway-egress policies are required for production |
 | Provider keys | optional `dsh-provider-keys-extra` Secret | injects extra provider API keys into every sandbox |
-| Failed-Pod recovery | commented `failedPodPolicy` in the SandboxTemplates | replaces a Failed sandbox Pod instead of parking the sandbox |
+| Failed-Pod recovery | the local overlay's `sandboxtemplate-failed-pod-policy.yaml` patch | replaces a Failed sandbox Pod instead of parking the sandbox |
 
 Each setting is independent. Enable only what the cluster supports and test the
 walkthrough after each change.
@@ -58,13 +58,19 @@ PodSpec; no CRD change is involved.
 
 ### Enable it
 
-**Fresh install:** uncomment `runtimeClassName: gvisor` before applying:
-
-- [`manifests/10-sandboxtemplate.yaml`](../manifests/10-sandboxtemplate.yaml)
-- [`manifests/50-gateway.yaml`](../manifests/50-gateway.yaml)
-- [`manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml`](../manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml)
-  (only with the SSO variant)
-- [minimal template](../../minimal-single-tenant/manifests/10-sandboxtemplate.yaml)
+**Fresh install (Kustomize):** enable the runtime-class patches in
+[`manifests/local/`](../manifests/local/README.md): uncomment the entries for
+`patches/sandboxtemplate-runtime-class.yaml` and
+`patches/gateway-runtime-class.yaml` in `manifests/local/kustomization.yaml`,
+then `kubectl apply -k manifests/local`. Only with the SSO variant, also
+uncomment `runtimeClassName`/`nodeSelector` in
+[`manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml`](../manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml).
+The same fields ship commented out in
+[`manifests/base/10-sandboxtemplate.yaml`](../manifests/base/10-sandboxtemplate.yaml)
+and [`manifests/base/50-gateway.yaml`](../manifests/base/50-gateway.yaml) for a
+plain-`kubectl` install; use one mechanism, not both. The
+[minimal template](../../minimal-single-tenant/manifests/10-sandboxtemplate.yaml)
+is unchanged.
 
 **Existing install:** a template edit does not update existing Sandboxes, and
 warm-pool spares use `OnReplenish`, so patch explicitly. Plan a maintenance
@@ -181,7 +187,11 @@ kubectl get nodes --show-labels
 
 ### Enable it
 
-Uncomment and replace the placeholder before a fresh apply:
+**Fresh install (Kustomize):** edit the placeholder in
+`manifests/local/patches/sandboxtemplate-node-selector.yaml` (and
+`gateway-node-selector.yaml` for the gateway), uncomment the matching entries in
+`manifests/local/kustomization.yaml`, then `kubectl apply -k manifests/local`.
+The base manifests keep the field commented out for a plain-`kubectl` install:
 
 ```yaml
       nodeSelector:
@@ -264,8 +274,8 @@ selects every Sandbox pod through the agent-sandbox tracking label
 claimed sandboxes without recreating them.
 
 ```bash
-kubectl apply -f manifests/optional/network-policy/
-kubectl delete -f manifests/optional/network-policy/   # rollback
+kubectl apply -k manifests/optional/network-policy/
+kubectl delete -k manifests/optional/network-policy/   # rollback
 ```
 
 What it allows:
@@ -604,8 +614,10 @@ for sb in $(kubectl -n dsh-demo get sandboxes \
 done
 ```
 
-For a fresh install, uncomment `failedPodPolicy: Recreate` in the template
-instead.
+For a fresh install, enable
+`manifests/local/patches/sandboxtemplate-failed-pod-policy.yaml` in
+[`manifests/local/kustomization.yaml`](../manifests/local/README.md) instead of
+patching live objects.
 
 ### Verify
 
@@ -754,9 +766,11 @@ make test           # only when the gateway code changed
 shellcheck examples/dsh-agents-as-a-service/scripts/*.sh
 ```
 
-CI additionally parses every manifest and runs `kubectl apply
---dry-run=server` against the real agent-sandbox CRDs. The weekly kind e2e
-runs the base walkthrough; it also proves the optional extra Secret may be
+CI parses every full manifest object and runs `kubectl apply --dry-run=server`
+against the real agent-sandbox CRDs; kustomization roots and `patches/`
+fragments are build inputs and are skipped there, so render every root locally
+with `kubectl kustomize manifests/<root>` when you change one. The weekly kind
+e2e runs the base walkthrough; it also proves the optional extra Secret may be
 absent.
 
 Manual checks, on a cluster with the relevant CNI/runtime:
@@ -789,9 +803,9 @@ Manual checks, on a cluster with the relevant CNI/runtime:
 
 | Layer | Rollback |
 | --- | --- |
-| Sandbox policy | `kubectl delete -f manifests/optional/network-policy/` |
+| Sandbox policy | `kubectl delete -k manifests/optional/network-policy/` |
 | Gateway egress policy | `kubectl delete networkpolicy dsh-gateway-egress -n dsh-demo` (do not leave it half-configured) |
-| Exposure policy | delete the exposure variant directory |
+| Exposure policy | delete the variant's plain files, e.g. `kubectl delete -f manifests/exposure/ingress/60-ingress.yaml -f manifests/exposure/ingress/61-networkpolicy.yaml` (do not `delete -k`, it also removes the base) |
 | gVisor | patch `runtimeClassName: null`, recreate pods |
 | nodeSelector | patch `nodeSelector: null`, recreate pods |
 | Provider keys | delete the extra Secret or a key, recreate pods |

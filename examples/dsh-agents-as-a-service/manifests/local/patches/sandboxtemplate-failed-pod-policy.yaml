@@ -1,0 +1,24 @@
+# OPTIONAL: recover from a Failed sandbox Pod automatically. The base default,
+# Retain, leaves the Failed Pod in place and surfaces Finished=True on the
+# Sandbox until a human intervenes. Recreate deletes the Failed Pod and starts
+# a replacement with the same Sandbox identity and PVCs, backing off on
+# repeated failures.
+#
+# Requires agent-sandbox v1.0.8+. Existing Sandboxes keep their own stamped
+# policy; patch/recreate them separately.
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/sandboxtemplate-failed-pod-policy.yaml
+#       target:
+#         group: extensions.agents.x-k8s.io
+#         version: v1beta1
+#         kind: SandboxTemplate
+#         name: dsh-web
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: add
+  path: /spec/failedPodPolicy
+  value: Recreate

@@ -1,0 +1,22 @@
+# OPTIONAL: change the per-user workspace PVC size (the base requests 5Gi).
+#
+# TODO: replace the placeholder with the size you want. PVCs cannot shrink;
+# growing works only on a StorageClass with allowVolumeExpansion: true. The
+# template value applies to PVCs created for new sandboxes; existing PVCs keep
+# their size (grow them separately if the StorageClass allows it).
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/sandboxtemplate-storage-size.yaml
+#       target:
+#         group: extensions.agents.x-k8s.io
+#         version: v1beta1
+#         kind: SandboxTemplate
+#         name: dsh-web
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: replace
+  path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+  value: 10Gi

@@ -153,25 +153,28 @@ spec:
             # Secure cookie is never sent over HTTP, so login would silently
             # fail. The gateway REFUSES TO START with COOKIE_SECURE=false
             # unless ALLOW_INSECURE_COOKIES=1 acknowledges that the session
-            # travels in clear text, so the base demo sets both. HTTPS
-            # deployments (the ingress/ variant with TLS, or gateway-api-sso/,
-            # which terminates TLS at the Gateway) MUST set this to "true".
+            # travels in clear text, so the base demo sets both. The exposure
+            # overlays (ingress/ with TLS, or gateway-api-sso/, which terminates
+            # TLS at the Gateway) set this to "true" in their kustomization
+            # patch.
             - name: COOKIE_SECURE
               value: "false"
             # Explicit acknowledgement that this base demo serves plain HTTP.
             # Required when COOKIE_SECURE=false (the gateway exits at startup
-            # otherwise); ignored once COOKIE_SECURE=true, so HTTPS installs
-            # should drop it. Never set this on an internet-facing deployment.
+            # otherwise); ignored once COOKIE_SECURE=true, so the exposure
+            # overlays delete it. Never set this on an internet-facing
+            # deployment.
             - name: ALLOW_INSECURE_COOKIES
               value: "1"
             # SSO IS OPT-IN AND DISABLED HERE. With AUTH_PROXY_HEADER unset the
             # gateway trusts only its own bearer/session auth and ignores every
-            # identity header. Enable it ONLY behind
-            # manifests/exposure/gateway-api-sso/, where oauth2-proxy is the
-            # sole route to this Service: set it to X-Forwarded-User, keep the
-            # Service ClusterIP and reachable only through the proxy, and
-            # terminate TLS in front of the gateway. Otherwise anyone who can
-            # reach :8080 can impersonate any user by sending that header.
+            # identity header. Enable it ONLY by applying
+            # manifests/exposure/gateway-api-sso/, whose kustomization sets this
+            # to X-Forwarded-User: there oauth2-proxy is the sole route to this
+            # Service, so keep the Service ClusterIP and reachable only through
+            # the proxy, and terminate TLS in front of the gateway. Otherwise
+            # anyone who can reach :8080 can impersonate any user by sending
+            # that header.
             # - name: AUTH_PROXY_HEADER
             #   value: X-Forwarded-User
             # Brute-force / abuse throttle for the unauthenticated auth
@@ -186,7 +189,8 @@ spec:
             # per-process bucket, so it is not a substitute for an ingress
             # rate limit.
             # - name: TRUSTED_PROXY_HOPS
-            #   value: "1"   # unset/0 here: this Service is a bare ClusterIP
+            #   value: "2"   # unset/0 here: this Service is a bare ClusterIP;
+            #                # gateway-api-sso/ sets 2 (Traefik + oauth2-proxy)
             - name: AUTH_RATE_LIMIT
               value: "30"
             # Window in seconds for AUTH_RATE_LIMIT (default 60).

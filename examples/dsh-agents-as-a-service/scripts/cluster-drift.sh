@@ -2,7 +2,8 @@
 # Read-only drift check: compare the live platform with the repo's expectations.
 #
 # The repo manifests are portable and cluster-specific values belong in
-# manifests/local/values.env (applied with scripts/local-overlay.sh). This
+# manifests/local/ (a static Kustomize overlay applied with
+# `kubectl apply -k manifests/local`). This
 # script flags the two failure modes that matter:
 #
 #   DRIFT - live state contradicts a repo requirement (security setting, image
@@ -12,7 +13,7 @@
 #           platform still works (replicas, storage class/size, optional
 #           policies, released PVs).
 #   INFO  - a local override that is expected (gVisor, nodeSelector, affinity)
-#           and should be recorded in manifests/local/values.env.
+#           and should be recorded in manifests/local/patches/.
 #
 # It never changes the cluster. Run it from the repository checkout:
 #   examples/dsh-agents-as-a-service/scripts/cluster-drift.sh
@@ -85,7 +86,7 @@ while IFS= read -r name; do
   if [ "$name" = "$TEMPLATE" ]; then
     pass "SandboxTemplate $TEMPLATE exists (repo blueprint)"
   else
-    drift "SandboxTemplate $name is not in the repo (untracked hand-made template; fold it into $TEMPLATE via manifests/local/)"
+    drift "SandboxTemplate $name is not in the repo (untracked hand-made template; fold it into $TEMPLATE via manifests/local/patches/)"
   fi
 done <<<"$TEMPLATE_LIST"
 
@@ -109,7 +110,7 @@ if printf '%s\n' "$TEMPLATE_LIST" | grep -qxF "$TEMPLATE"; then
   for field in runtimeClassName 'nodeSelector' 'affinity'; do
     value=$(tpl "{.spec.podTemplate.spec.$field}")
     if [ -n "$value" ]; then
-      info "$TEMPLATE has a local scheduling/runtime override: $field=$value (record it in manifests/local/values.env)"
+      info "$TEMPLATE has a local scheduling/runtime override: $field=$value (record it in manifests/local/patches/)"
     fi
   done
 
@@ -172,7 +173,7 @@ if "${KUBECTL[@]}" -n "$NS" get sandboxwarmpool dsh-pool >/dev/null 2>&1; then
   if [ "$POOL_TEMPLATE" = "$TEMPLATE" ]; then
     pass "warm pool dsh-pool references $TEMPLATE"
   else
-    drift "warm pool dsh-pool references '$POOL_TEMPLATE', not '$TEMPLATE' (re-applying manifests/20-sandboxwarmpool.yaml would switch pools)"
+    drift "warm pool dsh-pool references '$POOL_TEMPLATE', not '$TEMPLATE' (re-applying manifests/base/20-sandboxwarmpool.yaml would switch pools)"
   fi
   POOL_REPLICAS=$("${KUBECTL[@]}" -n "$NS" get sandboxwarmpool dsh-pool -o jsonpath='{.spec.replicas}')
   POOL_READY=$("${KUBECTL[@]}" -n "$NS" get sandboxwarmpool dsh-pool -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)

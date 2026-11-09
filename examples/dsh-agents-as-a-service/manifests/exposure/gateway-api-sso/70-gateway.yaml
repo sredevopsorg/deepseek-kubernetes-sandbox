@@ -1,8 +1,17 @@
 # Browser entry point (TLS) for the gateway-api-sso variant: terminates TLS
-# for dsh-demo.example.com and routes through 71-httproute.yaml to
-# oauth2-proxy, which authenticates the browser before the gateway.
-# Mutually exclusive with ../../ingress/ (see ../../README.md). The
-# "dsh-demo-tls" Secret comes from 74-tls-secret.yaml.example.
+# for the public host and routes through 71-httproute.yaml to oauth2-proxy,
+# which authenticates the browser before the gateway.
+#
+# Apply the whole variant with one command from the example root:
+#
+#   kubectl apply -k manifests/exposure/gateway-api-sso
+#
+# The kustomization.yaml next to this file includes ../../base, enables SSO on
+# the gateway Deployment, keeps DSH_TRUSTED_HOSTS in sync with the HTTPRoute
+# hostname and applies 75-networkpolicies.yaml, so no manual `kubectl set env`
+# is needed. This variant is MUTUALLY EXCLUSIVE with ../ingress/ (see
+# ../README.md). The "dsh-demo-tls" Secret comes from
+# 74-tls-secret.yaml.example.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:

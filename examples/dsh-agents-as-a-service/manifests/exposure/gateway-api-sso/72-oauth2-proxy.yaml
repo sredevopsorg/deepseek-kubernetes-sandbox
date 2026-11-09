@@ -4,23 +4,28 @@
 # (restricted to a configured organization), then forwards the request to
 # the dsh-gateway Service with the authenticated identity in X-Forwarded-User
 # (plus X-Auth-Request-* via --set-xauthrequest). The gateway trusts that
-# header only when AUTH_PROXY_HEADER is set on its Deployment.
+# header only because this variant's kustomization.yaml sets
+# AUTH_PROXY_HEADER=X-Forwarded-User on its Deployment.
 #
-# ENABLING SSO TAKES BOTH SIDES (see ../../../exposure/README.md):
-#   1. Set AUTH_PROXY_HEADER=X-Forwarded-User on deploy/dsh-gateway, otherwise
-#      the gateway ignores the header and the login is cosmetic:
-#        kubectl -n dsh-demo set env deploy/dsh-gateway \
-#          AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true
-#   2. Make dsh-gateway reachable ONLY through this proxy: keep the Service
-#      ClusterIP, route browser traffic through 71-httproute.yaml, and do not
-#      apply ../ingress/ (or anything else that reaches the gateway). A
-#      client that can reach dsh-gateway:8080 can spoof X-Forwarded-User and
-#      impersonate any user.
+# SSO IS ENABLED BY THE OVERLAY, not by hand (see ../README.md): applying
+#
+#   kubectl apply -k manifests/exposure/gateway-api-sso
+#
+# includes ../../base, patches the gateway Deployment (AUTH_PROXY_HEADER,
+# COOKIE_SECURE="true", TRUSTED_PROXY_HOPS="2", ALLOW_INSECURE_COOKIES
+# removed), keeps DSH_TRUSTED_HOSTS in sync with the HTTPRoute hostname and
+# applies 75-networkpolicies.yaml. Do not run a manual `kubectl set env`.
+#
+# The gateway must be reachable ONLY through this proxy: keep the Service
+# ClusterIP, route browser traffic through 71-httproute.yaml, and do not
+# apply ../ingress/ (or anything else that reaches the gateway). A client that
+# can reach dsh-gateway:8080 can spoof X-Forwarded-User and impersonate any
+# user.
 #
 # 75-networkpolicies.yaml enforces that boundary at the network layer: the
 # gateway accepts traffic only from oauth2-proxy pods, oauth2-proxy only from
 # the Gateway implementation, and oauth2-proxy egress is limited to DNS,
-# public HTTPS and the gateway. Apply it with this variant.
+# public HTTPS and the gateway. It is part of this variant.
 #
 # TLS terminates at the Gateway listener (70-gateway.yaml); keep
 # --cookie-secure=true and COOKIE_SECURE=true on the gateway.
@@ -30,6 +35,11 @@
 # index, so the tag can never be moved under us. Credentials come from the
 # "oauth2-proxy" Secret (see 73-oauth2-proxy-secret.yaml.example); this
 # manifest never carries secrets.
+#
+# Placeholders that remain in this file: the GitHub organization
+# (--github-org) and the public callback host (--redirect-url). Replace them
+# before applying; the committed *.yaml.example Secret templates stay
+# unreferenced by the kustomization.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

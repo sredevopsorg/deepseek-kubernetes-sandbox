@@ -1,0 +1,23 @@
+# OPTIONAL: pin the gateway to a dedicated node pool.
+#
+# TODO: replace the placeholder label with one your nodes actually carry. Add a
+# matching toleration for a tainted pool. Keep the gateway schedulable: a
+# selector that matches no node leaves the gateway Pending and the platform
+# unusable.
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/gateway-node-selector.yaml
+#       target:
+#         group: apps
+#         version: v1
+#         kind: Deployment
+#         name: dsh-gateway
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: add
+  path: /spec/template/spec/nodeSelector
+  value:
+    dsh.example.com/node-pool: dsh

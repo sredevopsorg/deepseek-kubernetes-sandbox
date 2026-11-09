@@ -102,7 +102,7 @@ the picker's browse backend lists `$HOME` when the dialog opens and labels that
 listing *Home*. With the image default (`/home/node`) that listing is outside a
 mounted volume; the example sandbox templates
 ([minimal](../examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml),
-[agents as a service](../examples/dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml))
+[agents as a service](../examples/dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml))
 mount the same PVC's `workspace` subPath at `/workspace` and set `HOME=/workspace`
 so the picker opens on the persisted agent workspace. `~`
 and every tool that keeps caches or config under `$HOME` (`npm`/`pnpm`, `uv`,

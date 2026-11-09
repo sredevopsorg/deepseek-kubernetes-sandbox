@@ -2,7 +2,8 @@
 
 This example distills the upstream
 [hermes-agents-as-a-service](https://github.com/kubernetes-sigs/agent-sandbox/tree/main/examples/hermes-agents-as-a-service)
-platform pattern into pure agent-sandbox resources + kubectl, running **DeepSeek
+platform pattern into agent-sandbox resources laid out as a Kustomize base plus
+overlays and applied with kubectl, running **DeepSeek
 Harness Web (DSH)** instead of Hermes. Every user of such a platform gets a
 personal, long-lived DSH Web instance that is **provisioned in ~2 seconds from a
 warm pool, suspended when idle to save cost, and woken transparently when the
@@ -13,7 +14,8 @@ after absence pays a short cold-start pause, not an always-on instance.
 
 It ships in three layers:
 
-1. **The resource layer** (steps 1–7): pure manifests + kubectl, so every
+1. **The resource layer** (steps 1–7): plain manifests in a Kustomize base,
+   applied with `kubectl` (`-f` per file here, or `-k` for the base), so every
    mechanism is visible.
 2. **The service layer** (step 8): a small included **gateway** (`gateway/`) that
    makes the platform browser-usable — a signup page/API, revocable server-side
@@ -25,25 +27,37 @@ It ships in three layers:
 3. **The exposure layer** (step 9): choose exactly one way in — a plain Traefik
    Ingress, or Gateway API + oauth2-proxy (GitHub SSO).
 
-All manifests live under [`manifests/`](manifests/):
+All manifests live under [`manifests/`](manifests/), laid out as a Kustomize
+base plus overlays:
 
 ```
 manifests/
-+-- 00-prereqs.yaml              # namespace + empty provider-key Secret
-+-- 10-sandboxtemplate.yaml      # the DSH Web blueprint
-+-- 20-sandboxwarmpool.yaml      # 2 pre-warmed spares
-+-- 30-claim-alice.yaml          # one user
-+-- 40-claim-rejected.yaml       # negative demo: env injection rejected
-+-- 50-gateway.yaml              # Deployment/RBAC/Service for the gateway
++-- base/                         # portable base (apply with kubectl apply -k manifests/base)
+|   +-- kustomization.yaml
+|   +-- 00-prereqs.yaml           # namespace + empty provider-key Secret
+|   +-- 10-sandboxtemplate.yaml   # the DSH Web blueprint
+|   +-- 20-sandboxwarmpool.yaml   # 2 pre-warmed spares
+|   +-- 30-claim-alice.yaml       # one user
+|   +-- 40-claim-rejected.yaml    # negative demo: env injection rejected
+|   +-- 50-gateway.yaml           # Deployment/RBAC/Service for the gateway
 +-- optional/
-|   +-- README.md                # opt-in manifests, applied by path
-|   +-- network-policy/10-sandbox-networkpolicy.yaml
+|   +-- README.md                 # opt-in manifests
+|   +-- network-policy/           # Kustomize Component: the NetworkPolicy only, additive
 +-- exposure/
-    +-- README.md                 # the two exposure variants, when to use which
-    +-- ingress/60-ingress.yaml
-    +-- ingress/61-networkpolicy.yaml
-    +-- gateway-api-sso/70-gateway.yaml ... 75-networkpolicies.yaml
+|   +-- README.md                 # the two exposure variants, when to use which
+|   +-- ingress/                  # overlay: base + Ingress + gateway/template patches
+|   +-- gateway-api-sso/          # overlay: base + Gateway API/oauth2-proxy + patches
++-- local/                        # static overlay for cluster-specific values
 ```
+
+The base is plain, portable YAML with a `kustomization.yaml`; every overlay and
+the optional NetworkPolicy component carries its own. The walkthrough below
+applies the base files one at a time so each step stays visible (or use
+`kubectl apply -k manifests/base` for all of them at once). Exposure overlays
+include the base and patch the gateway and template for that variant, so apply
+exactly one of them; the optional NetworkPolicy component is additive and can
+be applied at any point. Cluster-specific values never belong in `manifests/base/`
+— record them in [`manifests/local/`](manifests/local/README.md).
 
 What it demonstrates, feature by feature:
 
@@ -75,7 +89,8 @@ What it demonstrates, feature by feature:
   [How the DSH handshake works](#how-the-dsh-handshake-works).
 - **Host allow-list**: DSH rejects unknown `Host` headers. The gateway forwards
   the browser's `Host`, so the public hostname must be added to
-  `DSH_TRUSTED_HOSTS` in the template.
+  `DSH_TRUSTED_HOSTS` in the template (the exposure overlays do this from the
+  variant's host).
 - **Probes target `/favicon.svg`**: `/` returns `401` without the launch token, so
   a probe on `/` crash-loops the pod. `/favicon.svg` is unauthenticated, and a
   `startupProbe` gates liveness/readiness so a slow cold start (plugin
@@ -112,7 +127,7 @@ exists), so they are **never committed** — generate fresh values per install.
 an upsert:
 
 ```bash
-kubectl apply -f manifests/00-prereqs.yaml
+kubectl apply -f manifests/base/00-prereqs.yaml
 kubectl -n dsh-demo create secret generic dsh-provider-keys \
   --from-literal=DEEPSEEK_API_KEY="sk-..." \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -138,7 +153,7 @@ credential store wins over env. See
 the refresh procedure.
 
 ```bash
-kubectl apply -f manifests/10-sandboxtemplate.yaml -f manifests/20-sandboxwarmpool.yaml
+kubectl apply -f manifests/base/10-sandboxtemplate.yaml -f manifests/base/20-sandboxwarmpool.yaml
 ```
 
 Watch the two warm spares boot (first time pulls the image — subsequent operations
@@ -156,7 +171,7 @@ Web serving on port `3080`.
 A user signing up is one small claim — `warmPoolRef` plus a pod label:
 
 ```bash
-kubectl apply -f manifests/30-claim-alice.yaml
+kubectl apply -f manifests/base/30-claim-alice.yaml
 kubectl -n dsh-demo wait sandboxclaim dsh-alice --for=condition=Ready --timeout=60s
 ```
 
@@ -256,11 +271,11 @@ kubectl -n dsh-demo exec "$SB" -- cat /workspace/marker.txt        # "remember m
 ## 7. Injection policy rejects env-carrying claims
 
 ```bash
-kubectl apply -f manifests/40-claim-rejected.yaml
+kubectl apply -f manifests/base/40-claim-rejected.yaml
 kubectl -n dsh-demo get sandboxclaim dsh-mallory \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}'
 # EnvVarsInjectionRejected — the claim never bound a sandbox
-kubectl delete -f manifests/40-claim-rejected.yaml
+kubectl delete -f manifests/base/40-claim-rejected.yaml
 ```
 
 ## 8. The gateway: signup, browser proxy, idle-suspend, wake-on-connect
@@ -274,13 +289,13 @@ GW=ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gate
 docker pull "$GW"
 kind load docker-image "$GW" --name <kind-cluster>
 
-# ... or build it locally and tag it exactly as manifests/50-gateway.yaml
+# ... or build it locally and tag it exactly as manifests/base/50-gateway.yaml
 # expects (make gateway builds dsh-aaas-gateway:dev):
 make -C ../.. gateway
 docker tag dsh-aaas-gateway:dev "$GW"
 kind load docker-image "$GW" --name <kind-cluster>
 
-kubectl apply -f manifests/50-gateway.yaml
+kubectl apply -f manifests/base/50-gateway.yaml
 kubectl -n dsh-demo rollout status deploy/dsh-gateway --timeout=120s
 kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 ```
@@ -296,7 +311,7 @@ kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 > `COOKIE_SECURE=true` and remove the acknowledgement:
 > `kubectl -n dsh-demo set env deploy/dsh-gateway COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-`.
 >
-> **Image pull policy.** `manifests/50-gateway.yaml` uses
+> **Image pull policy.** `manifests/base/50-gateway.yaml` uses
 > `imagePullPolicy: IfNotPresent` with the release identity, so a locally built
 > image must be loaded into the cluster under exactly that name (kind:
 > `kind load`). A node that already cached a different tag is the usual cause of
@@ -309,7 +324,7 @@ kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 > ```
 >
 > **Applying over an existing install?** Run
-> `kubectl diff -f manifests/10-sandboxtemplate.yaml` first. Cluster-specific
+> `kubectl diff -f manifests/base/10-sandboxtemplate.yaml` first. Cluster-specific
 > fields such as `nodeAffinity` and the warm-pool replica count are intentionally
 > not in the repo manifests; preserve them with a targeted patch instead of a
 > blind apply. Moving the probes to `/favicon.svg` is the crash-loop fix.
@@ -412,7 +427,7 @@ kubectl -n longhorn-system delete volumes.longhorn.io <pv-name>
 
 Deleting a PV is irreversible and cluster-scoped; do it only after an explicit
 confirmation. For per-user workspaces the simpler answer is a `Delete`-reclaim
-StorageClass: set `storageClassName` in `manifests/10-sandboxtemplate.yaml`
+StorageClass: set `storageClassName` in `manifests/base/10-sandboxtemplate.yaml`
 (affects newly created PVCs only), or change the cluster's default class.
 
 ### Auth abuse controls and proxy limits
@@ -456,13 +471,19 @@ refreshes once on a `401`. That is why its RBAC includes `pods` `get`/`list` and
 
 DSH rejects requests whose `Host` is not allow-listed (`localhost` and
 `127.0.0.1` are always trusted). Because the gateway forwards the browser's
-`Host`, set the public hostname in the template:
+`Host`, the template must trust the public hostname:
 
 ```yaml
 env:
   - name: DSH_TRUSTED_HOSTS
     value: "dsh.example.com"   # comma or space separated; empty for port-forward only
 ```
+
+The exposure overlays set this for you from the Ingress rule host
+(`manifests/exposure/ingress/60-ingress.yaml`) or the HTTPRoute hostname
+(`manifests/exposure/gateway-api-sso/71-httproute.yaml`). For a custom exposure,
+enable the `sandboxtemplate-trusted-hosts.yaml` patch in the local overlay or
+edit the base template.
 
 The same applies to a local `docker run`: the printed token URL uses
 `DSH_PUBLIC_URL` if set, otherwise `http://localhost:<DSH_PORT>`.
@@ -497,12 +518,14 @@ trailing-slash form with `308` so relative URLs resolve correctly.
 
 The base manifests expose nothing outside the cluster (`dsh-gateway` is a
 ClusterIP Service on port `8080`). Pick **one** variant — they are alternatives,
-not a stack. Details, commands and the switch procedure are in the
-[exposure README](manifests/exposure/README.md).
+not a stack. Each variant is a Kustomize overlay that **includes the base** and
+also patches the gateway and sandbox template for that entry point, so one
+`kubectl apply -k` is the whole step. Details and the switch procedure are in
+the [exposure README](manifests/exposure/README.md).
 
-> Apply the base resources first, then the variant **by path**. Do not use
-> `kubectl apply -R`: it would apply both variants and create two paths to the
-> same gateway, which is unsafe once SSO is enabled.
+> Apply exactly one overlay: applying both creates two paths to the same
+> gateway, which is unsafe once SSO is enabled. Applying `manifests/base`
+> separately is unnecessary because every overlay includes it.
 
 Both variants also ship NetworkPolicies: `ingress/61-networkpolicy.yaml` limits
 gateway ingress to Traefik pods, and `gateway-api-sso/75-networkpolicies.yaml`
@@ -515,16 +538,21 @@ and summarized in the [exposure README](manifests/exposure/README.md).
 
 ### Option A — plain Ingress (gateway's own session auth)
 
-1. Set the Ingress host/TLS (or drop the `tls:` block), and set
-   `DSH_TRUSTED_HOSTS` in `manifests/10-sandboxtemplate.yaml` to the same public
-   host; re-apply the template.
-2. Set `COOKIE_SECURE=true` and drop the plain-HTTP acknowledgement once the
-   Ingress serves HTTPS:
-   `kubectl -n dsh-demo set env deploy/dsh-gateway COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-`.
-3. `kubectl apply -f manifests/exposure/ingress/`; verify
-   `curl -sI https://<host>/healthz` returns `200` (liveness) and
+1. Change the public host in **one place**: the rule host in
+   `manifests/exposure/ingress/60-ingress.yaml`. The overlay copies it into the
+   Ingress TLS SAN and into the SandboxTemplate `DSH_TRUSTED_HOSTS`, and sets
+   `COOKIE_SECURE="true"` while dropping `ALLOW_INSECURE_COOKIES` on the
+   gateway. Replace the `dsh-example-tls` Secret name with your TLS Secret.
+2. `kubectl apply -k manifests/exposure/ingress` (creates/updates the base and
+   the Ingress together).
+3. Verify `curl -sI https://<host>/healthz` returns `200` (liveness) and
    `curl -s https://<host>/readyz` returns `{"status":"ok"}` (the gateway can
    still reach the Kubernetes API; a `503` means it cannot).
+4. Serving plain HTTP only (local demo): drop the `tls:` block from
+   `60-ingress.yaml` **and** the Ingress TLS replacement target in the overlay's
+   `kustomization.yaml`, and set `COOKIE_SECURE` back to `"false"` plus
+   `ALLOW_INSECURE_COOKIES=1` in the overlay patch. Never do this on an
+   internet-facing deployment.
 
 Keep the router free of buffering/compression middlewares: they break WebSocket
 upgrades and streaming. The variant's `61-networkpolicy.yaml` allows only Traefik
@@ -536,8 +564,11 @@ for selector and probe caveats.
 `manifests/exposure/gateway-api-sso/` puts a TLS `Gateway` + `HTTPRoute` in
 front of **oauth2-proxy**, which authenticates the browser against GitHub
 (restricted to a configured organization) and forwards to the gateway with
-`X-Forwarded-User` set. The gateway trusts that header only when
-`AUTH_PROXY_HEADER` is set (SSO is **opt-in**).
+`X-Forwarded-User` set. The overlay enables SSO on the gateway itself
+(`AUTH_PROXY_HEADER=X-Forwarded-User`, `COOKIE_SECURE="true"`,
+`TRUSTED_PROXY_HOPS="2"`, `ALLOW_INSECURE_COOKIES` removed) and copies the
+HTTPRoute hostname into `DSH_TRUSTED_HOSTS`; there is no manual
+`kubectl set env` step.
 
 1. Install Gateway API CRDs and a Gateway implementation; the manifests assume
    `gatewayClassName: traefik` (the CRD version is `GATEWAY_API_VERSION` in
@@ -545,15 +576,9 @@ front of **oauth2-proxy**, which authenticates the browser against GitHub
 2. Create a GitHub OAuth App whose homepage/callback match the public FQDN, and
    create the oauth2-proxy and TLS Secrets from
    `73-oauth2-proxy-secret.yaml.example` and `74-tls-secret.yaml.example`.
-3. Replace `dsh-demo.example.com` and `your-github-org` in the variant
-   manifests, set `DSH_TRUSTED_HOSTS` in the template, and enable SSO:
-   `kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true ALLOW_INSECURE_COOKIES- TRUSTED_PROXY_HOPS=2`.
-   `TRUSTED_PROXY_HOPS=2` counts the two proxies that append to
-   `X-Forwarded-For` on this path (Traefik and oauth2-proxy); add any
-   CDN/tunnel in front of Traefik that appends rather than replaces the header.
-   With it left at `0`, the auth rate limit keys on the oauth2-proxy pod and
-   the whole install shares one bucket.
-4. `kubectl apply -f manifests/exposure/gateway-api-sso/`; then run
+3. Replace `dsh-demo.example.com` (70/71/72) and `your-github-org` (72) in the
+   variant manifests with the real public host and allowed GitHub organization.
+4. `kubectl apply -k manifests/exposure/gateway-api-sso`; then run
    [`scripts/preflight-sso.sh`](scripts/preflight-sso.sh) and fix everything it
    reports **before** pointing real traffic at the Gateway. It verifies the
    Secrets (including a valid oauth2-proxy cookie secret length), the gateway's
@@ -562,7 +587,8 @@ front of **oauth2-proxy**, which authenticates the browser against GitHub
    `sandboxclaims` (SSO token rotation), that all three of the variant's
    NetworkPolicies are applied and that `oauth2-proxy-ingress` does not accept
    every namespace, that no Ingress routes to `dsh-gateway`, and that no
-   `your-github-org`/`dsh-demo.example.com` placeholder was left applied. Full verification steps are in the
+   `your-github-org`/`dsh-demo.example.com` placeholder was left applied. Full
+   verification steps are in the
    [exposure README](manifests/exposure/README.md).
 
 > **Exposure without the variant NetworkPolicy is demo-only.** The SSO
@@ -583,18 +609,33 @@ front of **oauth2-proxy**, which authenticates the browser against GitHub
 > cluster-specific; add the
 > [gateway egress policy](docs/optional-hardening.md#gateway-egress-required-for-production)
 > for production. Anyone who can reach `dsh-gateway:8080` directly can send
-> `X-Forwarded-User: <victim>`, so never add a second path. To turn SSO off,
-> remove the variable
-> (`kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER-`) and
-> delete the SSO variant.
+> `X-Forwarded-User: <victim>`, so never add a second path.
 
 ### Switching variants
 
-Delete the variant you had before applying the other one, revert
-`AUTH_PROXY_HEADER`/`COOKIE_SECURE`, and verify with
-`kubectl -n dsh-demo get ingress,gateway,httproute` that exactly one path to the
-gateway remains. Full commands and verification are in the
-[exposure README](manifests/exposure/README.md).
+Delete the old variant's plain YAML files by name, then apply the other
+overlay (each overlay reconciles the gateway env and `DSH_TRUSTED_HOSTS`, so no
+manual revert is needed). Do **not** `kubectl delete -k <variant-dir>`: the
+rendered overlay includes the base, so it would delete the namespace and
+everything in it.
+
+```bash
+# ingress -> SSO:
+kubectl delete -f manifests/exposure/ingress/60-ingress.yaml \
+                -f manifests/exposure/ingress/61-networkpolicy.yaml
+kubectl apply -k manifests/exposure/gateway-api-sso
+
+# SSO -> ingress:
+kubectl delete -f manifests/exposure/gateway-api-sso/70-gateway.yaml \
+                -f manifests/exposure/gateway-api-sso/71-httproute.yaml \
+                -f manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml \
+                -f manifests/exposure/gateway-api-sso/75-networkpolicies.yaml
+kubectl apply -k manifests/exposure/ingress
+```
+
+Verify with `kubectl -n dsh-demo get ingress,gateway,httproute` that exactly one
+path to the gateway remains, and run `./scripts/preflight-sso.sh` after switching
+to SSO. Full commands are in the [exposure README](manifests/exposure/README.md).
 
 ## Optional hardening
 
@@ -604,37 +645,43 @@ multi-tenant platform. [Optional hardening](docs/optional-hardening.md) has the
 settings and a production checklist. In short:
 
 - **Local overlay** — cluster-specific values (gVisor, node-pool labels, storage
-  class/size, public host, SSO hop count, image pins) belong in
-  [`manifests/local/`](manifests/local/README.md): copy
-  `values.env.example` to `values.env` and run
-  `./scripts/local-overlay.sh --apply`. The script prints the patches without
-  `--apply`; keeping these values out of the shipped manifests is what makes a
-  re-apply safe and the cluster reproducible.
-- **gVisor** — set it through the local overlay (or uncomment
-  `runtimeClassName: gvisor` before applying). Requires a `gvisor` RuntimeClass
-  and capable nodes. `kubectl port-forward` does not work under gVisor; the
-  gateway path does. Required for untrusted agents in production.
-- **nodeSelector** — set it through the local overlay (or uncomment and replace
-  the placeholder node label) to pin sandboxes and the gateway to a dedicated
-  pool; add a toleration for tainted pools.
+  class/size, image pins, idle/wake timeouts, SSO proxy hop counts) belong in
+  [`manifests/local/`](manifests/local/README.md), a static Kustomize overlay.
+  Edit the TODO placeholder in `manifests/local/patches/*.yaml`, uncomment the
+  matching entry in `manifests/local/kustomization.yaml`, then
+  `kubectl apply -k manifests/local`. It renders exactly the base until you
+  enable something; keeping these values out of the shipped manifests is what
+  makes a re-apply safe and the cluster reproducible.
+- **gVisor** — enable the `sandboxtemplate-runtime-class.yaml` (and, for the
+  gateway, `gateway-runtime-class.yaml`) patches in the local overlay; or
+  uncomment `runtimeClassName: gvisor` before applying. Requires a `gvisor`
+  RuntimeClass and capable nodes. `kubectl port-forward` does not work under
+  gVisor; the gateway path does. Required for untrusted agents in production.
+- **nodeSelector** — enable the local overlay's node-selector patches (or
+  uncomment and replace the placeholder node label) to pin sandboxes and the
+  gateway to a dedicated pool; add a toleration for tainted pools.
 - **Sandbox NetworkPolicy** —
-  `kubectl apply -f manifests/optional/network-policy/` allows only
-  gateway→sandbox on `3080` and sandbox→DNS/public `443`. Required for
-  production; exposure without it is demo-only.
+  `kubectl apply -k manifests/optional/network-policy` allows only
+  gateway→sandbox on `3080` and sandbox→DNS/public `443`. It is a Kustomize
+  component applied additively (it does not re-apply the base), and can be
+  imported into the local overlay instead. Required for production; exposure
+  without it is demo-only.
 - **Gateway egress policy** — the gateway needs DNS, the Kubernetes API and
   `3080` to sandbox pods. It is not shipped because the API-server endpoint is
   cluster-specific; use the
   [recipe](docs/optional-hardening.md#gateway-egress-required-for-production).
   Required for production.
 - **Provider keys** — create `dsh-provider-keys-extra` as shown in step 1.
-- **Failed-Pod recovery** — uncomment `failedPodPolicy: Recreate` so the
-  controller replaces a `Failed` sandbox Pod (node eviction) instead of parking
-  the sandbox at `Finished=True`. Requires agent-sandbox v1.0.8+.
+- **Failed-Pod recovery** — enable the local overlay's
+  `sandboxtemplate-failed-pod-policy.yaml` patch (or uncomment
+  `failedPodPolicy: Recreate`) so the controller replaces a `Failed` sandbox Pod
+  (node eviction) instead of parking the sandbox at `Finished=True`. Requires
+  agent-sandbox v1.0.8+.
 
 The **exposure variants' NetworkPolicies** are not optional in production
 either; see step 9. Apply each setting independently and re-run the walkthrough.
-`kubectl apply -f manifests/` is non-recursive, so the optional manifests are not
-applied by the base step.
+The base, the exposure overlays and the optional component are separate
+kustomization roots: `kubectl apply -k manifests/base` applies only the base.
 
 ## Troubleshooting
 
@@ -659,7 +706,7 @@ applied by the base step.
 | Console spams `[connection] connection lost, retry #N` | The upstream WS upgrade is being rejected, surfaced as close `1011`. The gateway dials the sandbox **pod IP**, forwards no `Host`/`Origin`, and handshakes under the same `pod-IP:3080` authority DSH binds its cookie to; an older gateway image, or a sandbox with an empty `status.podIPs`, hits this loop |
 | `manifest.webmanifest` returns `401` in the console | Browsers fetch the Web App Manifest without credentials, so the gateway's session cookie is absent and the request fails closed. The UI is unaffected; only the PWA install prompt is lost |
 | Signup is slow / `202` then `Waking` | Warm pool exhausted (`kubectl get sandboxes -l agents.x-k8s.io/warm-pool-sandbox`); scale the pool |
-| `403` from the Kubernetes API in gateway logs | The gateway ServiceAccount is missing claim/sandbox/pod-log verbs (see `manifests/50-gateway.yaml`) |
+| `403` from the Kubernetes API in gateway logs | The gateway ServiceAccount is missing claim/sandbox/pod-log verbs (see `manifests/base/50-gateway.yaml`) |
 | Gateway pod `ErrImagePull` / `ImagePullBackOff` (especially on kind) | The manifest uses `imagePullPolicy: IfNotPresent` with the release identity. Build with `make -C ../.. gateway`, retag to exactly the manifest's image, `kind load docker-image <that-ref>`, or set the Deployment image to your local tag / pinned digest. On a real cluster, make sure the GHCR package is readable (public or a pull secret) |
 | Step 3: `pod "$SB" not found` after deploying the gateway | The claim was suspended by the idle sweeper. Claims created by the gateway carry `aaas.example.com/managed-by=dsh-gateway`; hand-applied claims (steps 1–7) do not and are never swept. Resume the sandbox: `kubectl -n dsh-demo patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Running"}}'` |
 | Resume crash-loops: `credentials-local: … is readable beyond its owner (mode 660)` | The pod template lacks `fsGroupChangePolicy: OnRootMismatch`, so the kubelet's default fsGroup policy rewrote `.credentials.yaml` to `0660`; DSH requires `0600` and refuses to start. New installs get the policy from the template. For an existing sandbox: suspend it, run a throwaway pod on `dsh-home-$SB` to `chmod 600 /home/node/.dsh/.credentials.yaml`, patch the sandbox's `podTemplate` with the policy, then resume |
@@ -669,7 +716,7 @@ applied by the base step.
 | SSO: gateway treats a caller as another user / bad `X-Forwarded-User` accepted | Trust boundary violation: something other than oauth2-proxy can reach `dsh-gateway:8080`. Remove the second path (Ingress/Gateway/port-forward), keep the Service ClusterIP, and only re-enable SSO once the proxy is the sole entry point. Never put a trusted identity header in front of a service that is directly reachable |
 | SSO: oauth2-proxy `cookie_secret must be 16, 24, or 32 bytes ... but is 44 bytes` | The cookie secret was generated as standard base64. Use URL-safe unpadded base64 (see `73-oauth2-proxy-secret.yaml.example`) |
 | SSO: redirect loop (`ERR_TOO_MANY_REDIRECTS`) | oauth2-proxy `--redirect-url` / callback does not match the public FQDN, or TLS is not terminating at the Gateway listener; fix the OAuth App URLs and the manifest placeholders |
-| SSO: DSH rejects the public host behind the proxy | Add the public hostname to `DSH_TRUSTED_HOSTS` in `manifests/10-sandboxtemplate.yaml`; the gateway forwards the browser's `Host` |
+| SSO: DSH rejects the public host behind the proxy | Set the public host in `manifests/exposure/gateway-api-sso/71-httproute.yaml`; the overlay propagates it to `DSH_TRUSTED_HOSTS`. For a custom exposure use the local overlay's trusted-hosts patch. The gateway forwards the browser's `Host` |
 | Pods `Pending` after setting `nodeSelector` | No node matches the label, the pool is full, or a tainted pool needs a toleration; inspect `kubectl describe pod` and the node labels |
 | gVisor: `kubectl port-forward` fails or the connection is refused | Port-forward is incompatible with gVisor; reach DSH through the gateway (or a reachable Service/Sandbox Router) |
 | Sandbox cannot reach a model API after applying the optional NetworkPolicy | The policy allows DNS and public TCP `443` only; a proxy, custom base URL, port `80` or non-443 endpoint needs an explicit egress rule |
@@ -746,8 +793,10 @@ Deliberately **not** production code:
 
 ```bash
 # Delete an exposure variant first if you applied one (optional; namespace
-# deletion below removes everything):
-kubectl delete -f manifests/exposure/ingress/          # or gateway-api-sso/
+# deletion below removes everything). Use the plain files, not `delete -k`:
+kubectl delete -f manifests/exposure/ingress/60-ingress.yaml \
+                -f manifests/exposure/ingress/61-networkpolicy.yaml   # ingress
+# ... or the gateway-api-sso variant's 70/71/72/75 files.
 # Then the whole example:
 kubectl delete namespace dsh-demo
 ```
@@ -767,8 +816,9 @@ behind. Check and clean them up as described in
 - [Architecture](docs/architecture.md) — container/sequence diagrams, ADRs,
   security and RBAC, failure modes, evolution path.
 - [Exposure README](manifests/exposure/README.md) — the two variants in detail.
-- [Local overlay](manifests/local/README.md) — where cluster-specific values
-  live; applied with `scripts/local-overlay.sh` (plain kubectl).
+- [Local overlay](manifests/local/README.md) — static Kustomize overlay for
+  cluster-specific values (gVisor, scheduling, storage, image pins); applied
+  with `kubectl apply -k manifests/local`.
 - [Drift check](scripts/cluster-drift.sh) — read-only comparison of the live
   cluster with the repo's expectations; flags untracked templates, a pool that
   points elsewhere, unpinned images, a stale readiness probe and a gateway

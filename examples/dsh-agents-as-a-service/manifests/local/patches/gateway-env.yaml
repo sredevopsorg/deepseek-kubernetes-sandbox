@@ -1,0 +1,55 @@
+# OPTIONAL: tune the gateway environment for this install.
+#
+# TODO: keep only the entries this cluster needs and change the values.
+#
+# WARNING - SSO COUPLING. AUTH_PROXY_HEADER makes the gateway trust an identity
+# header, so enable it ONLY together with the gateway-api-sso exposure overlay:
+# that overlay already sets AUTH_PROXY_HEADER, COOKIE_SECURE="true" and
+# TRUSTED_PROXY_HOPS="2" and drops ALLOW_INSECURE_COOKIES, so when composing
+# manifests/local/ with it, enable only the IDLE_TIMEOUT/WAKE_TIMEOUT lines
+# below. With the plain ingress variant (or no exposure) never set
+# AUTH_PROXY_HEADER: anyone who can reach the gateway Service could impersonate
+# any user by sending that header.
+#
+# - IDLE_TIMEOUT / WAKE_TIMEOUT: safe to tune on any install (seconds a sandbox
+#   may idle before it is suspended, and the max wait to resume one).
+# - COOKIE_SECURE / TRUSTED_PROXY_HOPS / AUTH_PROXY_HEADER: SSO/HTTPS settings
+#   (see the exposure overlays, which set them for you).
+# - ALLOW_INSECURE_COOKIES is DELETED here because it is only for the
+#   plain-HTTP demo; behind TLS it must not be set.
+#
+# This is a STRATEGIC-MERGE patch (a partial object): env merges by name, so
+# entries not listed keep their base value and `$patch: delete` removes one.
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/gateway-env.yaml
+#       target:
+#         group: apps
+#         version: v1
+#         kind: Deployment
+#         name: dsh-gateway
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dsh-gateway
+  namespace: dsh-demo
+spec:
+  template:
+    spec:
+      containers:
+        - name: gateway
+          env:
+            - name: IDLE_TIMEOUT
+              value: "600"
+            - name: WAKE_TIMEOUT
+              value: "300"
+            - name: COOKIE_SECURE
+              value: "true"
+            - $patch: delete
+              name: ALLOW_INSECURE_COOKIES
+            - name: AUTH_PROXY_HEADER
+              value: X-Forwarded-User
+            - name: TRUSTED_PROXY_HOPS
+              value: "2"

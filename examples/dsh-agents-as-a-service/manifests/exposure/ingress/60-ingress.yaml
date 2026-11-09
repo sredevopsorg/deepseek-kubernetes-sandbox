@@ -3,24 +3,28 @@
 # This is the "no SSO" exposure variant and is MUTUALLY EXCLUSIVE with
 # ../gateway-api-sso/ — apply exactly one of them (see ../README.md).
 #
-# Requires the base manifests (Service dsh-gateway:8080 from
-# manifests/50-gateway.yaml) and a Traefik install with an IngressClass named
-# "traefik" (k3s ships one). Replace the placeholder host below with a name
-# that resolves to your ingress address, and either supply a real TLS Secret or
-# delete the `tls:` block for plain HTTP.
+# Apply the whole variant (base manifests + this Ingress + its NetworkPolicy)
+# with one command from the example root:
 #
-# Two things must match this host:
-#   1. SandboxTemplate (manifests/10-sandboxtemplate.yaml): set
-#      DSH_TRUSTED_HOSTS to this host so DSH accepts the forwarded Host/Origin
-#      on /api.
-#   2. Gateway Deployment (manifests/50-gateway.yaml): set COOKIE_SECURE to
-#      "true" and remove ALLOW_INSECURE_COOKIES once this Ingress serves HTTPS,
-#      so the session cookie is Secure:
-#        kubectl -n dsh-demo set env deploy/dsh-gateway \
-#          COOKIE_SECURE=true ALLOW_INSECURE_COOKIES-
-#      The base manifest sets "false" + ALLOW_INSECURE_COOKIES=1 for the
-#      plain-HTTP port-forward demo; without the acknowledgement the gateway
-#      refuses to start.
+#   kubectl apply -k manifests/exposure/ingress
+#
+# The kustomization.yaml next to this file includes ../../base and patches it,
+# so no manual `kubectl set env` is needed:
+#   - gateway Deployment: COOKIE_SECURE="true" and ALLOW_INSECURE_COOKIES
+#     removed, because this Ingress serves HTTPS and the session cookie must be
+#     Secure;
+#   - this rule's host is copied into the TLS SAN and into the SandboxTemplate
+#     DSH_TRUSTED_HOSTS env (DSH fences /api on Host/Origin).
+# Change the public host ONLY in the rule below; everything else follows.
+#
+# Requires a Traefik install with an IngressClass named "traefik" (k3s ships
+# one). Replace the placeholder host below with a name that resolves to your
+# ingress address, and either supply a real TLS Secret (the placeholder
+# dsh-example-tls) or, for plain HTTP only, delete the `tls:` block AND the
+# Ingress TLS replacement target in kustomization.yaml, then set COOKIE_SECURE
+# back to "false" and replace the ALLOW_INSECURE_COOKIES `$patch: delete` entry
+# with `value: "1"` there. Plain HTTP is for the local demo only: the session
+# cookie would travel in clear text.
 #
 # WebSocket support is REQUIRED: the browser talks to /u/<user>/... and DSH
 # uses WebSockets for live session traffic. Traefik upgrades WS/SSE
@@ -29,10 +33,11 @@
 # and upgrades. `path: /` Prefix covers the landing page and every per-user
 # proxy path, so no per-sandbox Ingress is needed.
 #
-# 61-networkpolicy.yaml is part of this variant and required for production:
-# it restricts the gateway's ingress to Traefik pods. Adjust its selector if
-# your ingress controller uses a different label or hostNetwork. The sandbox
-# and gateway-egress NetworkPolicies are separate requirements; see
+# 61-networkpolicy.yaml is part of this variant (the overlay applies it) and
+# required for production: it restricts the gateway's ingress to Traefik pods.
+# Adjust its selector if your ingress controller uses a different label or
+# hostNetwork. The sandbox and gateway-egress NetworkPolicies are separate
+# requirements; see
 # ../../../docs/optional-hardening.md#6-production-checklist.
 apiVersion: networking.k8s.io/v1
 kind: Ingress

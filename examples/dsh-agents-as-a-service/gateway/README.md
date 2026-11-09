@@ -136,7 +136,10 @@ the session cookie, and the gateway ignores all identity headers. Set
 oauth2-proxy:
 
 ```bash
-kubectl -n dsh-demo set env deploy/dsh-gateway AUTH_PROXY_HEADER=X-Forwarded-User
+# This is what the gateway-api-sso overlay applies for you:
+kubectl -n dsh-demo set env deploy/dsh-gateway \
+  AUTH_PROXY_HEADER=X-Forwarded-User COOKIE_SECURE=true \
+  ALLOW_INSECURE_COOKIES- TRUSTED_PROXY_HOPS=2
 ```
 
 When set, the gateway treats a request carrying that header as naming a user,
@@ -150,7 +153,8 @@ opaque session cookie; the marker is never rotated) and
 redirects to `/u/<user>/`, and `POST /recreate` becomes available for a clean
 restart. The base manifests leave it unset on purpose; the
 [SSO exposure variant](../manifests/exposure/gateway-api-sso/) documents how to
-enable it on the Deployment (`kubectl set env`). That variant also ships
+enable it: the overlay patches `AUTH_PROXY_HEADER`, `COOKIE_SECURE` and
+`TRUSTED_PROXY_HOPS` onto the Deployment. That variant also ships
 `75-networkpolicies.yaml`, which restricts the gateway to oauth2-proxy and
 oauth2-proxy's egress to the gateway, DNS and public HTTPS.
 
@@ -230,7 +234,7 @@ can also be injected into `create_app` for tests.
 | `WS_MAX_MESSAGE_BYTES` | `16777216` | Largest WebSocket message (16 MiB) accepted from DSH. Browser-to-DSH frames are bounded by uvicorn's own limit. |
 | `AUTH_PROXY_HEADER` | unset | Opt-in SSO: name of the trusted identity header set by an authenticating reverse proxy (e.g. `X-Forwarded-User`). Unset disables SSO and the header is never trusted. Enable only when the Service is reachable exclusively through that proxy (see [SSO](#sso-opt-in)). |
 
-The shipped `manifests/50-gateway.yaml` sets `IDLE_TIMEOUT=360` and
+The shipped `manifests/base/50-gateway.yaml` sets `IDLE_TIMEOUT=360` and
 `WAKE_TIMEOUT=240` for the demo; the e2e script overrides them to 60/120 so the
 smoke test does not wait minutes for the sweeper. It also sets
 `COOKIE_SECURE=false` together with the explicit `ALLOW_INSECURE_COOKIES=1`
@@ -272,7 +276,7 @@ make gateway    # builds dsh-aaas-gateway:dev from this directory
 The equivalent direct build is
 `docker build -t dsh-aaas-gateway:dev examples/dsh-agents-as-a-service/gateway`.
 For kind, retag it to the image reference in
-`examples/dsh-agents-as-a-service/manifests/50-gateway.yaml` and `kind load` it.
+`examples/dsh-agents-as-a-service/manifests/base/50-gateway.yaml` and `kind load` it.
 Published images are nested below the main image as
 `<GHCR_IMAGE>/dsh-agents-as-a-service/gateway:<identity>`, where the identity
 comes from [`versions.env`](../../../versions.env) — see

@@ -1,0 +1,23 @@
+# OPTIONAL: run the sandbox pods under gVisor (a userspace kernel).
+#
+# TODO: enable only on a cluster that has a RuntimeClass named "gvisor" and
+# nodes able to run it (see docs/optional-hardening.md). gVisor breaks
+# `kubectl port-forward` into the sandbox; reach DSH through the gateway.
+# Existing Sandboxes stamped their pod template at creation, so only pods
+# created after the patch (new warm-pool spares / recreated sandboxes) use it.
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/sandboxtemplate-runtime-class.yaml
+#       target:
+#         group: extensions.agents.x-k8s.io
+#         version: v1beta1
+#         kind: SandboxTemplate
+#         name: dsh-web
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: add
+  path: /spec/podTemplate/spec/runtimeClassName
+  value: gvisor

@@ -2324,7 +2324,7 @@ def test_preflight_checks_every_shipped_sso_network_policy():
 def test_sandbox_template_disables_the_service_account_token():
     """A tenant pod must never carry a token that can read pods/log."""
     template = (
-        Path(__file__).resolve().parent.parent / "manifests" / "10-sandboxtemplate.yaml"
+        Path(__file__).resolve().parent.parent / "manifests" / "base" / "10-sandboxtemplate.yaml"
     ).read_text()
     assert "automountServiceAccountToken: false" in template
 

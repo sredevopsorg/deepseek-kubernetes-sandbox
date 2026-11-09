@@ -1,4 +1,7 @@
-# Manifest shape validation and server-side dry-run. Split from ci.yaml so this
+# Manifest shape validation and server-side dry-run. Kustomization files and
+# files under patches/ are build inputs, not Kubernetes objects: the per-file
+# dry-run skips them and does not render kustomize roots (docs/examples.md).
+# Split from ci.yaml so this
 # job can use native on.pull_request.paths filtering and skip PRs that do not
 # touch manifests, scripts or versions.env. The job name is `manifests`; because
 # it is path-filtered it is an on-demand check, not a required branch-protection
@@ -77,6 +80,13 @@ jobs:
           count=0
           for file in examples/*/manifests/**/*.yaml; do
             case "$file" in *.yaml.example) continue ;; esac
+            # kustomization files and patches/ fragments are build inputs, not
+            # standalone objects; kubectl kustomize consumes them. No render
+            # validation is run here (see docs/examples.md).
+            case "$(basename "$file")" in
+              kustomization.yaml|kustomization.yml|Kustomization) continue ;;
+            esac
+            case "$file" in */patches/*) continue ;; esac
             echo "== $file =="
             kubectl apply --dry-run=server -f "$file"
             count=$((count + 1))

@@ -1,0 +1,25 @@
+# OPTIONAL: change the number of pre-warmed spares (the base keeps 2). At least
+# one Ready spare keeps signup fast; scripts/cluster-drift.sh warns below that.
+#
+# TODO: pick the number of spares this cluster can afford (each spare holds a
+# running sandbox pod and a bound PVC).
+#
+# This is a STRATEGIC-MERGE patch (a partial object), not a JSON 6902 list, so
+# it needs no JSON `target`; the kind/name/namespace below identify the object.
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/sandboxwarmpool-replicas.yaml
+#       target:
+#         group: extensions.agents.x-k8s.io
+#         version: v1beta1
+#         kind: SandboxWarmPool
+#         name: dsh-pool
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: dsh-pool
+  namespace: dsh-demo
+spec:
+  replicas: 3

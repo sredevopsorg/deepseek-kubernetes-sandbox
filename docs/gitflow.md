@@ -44,7 +44,7 @@ branch; the PR is squash-merged, so individual branch commits are never part of
 | --- | --- | --- | --- |
 | `lint` | `ci.yaml` | yes | `scripts/check-versions.sh` (version pins and markdown tokens), `scripts/check-examples.sh` (example layout and numbered manifests), shellcheck, actionlint, yamllint, hadolint and documentation links. |
 | `python` | `ci-python.yaml` | no (path-filtered) | Gateway ruff check/format and unit tests (`pytest` with coverage). Runs only when the gateway or this workflow changes. |
-| `manifests` | `ci-manifests.yaml` | no (path-filtered) | `scripts/check-manifests.py` (manifest shape) and a server-side dry-run of every example manifest against the agent-sandbox CRDs. Runs when manifest files, `scripts/check-manifests.py` or `versions.env` change. |
+| `manifests` | `ci-manifests.yaml` | no (path-filtered) | `scripts/check-manifests.py` (manifest shape) and a server-side dry-run of every full example manifest object against the agent-sandbox CRDs (kustomization roots and `patches/` fragments are build inputs and are skipped). Runs when manifest files, `scripts/check-manifests.py` or `versions.env` change. |
 | `pr-title` | `pr-title.yaml` | yes | Conventional Commit PR title. |
 | `Analyze (python)`, `Analyze (actions)` | `codeql.yml` | yes (both jobs) | CodeQL static analysis for Python and GitHub Actions. |
 | `dependency-review` | `ci.yaml` | yes | Dependency changes introduced by the PR (job `dependency-review`; runs on pull requests only). |

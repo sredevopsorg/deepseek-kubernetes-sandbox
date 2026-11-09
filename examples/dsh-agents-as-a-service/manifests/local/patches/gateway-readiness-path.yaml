@@ -1,0 +1,26 @@
+# OPTIONAL: override the gateway readiness probe path.
+#
+# The base already points readiness at /readyz (API-aware: it checks the
+# Kubernetes API). Use this patch only as a temporary downgrade for an OLDER
+# gateway image that serves /healthz only: an image with no /readyz answers 404
+# and the pod never becomes Ready. Updating the image is the correct fix.
+#
+# TODO: replace the value with the path YOUR deployed image serves. /healthz
+# keeps the pod Ready but loses the API-aware check, so an API outage no longer
+# removes the gateway from the Service endpoints.
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/gateway-readiness-path.yaml
+#       target:
+#         group: apps
+#         version: v1
+#         kind: Deployment
+#         name: dsh-gateway
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: replace
+  path: /spec/template/spec/containers/0/readinessProbe/httpGet/path
+  value: /healthz
