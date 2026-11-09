@@ -58,7 +58,7 @@ nothing outside the cluster. Two **mutually exclusive** variants live under
 
 | Variant | Entry point | Authentication | Notes |
 | --- | --- | --- | --- |
-| [Ingress](../manifests/exposure/ingress/60-ingress.yaml) | Traefik `Ingress` + optional TLS | the gateway's own signup/session cookie | simplest; no external IdP; set `COOKIE_SECURE=true` with HTTPS |
+| [Ingress](../manifests/exposure/ingress/60-ingress.yaml) | Traefik `Ingress` + optional TLS | the gateway's own signup/session cookie | simplest; no external IdP; the overlay sets `COOKIE_SECURE=true` (edit it if you serve plain HTTP) |
 | [Gateway API + SSO](../manifests/exposure/gateway-api-sso/70-gateway.yaml) | Gateway API `Gateway`/`HTTPRoute` terminating TLS | GitHub OAuth via [oauth2-proxy](../manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml), identity forwarded as `X-Forwarded-User` | requires `AUTH_PROXY_HEADER` on the gateway; the trust boundary applies |
 
 They are alternatives, not a stack: applying both creates a second path to the same gateway
@@ -341,7 +341,7 @@ WebSocket paths; `UPSTREAM_HEADER_ALLOWLIST` replaces that denylist with an expl
 
 ## Security and RBAC
 
-The gateway runs with a namespace-scoped ServiceAccount (`manifests/50-gateway.yaml`):
+The gateway runs with a namespace-scoped ServiceAccount (`manifests/base/50-gateway.yaml`):
 
 | API group | Resource | Verbs | Why |
 | --- | --- | --- | --- |

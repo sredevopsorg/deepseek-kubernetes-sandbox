@@ -1,0 +1,20 @@
+# Portable base for the DSH "Agents as a Service" platform: namespace, shared
+# provider keys, SandboxTemplate, warm pool, demo claims and the gateway.
+#
+# Apply with:  kubectl apply -k manifests/base
+#
+# Cluster-specific values (images, scheduling, hardening) belong in
+# manifests/local/ or the exposure overlays under manifests/exposure/, never
+# here. Each exposure overlay includes this base and patches it, so apply this
+# directory on its own (resource-layer demo) or exactly one overlay - never
+# both exposure variants.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-prereqs.yaml
+  - 10-sandboxtemplate.yaml
+  - 20-sandboxwarmpool.yaml
+  - 30-claim-alice.yaml
+  - 40-claim-rejected.yaml
+  - 50-gateway.yaml

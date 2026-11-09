@@ -66,11 +66,11 @@ done
 
 # Image references in the example manifests
 for f in \
-  examples/dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml \
+  examples/dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml \
   examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml; do
   expect "$f" "image: $GHCR_IMAGE:$IDENTITY"
 done
-expect examples/dsh-agents-as-a-service/manifests/50-gateway.yaml "image: $GATEWAY_IMAGE:$IDENTITY"
+expect examples/dsh-agents-as-a-service/manifests/base/50-gateway.yaml "image: $GATEWAY_IMAGE:$IDENTITY"
 
 # The oauth2-proxy exposure variant pins the digest, not the mutable tag.
 expect examples/dsh-agents-as-a-service/manifests/exposure/gateway-api-sso/72-oauth2-proxy.yaml \

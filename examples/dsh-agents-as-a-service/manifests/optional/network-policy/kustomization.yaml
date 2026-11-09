@@ -1,0 +1,24 @@
+# OPTIONAL for the base walkthrough, REQUIRED for production.
+#
+# Kustomize Component that adds the sandbox NetworkPolicy. A Component is a
+# reusable fragment imported by an overlay; it is never a deployable root of
+# its own, but it does build standalone so the policy can be applied and
+# removed additively (without re-applying or deleting the base objects):
+#
+#   kubectl apply  -k manifests/optional/network-policy
+#   kubectl delete -k manifests/optional/network-policy
+#
+# Import it from a composed overlay with `components:`, do not copy the file
+# into that overlay:
+#
+#   # manifests/local/kustomization.yaml
+#   components:
+#     - ../optional/network-policy
+#
+# It is not part of manifests/base/kustomization.yaml, so `kubectl apply -k
+# manifests/base` does not apply it.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - 10-sandbox-networkpolicy.yaml

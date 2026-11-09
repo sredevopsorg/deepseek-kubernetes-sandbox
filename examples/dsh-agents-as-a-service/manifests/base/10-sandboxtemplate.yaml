@@ -130,10 +130,11 @@ spec:
               value: ""
             # DSH Host/Origin-fences /api. The gateway forwards the browser's
             # Host, so DSH must trust the public gateway host. Empty is right
-            # for port-forward/localhost; for either exposure variant set this
-            # to the public host (e.g. dsh.example.com for
+            # for port-forward/localhost and for applying manifests/base alone;
+            # the exposure overlays copy the variant's host here automatically
+            # (dsh.example.com from
             # manifests/exposure/ingress/60-ingress.yaml, or
-            # dsh-demo.example.com for the gateway-api-sso/ HTTPRoute).
+            # dsh-demo.example.com from the gateway-api-sso/ HTTPRoute).
             - name: DSH_TRUSTED_HOSTS
               value: ""
             # DSH confines every bash command with its own file sandbox

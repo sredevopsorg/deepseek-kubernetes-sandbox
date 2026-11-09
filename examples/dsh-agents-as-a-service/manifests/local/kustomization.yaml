@@ -1,0 +1,153 @@
+# Local overlay: cluster-specific values for the agents-as-a-service example.
+#
+# The base and the exposure overlays are portable: no gVisor, node-pool labels,
+# storage class, public host, SSO hop count or image pin is active there. This
+# overlay is the documented place to record those choices for YOUR cluster.
+#
+# It is a static Kustomize overlay: edit the TODO placeholders in
+# patches/*.yaml, then uncomment only the `patches:` entries you need. There is
+# no values file and no script.
+#
+# By default this file renders EXACTLY the base (every cluster-specific entry is
+# commented out), so `kubectl apply -k manifests/local` is safe to run as-is.
+# Read manifests/local/README.md before enabling anything.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+  # To expose the platform, replace `../base` with exactly ONE of the exposure
+  # overlays below. Each already includes ../base and patches the gateway env
+  # and the sandbox DSH_TRUSTED_HOSTS. Never list the base AND a variant, and
+  # never add both variants (they are mutually exclusive).
+  # - ../exposure/ingress
+  # - ../exposure/gateway-api-sso
+
+# Optional additive component: the tenant sandbox NetworkPolicy (required for
+# production, opt-in for the demo). It adds the policy without re-applying the
+# base. You can also apply/delete it standalone:
+#   kubectl apply -k manifests/optional/network-policy
+# components:
+#   - ../optional/network-policy
+
+# Pin the gateway image for this cluster (name matches the image repository, so
+# it rewrites the tag/digest already in the base or an exposure overlay).
+# Prefer a digest for reproducible rollouts; never a mutable dev tag.
+# images:
+#   - name: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway
+#     newTag: dsh-v0.2.2-rc.1
+#     # digest: sha256:<multi-arch-index-digest>
+#   # Optional: pin the sandbox image the SandboxTemplate stamps into every pod.
+#   - name: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox
+#     newTag: dsh-v0.2.2-rc.1
+
+# Enable only the patches this cluster needs. EVERY entry is commented out so
+# the default build equals the base. Each patch file's header repeats its exact
+# snippet (including the target for JSON-6902 patches).
+#
+# JSON-6902 patch files (a top-level YAML list of op/path/value) MUST carry an
+# explicit `target:`; strategic-merge files (a partial object) do not need one,
+# but listing it is harmless and explicit.
+#
+# Notes:
+# - Patches only modify objects the overlay already contains. The oauth2-proxy
+#   and oauth2-proxy-ingress patches require composing with
+#   ../exposure/gateway-api-sso (that is where those objects live).
+# - To roll back, re-comment the entry and re-apply: client-side apply records
+#   the last applied configuration, so rendering the base again removes the
+#   field. If the field was set outside kubectl, use `op: remove` / a null value.
+# patches:
+#   # --- SandboxTemplate dsh-web (JSON 6902) ------------------------------
+#   - path: patches/sandboxtemplate-runtime-class.yaml
+#     target:
+#       group: extensions.agents.x-k8s.io
+#       version: v1beta1
+#       kind: SandboxTemplate
+#       name: dsh-web
+#   - path: patches/sandboxtemplate-node-selector.yaml
+#     target:
+#       group: extensions.agents.x-k8s.io
+#       version: v1beta1
+#       kind: SandboxTemplate
+#       name: dsh-web
+#   - path: patches/sandboxtemplate-storage-class.yaml
+#     target:
+#       group: extensions.agents.x-k8s.io
+#       version: v1beta1
+#       kind: SandboxTemplate
+#       name: dsh-web
+#   - path: patches/sandboxtemplate-storage-size.yaml
+#     target:
+#       group: extensions.agents.x-k8s.io
+#       version: v1beta1
+#       kind: SandboxTemplate
+#       name: dsh-web
+#   - path: patches/sandboxtemplate-failed-pod-policy.yaml
+#     target:
+#       group: extensions.agents.x-k8s.io
+#       version: v1beta1
+#       kind: SandboxTemplate
+#       name: dsh-web
+#   - path: patches/sandboxtemplate-trusted-hosts.yaml
+#     target:
+#       group: extensions.agents.x-k8s.io
+#       version: v1beta1
+#       kind: SandboxTemplate
+#       name: dsh-web
+#   # --- SandboxWarmPool dsh-pool (strategic merge) ----------------------
+#   - path: patches/sandboxwarmpool-replicas.yaml
+#     target:
+#       group: extensions.agents.x-k8s.io
+#       version: v1beta1
+#       kind: SandboxWarmPool
+#       name: dsh-pool
+#   # --- Gateway Deployment dsh-gateway ----------------------------------
+#   - path: patches/gateway-runtime-class.yaml
+#     target:
+#       group: apps
+#       version: v1
+#       kind: Deployment
+#       name: dsh-gateway
+#   - path: patches/gateway-node-selector.yaml
+#     target:
+#       group: apps
+#       version: v1
+#       kind: Deployment
+#       name: dsh-gateway
+#   - path: patches/gateway-readiness-path.yaml
+#     target:
+#       group: apps
+#       version: v1
+#       kind: Deployment
+#       name: dsh-gateway
+#   - path: patches/gateway-image-pull-policy.yaml
+#     target:
+#       group: apps
+#       version: v1
+#       kind: Deployment
+#       name: dsh-gateway
+#   - path: patches/gateway-env.yaml
+#     target:
+#       group: apps
+#       version: v1
+#       kind: Deployment
+#       name: dsh-gateway
+#   # --- SSO-only (requires ../exposure/gateway-api-sso) -----------------
+#   - path: patches/oauth2-proxy-github-org.yaml
+#     target:
+#       group: apps
+#       version: v1
+#       kind: Deployment
+#       name: oauth2-proxy
+#   - path: patches/oauth2-proxy-redirect-url.yaml
+#     target:
+#       group: apps
+#       version: v1
+#       kind: Deployment
+#       name: oauth2-proxy
+#   - path: patches/networkpolicy-oauth2-proxy-traefik-namespace.yaml
+#     target:
+#       group: networking.k8s.io
+#       version: v1
+#       kind: NetworkPolicy
+#       name: oauth2-proxy-ingress

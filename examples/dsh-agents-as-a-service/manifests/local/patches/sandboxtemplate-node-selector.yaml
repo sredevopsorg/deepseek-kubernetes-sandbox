@@ -1,0 +1,24 @@
+# OPTIONAL: pin sandbox pods to a dedicated node pool (for example a gVisor
+# pool).
+#
+# TODO: replace the placeholder label with one your nodes actually carry
+# (`kubectl get nodes --show-labels`). A selector that matches no node leaves
+# new sandboxes Pending; scripts/cluster-drift.sh flags that. Add a matching
+# toleration if the pool is tainted (podTemplate.spec.tolerations).
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/sandboxtemplate-node-selector.yaml
+#       target:
+#         group: extensions.agents.x-k8s.io
+#         version: v1beta1
+#         kind: SandboxTemplate
+#         name: dsh-web
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: add
+  path: /spec/podTemplate/spec/nodeSelector
+  value:
+    dsh.example.com/node-pool: dsh

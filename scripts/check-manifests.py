@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Parse every example manifest and assert the minimal Kubernetes shape."""
+"""Parse every example manifest and assert the minimal Kubernetes shape.
+
+Kustomization files (kustomization.yaml, kustomization.yml, Kustomization) and
+every file under a patches/ directory are skipped: a kustomization describes a
+build and a patch document is a partial strategic-merge or JSON-6902 fragment,
+so neither is a standalone Kubernetes object. The objects they compose are
+validated as full manifests under examples/*/manifests/.
+"""
 from __future__ import annotations
 
 import sys
@@ -11,7 +18,20 @@ except ModuleNotFoundError:  # pragma: no cover - environment guard
     sys.exit("check-manifests: PyYAML is required (python -m pip install pyyaml)")
 
 ROOT = Path(__file__).resolve().parent.parent
-FILES = sorted(ROOT.glob("examples/*/manifests/**/*.yaml"))
+KUSTOMIZATION_NAMES = {"kustomization.yaml", "kustomization.yml", "Kustomization"}
+
+
+def is_build_input(path: Path) -> bool:
+    """True for kustomization roots and patches/ fragments (not objects)."""
+    return (
+        path.name in KUSTOMIZATION_NAMES
+        or "patches" in path.relative_to(ROOT).parts
+    )
+
+
+ALL_FILES = sorted(ROOT.glob("examples/*/manifests/**/*.yaml"))
+FILES = [path for path in ALL_FILES if not is_build_input(path)]
+SKIPPED = len(ALL_FILES) - len(FILES)
 
 if not FILES:
     sys.exit("check-manifests: no manifests found under examples/*/manifests/")
@@ -54,4 +74,7 @@ if errors:
     print("\n".join(errors), file=sys.stderr)
     sys.exit(1)
 
-print(f"check-manifests: ok ({len(FILES)} files, {documents} documents)")
+print(
+    f"check-manifests: ok ({len(FILES)} files, {documents} documents; "
+    f"skipped {SKIPPED} kustomization/patch files)"
+)

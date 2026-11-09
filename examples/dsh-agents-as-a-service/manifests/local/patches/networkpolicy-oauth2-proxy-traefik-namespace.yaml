@@ -1,0 +1,31 @@
+# SSO-only: scope oauth2-proxy ingress to the namespace of your Gateway
+# implementation (Traefik with the shipped gateway-api-sso variant).
+#
+# An empty namespaceSelector would accept every namespace, letting any pod in
+# the cluster POST to oauth2-proxy with a forged X-Forwarded-User and be
+# forwarded to the gateway as that user. `scripts/preflight-sso.sh` fails on an
+# empty selector.
+#
+# TODO: replace `kube-system` with the namespace Traefik actually runs in
+# (k3s: kube-system; kind/kubeadm installations often use traefik or ingress).
+# Keep it non-empty. Requires composing with ../exposure/gateway-api-sso (the
+# NetworkPolicy lives there); the JSON path uses ingress rule 0 / from 0. The
+# label KEY is `kubernetes.io/metadata.name`, so its `/` is escaped as `~1` in
+# the JSON pointer (`.../matchLabels/kubernetes.io~1metadata.name`); an
+# unescaped `/` would be read as a path separator and the patch would fail.
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/networkpolicy-oauth2-proxy-traefik-namespace.yaml
+#       target:
+#         group: networking.k8s.io
+#         version: v1
+#         kind: NetworkPolicy
+#         name: oauth2-proxy-ingress
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: replace
+  path: /spec/ingress/0/from/0/namespaceSelector/matchLabels/kubernetes.io~1metadata.name
+  value: kube-system

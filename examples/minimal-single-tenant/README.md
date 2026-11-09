@@ -113,7 +113,7 @@ commands resolve to `/workspace`. The trade-off is that `$HOME`-relative tool
 caches and config (`.cache`, `.config`, `.local`, `.npm`, `.agents`) are written
 into the workspace on the PVC. DSH state is unaffected: `DSH_HOME` stays
 `/home/node/.dsh`. The rationale and the list of affected paths are in
-[`10-sandboxtemplate.yaml`](../dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml).
+[`10-sandboxtemplate.yaml`](../dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml).
 Pod specs are stamped at creation, so an existing sandbox keeps its old mounts and
 `HOME` until it is recreated; the PVC retains DSH state and workspace data.
 
@@ -154,7 +154,7 @@ credentials plugin requires `.credentials.yaml` to be `0600`, while the
 kubelet's default fsGroup policy rewrites it to `0660` on every pod start —
 without this policy a recreated or resumed sandbox crash-loops. The rationale
 is spelled out in
-[`10-sandboxtemplate.yaml`](../dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml).
+[`10-sandboxtemplate.yaml`](../dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml).
 
 ## Suspend, resume and clean up
 

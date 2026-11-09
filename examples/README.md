@@ -1,9 +1,10 @@
 # Examples
 
 Every implementation in this repository is a self-contained example: one
-directory, plain `kubectl`, an end-to-end README, and a cleanup command.
-Examples consume the [main DSH Web image](../docs/main-image.md); they are
-reference material, not libraries.
+directory, `kubectl` (plain manifests or `kubectl apply -k` of a Kustomize
+tree), an end-to-end README, and a cleanup command. Examples consume the
+[main DSH Web image](../docs/main-image.md); they are reference material, not
+libraries.
 
 | Example | What it demonstrates | Needs |
 | --- | --- | --- |
@@ -19,16 +20,21 @@ NetworkPolicy, extra provider-key hardening and failed-Pod recovery in
 Full rules: [docs/examples.md](../docs/examples.md). `scripts/check-examples.sh`
 enforces the layout, and `make check` runs it.
 
-- `README.md` is the walkthrough; `manifests/NN-*.yaml` is applied with plain
-  kubectl and read in order.
+- `README.md` is the walkthrough; manifests are numbered `NN-*.yaml`, either at
+  the top of `manifests/` (plain `kubectl apply -f`) or in `manifests/base/`
+  under a `kustomization.yaml` (Kustomize, applied with `kubectl apply -k`).
 - Optional `manifests/optional/<feature>/` and `manifests/exposure/<variant>/`
-  each ship a README; exposure variants are mutually exclusive.
+  each ship a README and their own `kustomization.yaml`; exposure variants are
+  mutually exclusive overlays, not a stack.
+- Cluster-specific values go in the documented `manifests/local/` overlay, not
+  in the base; apply it with `kubectl apply -k manifests/local/`.
 - Optional `scripts/` must be executable, idempotent and self-cleaning; `docs/`
   holds deeper material.
 - Components with a Dockerfile need a README and tests; images are published
   nested below the main image (`<registry>/<owner>/<repo>/<example>/<component>`).
-- Secrets are `*.yaml.example` with placeholders; every example is listed above
-  with its literal `examples/<name>/` path.
+- Secrets are `*.yaml.example` with placeholders (never `secretGenerator`
+  inputs); every example is listed above with its literal `examples/<name>/`
+  path.
 
 ## Running an example
 
@@ -40,5 +46,8 @@ walkthrough that cleans up after itself:
 examples/dsh-agents-as-a-service/scripts/e2e-kind.sh
 ```
 
-`kubectl apply -f manifests/` is non-recursive: `optional/` and `exposure/`
-subdirectories are applied explicitly.
+The multi-tenant example is a Kustomize tree. Apply one root, not a stack: the
+base (`kubectl apply -k manifests/base/`), or exactly one exposure variant
+(`kubectl apply -k manifests/exposure/<variant>/`), which includes the base. The
+optional component and the local overlay are applied explicitly with
+`kubectl apply -k`; `kubectl apply -f manifests/` is not the interface.

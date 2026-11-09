@@ -1,0 +1,21 @@
+# OPTIONAL: run the gateway under gVisor (a userspace kernel).
+#
+# TODO: enable only on a cluster that has a RuntimeClass named "gvisor" and
+# nodes able to run it. Keep the gateway on a normal pool if its scheduling
+# differs from the sandboxes.
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/gateway-runtime-class.yaml
+#       target:
+#         group: apps
+#         version: v1
+#         kind: Deployment
+#         name: dsh-gateway
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: add
+  path: /spec/template/spec/runtimeClassName
+  value: gvisor

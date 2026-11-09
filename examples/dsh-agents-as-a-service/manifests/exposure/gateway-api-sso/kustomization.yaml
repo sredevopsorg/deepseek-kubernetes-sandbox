@@ -1,0 +1,79 @@
+# Gateway API + GitHub OAuth (SSO) exposure overlay for the DSH
+# "Agents as a Service" platform.
+#
+# Includes the portable base (manifests/base/) and adds the TLS Gateway, the
+# HTTPRoute through oauth2-proxy, oauth2-proxy itself and the required
+# NetworkPolicies. Apply with:
+#
+#   kubectl apply -k manifests/exposure/gateway-api-sso
+#
+# The overlay enables SSO on the gateway itself, so there is no manual
+# `kubectl set env` step:
+#   - gateway Deployment env: AUTH_PROXY_HEADER=X-Forwarded-User (trust the
+#     identity oauth2-proxy forwards), COOKIE_SECURE="true" (TLS terminates at
+#     the Gateway listener), TRUSTED_PROXY_HOPS="2" (Traefik + oauth2-proxy
+#     append to X-Forwarded-For) and ALLOW_INSECURE_COOKIES removed;
+#   - the HTTPRoute hostname is copied into the SandboxTemplate
+#     DSH_TRUSTED_HOSTS env, so the browser host is trusted on /api.
+#
+# The committed *.yaml.example Secret templates are deliberately NOT resources:
+# create the real Secrets first (see ../README.md), they never enter git.
+# Placeholders that stay in the variant YAMLs: the public host
+# (`dsh-demo.example.com` in 70/71/72) and the allowed GitHub organization
+# (`--github-org` in 72-oauth2-proxy.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - 70-gateway.yaml
+  - 71-httproute.yaml
+  - 72-oauth2-proxy.yaml
+  - 75-networkpolicies.yaml
+
+patches:
+  # SSO mode. The base keeps the gateway's own bearer/session auth, a
+  # plain-HTTP cookie setting and no proxy trust; this patch flips exactly
+  # those values. Env lists merge by name, so nothing else is touched.
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: dsh-gateway
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: dsh-gateway
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: AUTH_PROXY_HEADER
+                    value: X-Forwarded-User
+                  - name: COOKIE_SECURE
+                    value: "true"
+                  - name: TRUSTED_PROXY_HOPS
+                    value: "2"
+                  - name: ALLOW_INSECURE_COOKIES
+                    $patch: delete
+
+replacements:
+  # The HTTPRoute hostname is the single source of truth for the public host.
+  - source:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: HTTPRoute
+      name: dsh-gateway
+      fieldPath: spec.hostnames.0
+    targets:
+      # DSH Host/Origin fence: DSH must trust the host the browser uses on /api.
+      - select:
+          group: extensions.agents.x-k8s.io
+          version: v1beta1
+          kind: SandboxTemplate
+          name: dsh-web
+        fieldPaths:
+          - spec.podTemplate.spec.containers.[name=dsh-web].env.[name=DSH_TRUSTED_HOSTS].value

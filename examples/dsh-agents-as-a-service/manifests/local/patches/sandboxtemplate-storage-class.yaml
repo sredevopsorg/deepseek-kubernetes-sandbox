@@ -1,0 +1,24 @@
+# OPTIONAL: pin the per-user workspace PVC to a StorageClass instead of the
+# cluster default.
+#
+# TODO: replace the placeholder with your cluster's StorageClass. Prefer a
+# Delete-reclaim class: a Retain class leaks a PV (and, on Longhorn, a volume)
+# for every deleted sandbox. scripts/cluster-drift.sh warns about Released PVs.
+# Existing PVCs keep the class they were created with; this affects new
+# sandboxes only.
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/sandboxtemplate-storage-class.yaml
+#       target:
+#         group: extensions.agents.x-k8s.io
+#         version: v1beta1
+#         kind: SandboxTemplate
+#         name: dsh-web
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: add
+  path: /spec/volumeClaimTemplates/0/spec/storageClassName
+  value: local-path

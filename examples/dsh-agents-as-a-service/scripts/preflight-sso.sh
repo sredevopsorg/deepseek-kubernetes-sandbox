@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Preflight for the gateway-api-sso exposure variant.
 #
-# Run this AFTER creating the oauth2-proxy/TLS Secrets, setting the gateway
-# env and applying manifests/exposure/gateway-api-sso/, and BEFORE sending real
-# traffic. It checks the configuration that is easy to get wrong and whose
-# failure is either silent (login appears to work but the gateway still asks
-# for its own token) or dangerous (a spoofable identity header, a placeholder
-# host, a TLS Secret that does not exist).
+# Run this AFTER creating the oauth2-proxy/TLS Secrets and applying the
+# overlay (`kubectl apply -k manifests/exposure/gateway-api-sso`, which patches
+# the gateway env and DSH_TRUSTED_HOSTS), and BEFORE sending real traffic. It
+# checks the configuration that is easy to get wrong and whose failure is
+# either silent (login appears to work but the gateway still asks for its own
+# token) or dangerous (a spoofable identity header, a placeholder host, a TLS
+# Secret that does not exist).
 #
 # Checks:
 #   1. kubectl reaches the cluster and the SSO objects exist;
@@ -70,8 +71,8 @@ fi
 
 if ! kubectl -n "$NS" get deployment "$GATEWAY_DEPLOY" >/dev/null 2>&1; then
   echo "FAIL  deploy/$GATEWAY_DEPLOY not found in namespace $NS." >&2
-  echo "      Apply the base manifests first: kubectl apply -f manifests/" >&2
-  echo "      Then apply the variant: kubectl apply -f manifests/exposure/gateway-api-sso/" >&2
+  echo "      Apply the base manifests first: kubectl apply -k manifests/base" >&2
+  echo "      Then apply the variant: kubectl apply -k manifests/exposure/gateway-api-sso" >&2
   exit 1
 fi
 
@@ -221,14 +222,14 @@ read_gateway_rules() {
 if [ "$CAN_I" = "yes" ]; then
   pass "ServiceAccount $GATEWAY_SA can patch sandboxclaims"
 elif [ "$CAN_I" = "no" ]; then
-  fail "ServiceAccount $GATEWAY_SA cannot patch sandboxclaims: SSO sign-in answers 503 whenever the browser has no valid gateway session (after a gateway restart, cookie expiry or in a new browser). Fix: grant 'patch' on sandboxclaims to Role $GATEWAY_ROLE (the shipped Role in manifests/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
+  fail "ServiceAccount $GATEWAY_SA cannot patch sandboxclaims: SSO sign-in answers 503 whenever the browser has no valid gateway session (after a gateway restart, cookie expiry or in a new browser). Fix: grant 'patch' on sandboxclaims to Role $GATEWAY_ROLE (the shipped Role in manifests/base/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
 else
   RULES=$(read_gateway_rules)
   if printf '%s\n' "$RULES" | awk -F'|' \
     '$1 ~ /(^|,)extensions\.agents\.x-k8s\.io(,|$)/ && $2 ~ /(^|,)sandboxclaims(,|$)/ && $3 ~ /(^|,)patch(,|$)/ { found = 1 } END { exit found ? 0 : 1 }'; then
     pass "the gateway Role grants patch on sandboxclaims (static check; impersonation unavailable)"
   elif [ -n "$RULES" ]; then
-    fail "Role $GATEWAY_ROLE does not grant 'patch' on sandboxclaims: SSO sign-in answers 503 whenever the browser has no valid gateway session. Fix: grant that verb to the Role (the shipped Role in manifests/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
+    fail "Role $GATEWAY_ROLE does not grant 'patch' on sandboxclaims: SSO sign-in answers 503 whenever the browser has no valid gateway session. Fix: grant that verb to the Role (the shipped Role in manifests/base/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
   else
     warn "could not verify that ServiceAccount $GATEWAY_SA may patch sandboxclaims ($CAN_I). Check manually that Role $GATEWAY_ROLE grants 'patch' on extensions.agents.x-k8s.io/sandboxclaims."
   fi
@@ -242,7 +243,7 @@ if kubectl -n "$NS" get deployment "$OAUTH_DEPLOY" >/dev/null 2>&1; then
     -o jsonpath='{range .spec.template.spec.containers[*].args[*]}{@}{"\n"}{end}')
 else
   OAUTH_ARGS=""
-  fail "deploy/$OAUTH_DEPLOY not found. Apply the variant: kubectl apply -f manifests/exposure/gateway-api-sso/"
+  fail "deploy/$OAUTH_DEPLOY not found. Apply the variant: kubectl apply -k manifests/exposure/gateway-api-sso"
 fi
 
 # GitHub org restriction is the only authorization in the shipped variant.
@@ -267,7 +268,7 @@ if kubectl -n "$NS" get httproute dsh-gateway >/dev/null 2>&1; then
     -o jsonpath='{.spec.hostnames[*]}' 2>/dev/null || true)
 else
   ROUTE_STATE=""
-  fail "HTTPRoute dsh-gateway not found. Apply the variant: kubectl apply -f manifests/exposure/gateway-api-sso/"
+  fail "HTTPRoute dsh-gateway not found. Apply the variant: kubectl apply -k manifests/exposure/gateway-api-sso"
 fi
 
 if kubectl -n "$NS" get gateway dsh-gateway >/dev/null 2>&1; then
@@ -279,7 +280,7 @@ if kubectl -n "$NS" get gateway dsh-gateway >/dev/null 2>&1; then
 else
   GATEWAY_STATE=""
   CERT_REFS=""
-  fail "Gateway dsh-gateway not found. Apply the variant: kubectl apply -f manifests/exposure/gateway-api-sso/"
+  fail "Gateway dsh-gateway not found. Apply the variant: kubectl apply -k manifests/exposure/gateway-api-sso"
 fi
 
 # Placeholders are the default values in the committed manifests. They reach
@@ -339,7 +340,7 @@ for obj in objects:
             break
 '); then
     if [ -n "$INGRESS_HITS" ]; then
-      fail "an Ingress in namespace $NS routes to Service dsh-gateway ($INGRESS_HITS). With SSO enabled the gateway must be reachable only through oauth2-proxy: delete the Ingress variant (kubectl delete -f manifests/exposure/ingress/)."
+      fail "an Ingress in namespace $NS routes to Service dsh-gateway ($INGRESS_HITS). With SSO enabled the gateway must be reachable only through oauth2-proxy: delete the Ingress variant (kubectl delete -f manifests/exposure/ingress/60-ingress.yaml -f manifests/exposure/ingress/61-networkpolicy.yaml)."
     fi
   fi
 fi

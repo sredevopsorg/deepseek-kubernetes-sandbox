@@ -2,6 +2,10 @@
 # gateway's ingress to the ingress controller. Applying the variant without
 # this policy is demo-only.
 #
+# It is a resource of this variant's kustomization.yaml: `kubectl apply -k
+# manifests/exposure/ingress` applies it together with the base and the
+# Ingress, so there is no separate `kubectl apply -f` step.
+#
 # This manifest assumes Traefik, matching this variant's
 # `ingressClassName: traefik`. Traefik's Helm chart labels its pods
 # app.kubernetes.io/name=traefik; adjust the selector for another controller or

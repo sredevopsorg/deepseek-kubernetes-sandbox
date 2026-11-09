@@ -38,7 +38,7 @@ spec:
       # parallel A/AAAA queries, which otherwise stall the first external lookup
       # of a fresh process for 5 s on some CNIs (and break DSH's 5 s GitHub
       # plugin-manager preflight). Rationale in full at
-      # examples/dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml.
+      # examples/dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml.
       dnsConfig:
         options:
           - name: single-request-reopen
@@ -62,7 +62,7 @@ spec:
         # pod start, so a recreated or resumed sandbox crash-loops; OnRootMismatch
         # avoids that walk once the volume root already carries the ownership.
         # Rationale in full at
-        # examples/dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml.
+        # examples/dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml.
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: dsh-web
@@ -91,7 +91,7 @@ spec:
             # inside the agent workspace. DSH_HOME is explicit
             # (/home/node/.dsh), so sessions, config and credentials are
             # unaffected. Rationale in full at
-            # examples/dsh-agents-as-a-service/manifests/10-sandboxtemplate.yaml.
+            # examples/dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml.
             - name: HOME
               value: /workspace
             # Empty => DSH derives links from the request Host. Keep it empty

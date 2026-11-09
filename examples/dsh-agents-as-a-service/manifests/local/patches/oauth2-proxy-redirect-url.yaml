@@ -1,0 +1,24 @@
+# SSO-only: set the public OAuth callback URL (must match the GitHub OAuth App
+# and the Gateway listener's hostname).
+#
+# TODO: replace the host with the public FQDN of the gateway-api-sso exposure.
+# The path must stay /oauth2/callback for oauth2-proxy. Requires composing with
+# ../exposure/gateway-api-sso (the oauth2-proxy Deployment lives there). Base
+# arg index 5 is --redirect-url; if you edit 72-oauth2-proxy.yaml, update the
+# index here.
+#
+# Enable by uncommenting this entry under `patches:` in
+# manifests/local/kustomization.yaml:
+#
+#   patches:
+#     - path: patches/oauth2-proxy-redirect-url.yaml
+#       target:
+#         group: apps
+#         version: v1
+#         kind: Deployment
+#         name: oauth2-proxy
+#
+# This is a JSON 6902 patch (a list), so the target above is REQUIRED.
+- op: replace
+  path: /spec/template/spec/containers/0/args/5
+  value: --redirect-url=https://dsh.example.com/oauth2/callback
