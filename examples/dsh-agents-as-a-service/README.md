@@ -8,7 +8,7 @@ Harness Web (DSH)** instead of Hermes. Every user of such a platform gets a
 personal, long-lived DSH Web instance that is **provisioned in ~2 seconds from a
 warm pool, suspended when idle to save cost, and woken transparently when the
 user returns** — with all state (conversations, sessions, config, and the agent
-workspace) surviving on the per-user PVC at `/home/node/.dsh` + `/workspace`.
+workspace) surviving on the per-user PVC under `/home/node/.dsh`.
 Suspend-when-idle plus the warm pool keep cost proportional to use: a return
 after absence pays a short cold-start pause, not an always-on instance.
 
@@ -63,7 +63,7 @@ What it demonstrates, feature by feature:
 
 | agent-sandbox feature | Role in the platform |
 | --- | --- |
-| `SandboxTemplate` with `volumeClaimTemplates` | Identical DSH pods; per-user state at `/home/node/.dsh` and the agent workspace at `/workspace`, on one PVC (the workspace is a `subPath` mount, so DSH state stays private) |
+| `SandboxTemplate` with `volumeClaimTemplates` | Identical DSH pods; per-user state at `/home/node/.dsh` with the agent workspace in `workspace/`, on one PVC (the workspace is mounted again at its subPath, so DSH state stays at the volume root) |
 | `envVarsInjectionPolicy` / `volumeClaimTemplatesPolicy: Disallowed` | Claims that would bypass the warm pool are **rejected loudly**, not cold-started silently |
 | `service: true` | Stable per-sandbox DNS (`status.serviceFQDN`) for the gateway to route on |
 | `SandboxWarmPool` | Signup latency is pre-paid: image pull, PVC provision, DSH boot all happen before any user exists |
@@ -222,28 +222,31 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 ## 4. Write state on the PVC
 
 ```bash
-kubectl -n dsh-demo exec "$SB" -- printenv HOME                        # /workspace
+kubectl -n dsh-demo exec "$SB" -- printenv HOME                        # /home/node/.dsh/workspace
 kubectl -n dsh-demo exec "$SB" -- sh -c 'echo "remember me" > /home/node/.dsh/marker.txt'
-kubectl -n dsh-demo exec "$SB" -- sh -c 'echo "remember me too" > /workspace/marker.txt'
+kubectl -n dsh-demo exec "$SB" -- sh -c 'echo "remember me too" > /home/node/.dsh/workspace/marker.txt'
 ```
 
-`/workspace` (the DSH image's `WORKDIR`, where agents keep files) is the same
-`dsh-home` PVC mounted again with `subPath: workspace`. The two trees stay
-separate, so `.credentials.yaml` and the session store are never part of the
-agent-visible workspace.
+`/home/node/.dsh/workspace` is the image's `HOME` and `WORKDIR`; the image
+defaults both, so the template sets no `HOME`. The workspace is the same
+`dsh-home` PVC's `workspace/` subdirectory, mounted a second time at that path
+(parent mount first) so the kubelet creates and chowns it on a fresh PVC. It is
+not a second volume. DSH state stays at the `DSH_HOME` root, so
+`.credentials.yaml` and the session store are not inside `workspace/`.
 
-The template also sets `HOME=/workspace`. DSH's directory picker (the folder
-explorer used to choose a workspace) has no start-path setting: when it opens,
-its browse backend lists `$HOME`, so with the image default (`/home/node`, which
-is not on a volume) it would start outside the persisted tree. Pointing `HOME`
-at the workspace makes the picker open on it (labelled *Home* in its breadcrumbs)
-and makes `~` in agent commands mean `/workspace`. The trade-off is that tools
-keeping caches or config under `$HOME` (`npm`/`pnpm`, `uv`, `git`, `gh`, and
-DSH's global `~/.agents` instructions and skills) write dotfiles onto the PVC
-inside the agent workspace, where the agent and the file explorer can see them.
-`DSH_HOME` is explicit (`/home/node/.dsh`), so sessions, config and credentials
-are unaffected. Pod env is stamped when a sandbox is created: a sandbox from
-before this setting keeps `HOME=/home/node` until it is recreated (see
+The template therefore does not override `HOME`: DSH's directory picker (the
+folder explorer used to choose a workspace) has no start-path setting, so it
+lists `$HOME`, and the image default makes the picker open on the persisted
+workspace (labelled *Home* in its breadcrumbs). `~` in agent commands means the
+same path. The trade-off is that tools keeping caches or config under `$HOME`
+(`npm`/`pnpm`, `uv`, `git`, `gh`, and DSH's global `~/.agents` instructions and
+skills) write dotfiles onto the PVC inside the agent workspace, where the agent
+and the file explorer can see them.
+
+Pod specs are stamped when a sandbox is created: a sandbox from before this
+change keeps `HOME=/workspace` and the old `/workspace` mount until it is
+recreated. The PVC's `workspace/` directory is the same data the new mount
+exposes, so recreation does not move files (see
 [Troubleshooting](#troubleshooting)).
 
 ## 5. Suspend: delete the pod, keep the PVC + Service
@@ -260,8 +263,8 @@ kubectl -n dsh-demo get svc "$SB"            # still here
 ```bash
 kubectl -n dsh-demo patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Running"}}'
 kubectl -n dsh-demo wait sandbox "$SB" --for=condition=Ready --timeout=180s
-kubectl -n dsh-demo exec "$SB" -- cat /home/node/.dsh/marker.txt   # "remember me"
-kubectl -n dsh-demo exec "$SB" -- cat /workspace/marker.txt        # "remember me too"
+kubectl -n dsh-demo exec "$SB" -- cat /home/node/.dsh/marker.txt             # "remember me"
+kubectl -n dsh-demo exec "$SB" -- cat /home/node/.dsh/workspace/marker.txt   # "remember me too"
 ```
 
 > **Why resume works:** the pod template sets `fsGroupChangePolicy: OnRootMismatch`;
@@ -710,7 +713,7 @@ kustomization roots: `kubectl apply -k manifests/base` applies only the base.
 | Gateway pod `ErrImagePull` / `ImagePullBackOff` (especially on kind) | The manifest uses `imagePullPolicy: IfNotPresent` with the release identity. Build with `make -C ../.. gateway`, retag to exactly the manifest's image, `kind load docker-image <that-ref>`, or set the Deployment image to your local tag / pinned digest. On a real cluster, make sure the GHCR package is readable (public or a pull secret) |
 | Step 3: `pod "$SB" not found` after deploying the gateway | The claim was suspended by the idle sweeper. Claims created by the gateway carry `aaas.example.com/managed-by=dsh-gateway`; hand-applied claims (steps 1–7) do not and are never swept. Resume the sandbox: `kubectl -n dsh-demo patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Running"}}'` |
 | Resume crash-loops: `credentials-local: … is readable beyond its owner (mode 660)` | The pod template lacks `fsGroupChangePolicy: OnRootMismatch`, so the kubelet's default fsGroup policy rewrote `.credentials.yaml` to `0660`; DSH requires `0600` and refuses to start. New installs get the policy from the template. For an existing sandbox: suspend it, run a throwaway pod on `dsh-home-$SB` to `chmod 600 /home/node/.dsh/.credentials.yaml`, patch the sandbox's `podTemplate` with the policy, then resume |
-| Agents get `Permission denied` writing to `/workspace` on a fresh or resumed pod | The `/workspace` mount is the `dsh-home` PVC's `workspace/` subPath, and the kubelet is known to leave a `subPath` directory at `0755` if it is interrupted between creating and chmodding it ([kubernetes#142464](https://github.com/kubernetes/kubernetes/issues/142464)); later mounts never correct it. Suspend the sandbox, run a throwaway pod on `dsh-home-$SB` mounted at `/data`, `chmod 2775 /data/workspace` (do **not** chown/chmod recursively — that rewrites `.credentials.yaml`), then resume. If you recreate the sandbox instead, its current `/workspace` contents go with the PVC |
+| Agents get `Permission denied` writing to `/home/node/.dsh/workspace` on a fresh or resumed pod | That mount is the `dsh-home` PVC's `workspace/` subPath, and the kubelet is known to leave a `subPath` directory at `0755` if it is interrupted between creating and chmodding it ([kubernetes#142464](https://github.com/kubernetes/kubernetes/issues/142464)); later mounts never correct it. Suspend the sandbox, run a throwaway pod on `dsh-home-$SB` mounted at `/data`, `chmod 2775 /data/workspace` (do **not** chown/chmod recursively — that rewrites `.credentials.yaml`), then resume. If you recreate the sandbox instead, its current workspace contents go with the PVC |
 | Every bash command fails: `SANDBOX_UNAVAILABLE`, `sandbox mode "workspace-write" is requested but no sandbox backend is usable` | DSH's own command sandbox found neither backend: `bubblewrap` ships in the image but is unsetuid, so it needs an unprivileged user namespace this hardened pod does not grant, and no Landlock runner exists on this kernel/runtime — the confined executor fails closed. The template sets `DSH_PERMISSION_MODE=danger-full-access` to keep agents usable inside the pod boundary. To restore confinement, confirm a backend inside the pod (`bwrap --ro-bind / / true`; `grep -o landlock /sys/kernel/security/lsm`), set `DSH_PERMISSION_MODE=workspace-write` (or `read-only`), and recreate the pod — the value is stamped at creation. A session that explicitly chose a mode keeps that choice |
 | SSO: GitHub login succeeds but the gateway asks for a token / returns `401` to `/recreate` | `AUTH_PROXY_HEADER` is not set on `deploy/dsh-gateway` (SSO is opt-in). Set `AUTH_PROXY_HEADER=X-Forwarded-User` and confirm the request actually reaches the gateway through oauth2-proxy |
 | SSO: gateway treats a caller as another user / bad `X-Forwarded-User` accepted | Trust boundary violation: something other than oauth2-proxy can reach `dsh-gateway:8080`. Remove the second path (Ingress/Gateway/port-forward), keep the Service ClusterIP, and only re-enable SSO once the proxy is the sole entry point. Never put a trusted identity header in front of a service that is directly reachable |
@@ -723,8 +726,8 @@ kustomization roots: `kubectl apply -k manifests/base` applies only the base.
 | Adding a plugin from GitHub fails with `dsh: connection to github.com timed out after 5000ms` | DSH's plugin manager bounds its GitHub preflight (`git ls-remote`) by `githubConnectionTimeoutMs` (default `5000`). When glibc's parallel A/AAAA DNS queries lose one response — which happens on some CNI/DNS combinations — the first lookup of a fresh process waits the full 5 s resolver timeout, so the check fails before pnpm runs. The template now sets `dnsConfig.options: single-request-reopen` to serialize the queries (~5 s → ~0.1 s); for an existing sandbox patch its `spec.podTemplate` with that `dnsConfig` and resume. Alternatively, raise `githubConnectionTimeoutMs` (e.g. `20000`) in the profile's `cordis.patch.yml` to tolerate the slow lookup |
 | Gateway cannot reach a sandbox after applying an exposure NetworkPolicy | Check that the CNI enforces NetworkPolicy and that the Traefik/oauth2-proxy pod labels match; kubelet probes may also need the node CIDR |
 | New provider key not visible in a sandbox | Pod env is stamped at creation: delete the warm-pool spares and recreate claimed pods. A key saved in DSH's credential store also wins over env |
-| Folder picker opens on `/home/node` instead of the workspace | The sandbox was created before the template set `HOME=/workspace`, and pod env is stamped at creation. Verify with `kubectl -n dsh-demo exec "$SB" -- printenv HOME`; patch the sandbox's `podTemplate` with the env (or recreate the sandbox — the PVC keeps DSH state and workspace) and resume |
-| File explorer and `ls /workspace` show `.cache`, `.config`, `.local`, `.npm`, `.agents` | Expected with `HOME=/workspace`: `~`-relative tool caches and DSH's global agent instructions/skills live on the PVC inside the workspace. Remove the `HOME` env from the template (and recreate the sandbox) if you would rather keep the picker on the ephemeral image home; point caches elsewhere per tool if only they are unwanted |
+| Folder picker opens on `/home/node` instead of the workspace | The sandbox predates the image default `HOME=/home/node/.dsh/workspace`, or its pod template still stamps `HOME=/workspace`/`/home/node`; pod env is stamped at creation. Verify with `kubectl -n dsh-demo exec "$SB" -- printenv HOME`; recreate the sandbox (the PVC keeps DSH state and workspace) or patch its `podTemplate` to remove the `HOME` override, then resume |
+| File explorer and `ls /home/node/.dsh/workspace` show `.cache`, `.config`, `.local`, `.npm`, `.agents` | Expected: the image sets `HOME` to the PVC-backed workspace, so `~`-relative tool caches and DSH's global agent instructions/skills live there. They are part of the persisted workspace; point caches elsewhere per tool if they are unwanted. Do not move `DSH_HOME` into the workspace |
 | Sandbox reports `Finished=True` and every gateway request fails | The sandbox Pod reached phase `Failed` (node eviction, spot reclaim) and the default `Retain` keeps it. Delete the Pod so the controller recreates it, or set `failedPodPolicy: Recreate` (agent-sandbox v1.0.8+; see optional hardening) |
 
 ## Limitations

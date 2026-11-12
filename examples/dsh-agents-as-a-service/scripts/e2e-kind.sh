@@ -72,23 +72,26 @@ pass "claim Ready in ${ELAPSED}s, adopted $SB"
 
 echo "=== 3. write state on the PVC"
 POD="$SB"
-# HOME must point at the PVC-backed workspace: DSH's directory picker lists
-# $HOME when it opens and has no start-path setting, so this is what makes the
-# folder explorer start on the persisted tree instead of the ephemeral image
-# home. It also makes ~ resolve to /workspace inside agent commands.
+# HOME and the process working directory are image defaults inside DSH_HOME:
+# DSH's directory picker lists $HOME when it opens and has no start-path
+# setting, so this is what opens the folder explorer on the persisted tree.
 HOME_VALUE=$(kubectl -n "$NS" exec "$POD" -- printenv HOME)
-[ "$HOME_VALUE" = "/workspace" ] || fail "HOME is '$HOME_VALUE', expected /workspace"
+[ "$HOME_VALUE" = "/home/node/.dsh/workspace" ] || fail "HOME is '$HOME_VALUE', expected /home/node/.dsh/workspace"
 TILDE=$(kubectl -n "$NS" exec "$POD" -- sh -c 'cd ~ && pwd')
-[ "$TILDE" = "/workspace" ] || fail "~ resolves to '$TILDE', expected /workspace"
-pass "HOME=$HOME_VALUE and ~ resolve to the workspace"
+[ "$TILDE" = "/home/node/.dsh/workspace" ] || fail "~ resolves to '$TILDE', expected /home/node/.dsh/workspace"
+PWD_VALUE=$(kubectl -n "$NS" exec "$POD" -- pwd)
+[ "$PWD_VALUE" = "/home/node/.dsh/workspace" ] || fail "cwd is '$PWD_VALUE', expected /home/node/.dsh/workspace"
+pass "HOME=$HOME_VALUE, ~ and cwd resolve to the workspace"
 kubectl -n "$NS" exec "$POD" -- sh -c 'echo "remember me" > /home/node/.dsh/marker.txt'
 pass "state marker written in $POD"
-# The agent workspace must be the dsh-home PVC's workspace/ subPath, writable
-# as UID 1000 without an init container.
-SUBPATH=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{range .spec.containers[0].volumeMounts[?(@.mountPath=="/workspace")]}{.subPath}{end}')
-[ "$SUBPATH" = "workspace" ] || fail "/workspace is not mounted from the dsh-home PVC subPath"
-kubectl -n "$NS" exec "$POD" -- sh -c 'echo "remember me too" > /workspace/marker.txt'
-pass "workspace marker written in $POD (subPath=$SUBPATH)"
+# The workspace is the dsh-home PVC's workspace/ subPath, mounted at the image
+# HOME/WORKDIR path. That second mount is what lets the kubelet create and chown
+# the directory on a fresh PVC.
+WORKSPACE_MOUNT=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{range .spec.containers[0].volumeMounts[?(@.mountPath=="/home/node/.dsh/workspace")]}{.subPath}{end}')
+[ "$WORKSPACE_MOUNT" = "workspace" ] || fail "/home/node/.dsh/workspace is not mounted from the dsh-home PVC subPath"
+kubectl -n "$NS" exec "$POD" -- test ! -e /workspace || fail "legacy /workspace path is present in the pod"
+kubectl -n "$NS" exec "$POD" -- sh -c 'echo "remember me too" > /home/node/.dsh/workspace/marker.txt'
+pass "workspace marker written in $POD (subPath=$WORKSPACE_MOUNT)"
 
 echo "=== 4. suspend (pod deleted, PVC + Service retained)"
 kubectl -n "$NS" patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Suspended"}}'
@@ -104,7 +107,7 @@ POD="$SB"
 MARKER=$(kubectl -n "$NS" exec "$POD" -- cat /home/node/.dsh/marker.txt)
 [ "$MARKER" = "remember me" ] || fail "state marker did not survive suspend/resume"
 pass "resumed: DSH state survived on the reattached PVC"
-WS_MARKER=$(kubectl -n "$NS" exec "$POD" -- cat /workspace/marker.txt)
+WS_MARKER=$(kubectl -n "$NS" exec "$POD" -- cat /home/node/.dsh/workspace/marker.txt)
 [ "$WS_MARKER" = "remember me too" ] || fail "workspace marker did not survive suspend/resume"
 pass "resumed: agent workspace survived on the PVC subPath"
 

@@ -58,9 +58,10 @@ the Dockerfile is linted by `lint` (hadolint).
 `ci-image.yaml` (`build-amd64`) is the PR-side check for the main image: when
 `Dockerfile`, `.dockerignore` or `versions.env` change it builds `linux/amd64`
 with the pins from `versions.env` — no registry login, no push — and smoke-tests
-the result (`--version`, non-root UID, `/workspace` + `DSH_HOME`, the
-`bubblewrap` runner, the version label, and `/favicon.svg` served from a running
-container). The published multi-arch build still happens only in
+the result (`--version`, non-root UID, `HOME` and `DSH_HOME` under
+`/home/node/.dsh`, the `bubblewrap` runner, the version label, and
+`/favicon.svg` served from a running container). The published multi-arch build
+still happens only in
 `build-main.yaml` on merge.
 
 Because a skipped path-filtered check is not a passing check, require only the

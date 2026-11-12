@@ -79,21 +79,14 @@ spec:
                 name: dsh-provider-keys-extra
                 optional: true
           env:
-            # Point the OS home at the persisted agent workspace. DSH's
-            # directory picker (the folder explorer used to choose a workspace)
-            # lists $HOME when it opens and has no start-path setting, so with
-            # the image default (/home/node, not on a volume) it would open on a
-            # throwaway directory. /workspace is the PVC-backed WORKDIR, so the
-            # picker opens on the tree that survives suspend/resume, and `~` in
-            # agent commands resolves there. Trade-off: tools that keep caches
-            # or config under $HOME (npm/pnpm, uv, git, gh, DSH's global
-            # ~/.agents instructions and skills) write dotfiles onto the PVC
-            # inside the agent workspace. DSH_HOME is explicit
-            # (/home/node/.dsh), so sessions, config and credentials are
-            # unaffected. Rationale in full at
+            # HOME and the process working directory are set by the image to
+            # /home/node/.dsh/workspace (inside DSH_HOME), so the folder picker
+            # opens on the PVC-backed workspace without a pod-level override.
+            # Caches/config kept under $HOME (npm/pnpm, uv, git, gh, DSH's
+            # global ~/.agents instructions and skills) therefore live in the
+            # workspace; sessions, config and credentials stay at the DSH_HOME
+            # root. Rationale in full at
             # examples/dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml.
-            - name: HOME
-              value: /workspace
             # Empty => DSH derives links from the request Host. Keep it empty
             # when fronting the sandbox with a proxy/gateway.
             - name: DSH_PUBLIC_URL
@@ -117,13 +110,15 @@ spec:
           volumeMounts:
             - name: dsh-home
               mountPath: /home/node/.dsh # DSH_HOME
-            # The agent workspace (the image's WORKDIR) is the same PVC under
-            # its own subPath, so DSH state - including .credentials.yaml -
-            # never shows up as workspace data. Kubelet creates workspace/ on
-            # first mount with the volume's fsGroup permissions; no init
-            # container is needed. See the multi-tenant template for details.
+            # The agent workspace is the same PVC's workspace/ subdirectory, not
+            # a second volume. The image already sets HOME and WORKDIR to
+            # /home/node/.dsh/workspace; this second mount of the same PVC at
+            # that path makes the kubelet create and chown workspace/ before the
+            # container starts on a fresh PVC. Without it the runtime would
+            # create the missing cwd as root, which UID 1000 could not write.
+            # See the multi-tenant template for details.
             - name: dsh-home
-              mountPath: /workspace
+              mountPath: /home/node/.dsh/workspace
               subPath: workspace
           # / is behind DSH's launch-token cookie (401 without it); use an
           # unauthenticated path for probes. The startup probe gives a cold

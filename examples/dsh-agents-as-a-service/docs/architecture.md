@@ -25,7 +25,7 @@ flowchart LR
         sb["Sandbox dsh-pool-xxxx<br/>spec.operatingMode"]
         svc["Headless Service<br/>status.serviceFQDN"]
         pod["DSH Web pod<br/>node process :3080"]
-        pvc[("PVC dsh-home-SANDBOX<br/>/home/node/.dsh + /workspace (subPath)")]
+        pvc[("PVC dsh-home-SANDBOX<br/>/home/node/.dsh<br/>(workspace/ subPath)")]
     end
 
     browser -->|"HTTP + WebSocket<br/>/u/USER/**"| gw
@@ -47,7 +47,7 @@ Responsibilities:
 | **Gateway** | Signup/login, session auth, `SandboxClaim` lifecycle, wake-on-connect, idle sweeper, HTTP/SSE/WebSocket reverse proxy, DSH launch-token handshake. Liveness is `/healthz` (cluster-free); readiness is `/readyz` (one bounded Kubernetes API read, `503` when it fails), so an API outage removes the pod from the Service instead of restarting it or answering `500`s. |
 | **Kubernetes API** | Source of truth for claims, sandboxes, and pods; also the log source for the DSH launch token. |
 | **agent-sandbox controller** | Adopts warm spares on claim, flips `operatingMode` (Running/Suspended), garbage-collects sandbox + PVC on claim delete. |
-| **DSH Web pod** | One `dsh web` process per user, DSH state and the agent workspace on the per-user PVC (`/home/node/.dsh` + `/workspace`), listening on `3080`. |
+| **DSH Web pod** | One `dsh web` process per user, DSH state and the agent workspace on the per-user PVC (`/home/node/.dsh`, workspace in `workspace/`), listening on `3080`. |
 | **Warm pool** | Keeps `N` Ready sandboxes so signup is a label flip instead of a cold start. |
 
 ## Exposure variants
@@ -198,19 +198,22 @@ sequenceDiagram
 
 Suspend deletes only the pod. The PVC keeps conversations, sessions, config **and the agent
 workspace**, so resume reattaches exactly the same state. Both trees live on one PVC: DSH state at
-`/home/node/.dsh` (the volume root) and the workspace at `/workspace` (a second mount of the same
-volume with `subPath: workspace`, which keeps `.credentials.yaml` out of the agent-visible tree).
-The idle sweeper never touches the volume; deleting the claim still garbage-collects it, so
-`POST /recreate` wipes state and workspace together.
+`/home/node/.dsh` (the volume root) and the workspace in `workspace/`, mounted again at
+`/home/node/.dsh/workspace` with `subPath: workspace` (parent mount first). That second mount is
+not a second volume; it lets the kubelet create and chown `workspace/` on a fresh PVC.
+`.credentials.yaml` stays at the volume root, not inside `workspace/`. The idle sweeper never
+touches the volume; deleting the claim still garbage-collects it, so `POST /recreate` wipes state
+and workspace together.
 
-**Workspace as home.** The template sets `HOME=/workspace`. DSH has no start-path setting for its
-directory picker: the browse backend lists `$HOME` when the dialog opens, so with the image default
-(`/home/node`, off the PVC) the picker would start on a throwaway directory. The override makes the
-picker open on the persisted workspace and makes `~` resolve there; the cost is that tool caches
-and config kept under `$HOME` (`npm`/`pnpm`, `uv`, `git`, `gh`, and DSH's global `~/.agents`
+**Workspace as home.** The image sets `HOME` and `WORKDIR` to
+`/home/node/.dsh/workspace`, so the template no longer overrides `HOME`. DSH has no start-path
+setting for its directory picker: the browse backend lists `$HOME` when the dialog opens, so the
+picker starts on the persisted workspace and `~` resolves there. The cost is that tool caches and
+config kept under `$HOME` (`npm`/`pnpm`, `uv`, `git`, `gh`, and DSH's global `~/.agents`
 instructions and skills) become dotfiles in the workspace. `DSH_HOME` stays `/home/node/.dsh`, so
-sessions, config and credentials remain outside the agent-visible tree. Pod env is stamped when a
-sandbox is created, so an existing sandbox keeps the old `HOME` until it is recreated.
+sessions, config and credentials remain at the volume root; the workspace is a subdirectory of
+`DSH_HOME`, not a separate security boundary. Pod env is stamped when a sandbox is created, so an
+existing sandbox keeps its old `HOME=/workspace` and mount until it is recreated.
 
 **Ownership boundary.** The gateway shares its namespace with claims created outside it — the
 example's resource-layer walkthrough applies `dsh-alice` by hand, and every claim is named

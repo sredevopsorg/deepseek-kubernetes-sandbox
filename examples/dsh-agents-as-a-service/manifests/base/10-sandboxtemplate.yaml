@@ -106,23 +106,16 @@ spec:
                 name: dsh-provider-keys-extra
                 optional: true
           env:
-            # Point the OS home at the persisted agent workspace. DSH's
-            # directory picker (the folder explorer used to choose a workspace)
-            # has no start-path setting: when it opens it lists $HOME, and
-            # os.homedir() follows this variable. The image default is
-            # /home/node, which is not on a volume, so the picker would open on
-            # a throwaway directory; /workspace is the PVC-backed WORKDIR. `~`
-            # in agent commands resolves here too. Trade-off: tools that keep
-            # caches/config under $HOME (npm/pnpm, uv, git, gh, and DSH's global
-            # ~/.agents instructions and skills) now write dotfiles onto the PVC
-            # inside the agent workspace, so they are visible to the agent and
-            # in the file explorer. DSH_HOME is explicit (/home/node/.dsh), so
-            # sessions, config and credentials are unaffected. Existing
-            # sandboxes stamp pod env at creation and keep the old HOME until
-            # recreated. Keep in sync with the minimal variant:
+            # HOME and the process working directory are set by the image to
+            # /home/node/.dsh/workspace (inside DSH_HOME), so DSH's folder
+            # picker opens on the persisted workspace without a pod-level
+            # override. Tools that keep caches/config under $HOME (npm/pnpm,
+            # uv, git, gh, and DSH's global ~/.agents instructions and skills)
+            # write those dotfiles into the workspace; sessions, config and
+            # credentials stay at the DSH_HOME root. Existing sandboxes that
+            # still stamp HOME=/workspace keep working until recreated. Keep in
+            # sync with the minimal variant:
             # examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml.
-            - name: HOME
-              value: /workspace
             # Empty => DSH derives links from the request Host, which the
             # gateway forwards (plus X-Forwarded-*). Point this at the
             # gateway base URL if you want hard-coded absolute links instead.
@@ -216,15 +209,18 @@ spec:
           volumeMounts:
             - name: dsh-home
               mountPath: /home/node/.dsh # DSH_HOME: sessions, config, state
-            # The agent workspace (the image's WORKDIR) is PVC-backed too, but
-            # under its own subPath so DSH state - including .credentials.yaml -
-            # never shows up as workspace data. Kubelet creates workspace/ on
-            # first mount with the volume's fsGroup permissions (0775, setgid
-            # inherited from the volume root), so UID 1000 can write; no init
-            # container is needed. If the kubelet is killed mid-creation the
-            # directory stays 0755: see Troubleshooting in the README.
+            # The agent workspace is the same PVC's workspace/ subdirectory, not
+            # a second volume. The image already sets HOME and WORKDIR to
+            # /home/node/.dsh/workspace; this second mount of the same PVC at
+            # that path makes the kubelet create and chown workspace/ before the
+            # container starts on a fresh PVC. Without it the runtime would
+            # create the missing cwd as root, which UID 1000 could not write.
+            # Kubelet creates the subPath with the volume's fsGroup permissions
+            # (setgid inherited from the volume root). If the kubelet is killed
+            # mid-creation the directory can stay 0755: see Troubleshooting in
+            # the README.
             - name: dsh-home
-              mountPath: /workspace
+              mountPath: /home/node/.dsh/workspace
               subPath: workspace
   volumeClaimTemplates:
     - metadata:

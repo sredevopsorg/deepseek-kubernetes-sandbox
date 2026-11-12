@@ -8,6 +8,10 @@ before changing anything; it encodes the conventions the CI enforces.
 - **The root is the primary artifact.** The Dockerfile packages DeepSeek
   Harness Web (dsh web) as a slim, non-root, multi-arch image. Everything else
   exists to support it or to demonstrate an implementation on top of it.
+- **The image declares one volume.** `DSH_HOME=/home/node/.dsh` holds DSH
+  state at the root and the agent workspace in `workspace/`; `HOME` and
+  `WORKDIR` are `/home/node/.dsh/workspace`. Docs, manifests and tests must use
+  that contract.
 - **Every implementation is a self-contained example** under examples/<name>/.
   The multi-tenant platform lives in exactly one directory; do not split it into
   parallel examples.
@@ -85,8 +89,9 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 ## Versioning and releases
 
 - Release identity = DSH_VERSION plus an optional -rN repository revision.
-  The current identity is dsh-v0.2.2-rc.1-r2 (first release at this DSH ref, so no
-  suffix); a repository-only change at the same ref publishes -r2.
+  The current identity is dsh-v0.2.2-rc.1-r2: upstream ref dsh-v0.2.2-rc.1 plus
+  repository revision r2. A further repository-only change at the same ref
+  publishes -r3.
 - Channels: release tags are immutable; latest follows the newest release;
   main is the development channel for both image packages.
 - A broken release is fixed by publishing -r(N+1), never by re-tagging.

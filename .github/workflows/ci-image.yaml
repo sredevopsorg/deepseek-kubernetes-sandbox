@@ -91,11 +91,11 @@ jobs:
           printf 'DSH CLI: %s\n' "$version"
           grep -q "${DSH_VERSION#dsh-v}" <<<"$version"
 
-          # The container runs as the non-root node user and its writable
-          # directories exist and are owned by that user.
+          # The container runs as the non-root node user; HOME and DSH_HOME
+          # exist, are owned by that user, and the default cwd is the workspace.
           [ "$(docker run --rm --entrypoint id "$image" -u)" = "1000" ]
           docker run --rm --entrypoint sh "$image" -c \
-            'test -d /workspace && test -d "$DSH_HOME" && [ "$(stat -c %u /workspace)" = 1000 ]'
+            'test -d "$HOME" && test -d "$DSH_HOME" && [ "$(stat -c %u "$HOME")" = 1000 ] && [ "$(stat -c %u "$DSH_HOME")" = 1000 ] && [ "$(pwd)" = "$HOME" ]'
 
           # The command-sandbox runner this image is expected to ship.
           docker run --rm --entrypoint bwrap "$image" --version
