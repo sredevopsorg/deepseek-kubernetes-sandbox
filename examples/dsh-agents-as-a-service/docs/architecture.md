@@ -184,17 +184,51 @@ sequenceDiagram
     participant S as Sweeper - lifespan task
     participant G as Gateway
     participant K as Kubernetes API
+    participant D as DSH
     actor B as Browser
 
-    S->>G: no proxied request for IDLE_TIMEOUT
-    G->>K: patch sandbox operatingMode=Suspended
-    K-->>G: pod deleted, PVC + Service retained
-    Note over S,G: in-flight requests/WebSockets are tracked,<br/>so a busy turn is never suspended
+    S->>G: no proxied request for IDLE_TIMEOUT, nothing in flight
+    G->>D: POST /api/session/list
+    alt any session reports running=true
+        D-->>G: {sessions: [... running: true]}
+        Note over S,G: the agent is still working,<br/>so the pod is kept
+    else every session is idle
+        D-->>G: {sessions: [... running: false]}
+        G->>K: patch sandbox operatingMode=Suspended
+        K-->>G: pod deleted, PVC + Service retained
+    else probe fails or the answer is unparseable
+        Note over S,G: unknown is never "idle":<br/>defer the suspend to the next sweep
+    end
     B->>G: GET /u/bob/ after a while
     G->>K: patch operatingMode=Running
     G->>K: wait for Ready (WAKE_TIMEOUT)
     G-->>B: request held, then served
 ```
+
+**Browser idleness is necessary but not sufficient.** Closing the tab, sleeping the laptop or losing
+the network ends every proxied request — the gateway even releases the in-flight slot on a client
+disconnect — while DSH keeps running the turn inside the sandbox. Suspending on that signal deletes
+the pod mid-turn, and DSH does not resume the interrupted turn on wake: it starts cold from the same
+PVC. So before patching, the sweeper asks DSH itself whether work is outstanding.
+
+DSH tracks the answer as `agent.status` (`idle` | `running`), which spans the whole driver drain
+interval and does not depend on a connected client; `session/list` projects it per session as
+`running` and reads the persisted list without resuming an agent. The gateway probes that endpoint
+with the same `dsh-auth-*` cookie it mints for the proxy (it never sends the launch or bearer token).
+The answer is tri-state:
+
+| Probe result | Sweeper action |
+| --- | --- |
+| `running: true` for any session | Keep the sandbox and log that a turn is in progress. |
+| Every session `running: false`, including an empty list | Suspend, once the browser has also been idle for `IDLE_TIMEOUT`. |
+| Handshake/HTTP failure, timeout, non-JSON body, or a response without a `sessions` array (older DSH) | **Fail closed**: suspend nothing this cycle and retry next sweep. |
+
+Failing closed is deliberate: a probe that cannot prove idleness must never authorize deleting the
+pod. The cost of a false "unknown" is a sandbox that stays awake, not a lost turn. The probe runs
+only after the cheap checks (ownership, `Ready`, no in-flight request, idle clock) have passed, and
+inside the per-user maintenance claim so a request cannot slip in between the probe and the patch.
+`SESSION_ACTIVITY_PROBE=false` restores the browser-only heuristic; `SESSION_PROBE_TIMEOUT` bounds
+one probe (default 5 s, well below `SWEEP_INTERVAL`).
 
 Suspend deletes only the pod. The PVC keeps conversations, sessions, config **and the agent
 workspace**, so resume reattaches exactly the same state. Both trees live on one PVC: DSH state at

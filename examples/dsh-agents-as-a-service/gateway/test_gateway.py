@@ -13,6 +13,7 @@ import hashlib
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,6 +39,7 @@ from gateway import (
     parse_dsh_launch_token,
     rewrite_location,
     same_origin,
+    sessions_running,
     token_matches,
 )
 
@@ -126,6 +128,15 @@ class FakeUpstream:
         self.handshake_cookies = ["dsh-auth-a=one; Path=/; HttpOnly; SameSite=Strict"]
         self.proxy_handler = None
         self.proxy_requests = []
+        # DSH agent-activity probe (POST /api/session/list).  Default: a
+        # well-formed empty list, i.e. provably idle, so the pre-existing
+        # sweeper tests keep suspending as before.  Set ``sessions`` to rows
+        # with ``running: True`` to simulate a busy turn, or
+        # ``session_list_status``/``session_list_handler`` to inject a failure.
+        self.sessions = []
+        self.session_list_status = 200
+        self.session_list_handler = None
+        self.session_list_requests = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -139,6 +150,15 @@ class FakeUpstream:
                     ("location", "/"),
                     ("set-cookie", cookies[index]),
                 ],
+            )
+        if request.url.path == "/api/session/list":
+            self.session_list_requests.append(request)
+            if self.session_list_handler is not None:
+                return self.session_list_handler(request)
+            return dsh_response(
+                self.session_list_status,
+                json.dumps({"sessions": self.sessions}).encode(),
+                {"content-type": "application/json"},
             )
         self.proxy_requests.append(request)
         if self.proxy_handler is not None:
@@ -2040,6 +2060,23 @@ def ready_sandbox(user="alice"):
     }
 
 
+def busy_sweepable(env, user="alice", running=True, idle=True):
+    """A gateway-managed, Ready sandbox the activity probe can actually reach.
+
+    ``ready_claim``/``ready_sandbox`` omit the pod, its logs and the Service
+    FQDN, so the DSH handshake cannot run and the probe fails closed.  These
+    tests need a fully resolvable sandbox: ``running`` controls what DSH
+    reports for its sessions.
+    """
+    k8s = env.k8s
+    sandbox_name, _pod = add_user(k8s, user)
+    k8s.claims[user]["metadata"]["annotations"]["aaas.example.com/managed-by"] = "dsh-gateway"
+    if idle:
+        env.gateway.state.last_activity[user] = time.time() - env.settings.idle_timeout - 10
+    env.upstream.sessions = [{"sessionId": "s1", "running": running}]
+    return sandbox_name
+
+
 @pytest.mark.asyncio
 async def test_sweeper_skips_claim_it_does_not_own(env):
     """A hand-applied claim (e.g. README 30-claim-alice.yaml) must not be swept.
@@ -2063,18 +2100,19 @@ async def test_sweeper_skips_claim_it_does_not_own(env):
     env.gateway.state.last_activity["alice"] = time.time() - env.settings.idle_timeout - 10
     await env.gateway.sweep_once()
     assert env.k8s.patches == []
+    assert env.upstream.session_list_requests == []
 
 
 @pytest.mark.asyncio
 async def test_sweeper_suspends_idle_ready_sandbox(env):
-    env.k8s.claims["alice"] = ready_claim()
-    env.k8s.sandboxes["dsh-alice-sbx"] = ready_sandbox()
-    env.gateway.state.last_activity["alice"] = time.time() - env.settings.idle_timeout - 10
-    env.gateway.state.handshake[("alice", POD_UID, "gateway.test")] = "dsh-auth-a=x"
+    """Idle browser + DSH reports no running agent => suspend."""
+    sandbox_name = busy_sweepable(env, running=False)
+    env.gateway.state.handshake[("alice", POD_UID, "10.0.0.7")] = "dsh-auth-a=x"
 
     await env.gateway.sweep_once()
 
-    assert env.k8s.patches == [("dsh-alice-sbx", "Suspended")]
+    assert env.k8s.patches == [(sandbox_name, "Suspended")]
+    assert len(env.upstream.session_list_requests) == 1
     assert env.gateway.state.handshake == {}
     assert env.gateway.state.maintenance["alice"] is False
 
@@ -2119,9 +2157,7 @@ async def test_sweeper_skips_sandbox_not_ready(env):
 
 @pytest.mark.asyncio
 async def test_sweeper_survives_transient_api_error(env):
-    env.k8s.claims["alice"] = ready_claim()
-    env.k8s.sandboxes["dsh-alice-sbx"] = ready_sandbox()
-    env.gateway.state.last_activity["alice"] = time.time() - 1000
+    busy_sweepable(env, running=False)
     env.k8s.patch_error = ApiException(status=500)
 
     with pytest.raises(ApiException):
@@ -2163,6 +2199,176 @@ async def test_sweeper_prunes_orphan_and_expired_state(env):
     assert env.gateway.state.in_flight["busy"] == 2
     assert alice_sid in env.gateway.state.sessions
     assert expired_sid not in env.gateway.state.sessions
+
+
+# --- DSH agent activity probe ----------------------------------------------
+#
+# Browser idleness alone must never authorize deleting the pod: closing the
+# tab releases every in-flight slot (``_release`` runs even on a client
+# disconnect) while DSH keeps running the turn.  The sweeper therefore consults
+# DSH's own ``agent.status`` projection and only suspends on a definite "idle".
+
+
+@pytest.mark.asyncio
+async def test_sweeper_skips_running_agent_after_browser_closed(env):
+    """The reported bug: idle browser + a running agent must not be suspended."""
+    busy_sweepable(env, running=True)
+    # The browser is gone: nothing is in flight and the idle clock is expired.
+    assert env.gateway.state.in_flight.get("alice", 0) == 0
+
+    await env.gateway.sweep_once()
+
+    assert env.k8s.patches == []
+    assert len(env.upstream.session_list_requests) == 1
+    assert env.gateway.state.maintenance["alice"] is False
+
+
+@pytest.mark.asyncio
+async def test_sweeper_skips_when_any_session_is_running(env):
+    """One busy session is enough, even when the others are idle."""
+    busy_sweepable(env, running=False)
+    env.upstream.sessions = [
+        {"sessionId": "s1", "running": False},
+        {"sessionId": "s2", "running": True},
+    ]
+
+    await env.gateway.sweep_once()
+
+    assert env.k8s.patches == []
+
+
+@pytest.mark.asyncio
+async def test_sweeper_suspends_empty_session_list(env):
+    """A sandbox with no sessions at all is provably idle, not unknown."""
+    busy_sweepable(env, running=False)
+    env.upstream.sessions = []
+
+    await env.gateway.sweep_once()
+
+    assert env.k8s.patches == [("dsh-alice-sbx", "Suspended")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configure",
+    [
+        pytest.param(lambda up: setattr(up, "session_list_status", 500), id="http-500"),
+        pytest.param(lambda up: setattr(up, "session_list_status", 401), id="http-401"),
+        pytest.param(lambda up: setattr(up, "handshake_status", 500), id="handshake-fails"),
+        pytest.param(
+            lambda up: setattr(up, "session_list_handler", lambda _r: dsh_response(200, b"<html>")),
+            id="non-json-body",
+        ),
+        pytest.param(
+            lambda up: setattr(up, "session_list_handler", lambda _r: dsh_response(200, b"{}")),
+            id="no-sessions-field",
+        ),
+    ],
+)
+async def test_sweeper_fails_closed_when_probe_is_unknown(env, configure):
+    """Unknown activity must not authorize a suspend: defer to the next sweep."""
+    busy_sweepable(env, running=False)
+    configure(env.upstream)
+
+    await env.gateway.sweep_once()
+
+    assert env.k8s.patches == []
+    # The maintenance claim is always released, so the user is not stranded.
+    assert env.gateway.state.maintenance["alice"] is False
+    assert env.gateway.state.in_flight.get("alice", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_sweeper_fails_closed_when_probe_raises(env):
+    """An unexpected exception in the probe is also unknown, never "idle"."""
+    busy_sweepable(env, running=False)
+
+    def boom(_request):
+        raise RuntimeError("mock blew up")
+
+    env.upstream.session_list_handler = boom
+
+    await env.gateway.sweep_once()
+
+    assert env.k8s.patches == []
+    assert env.gateway.state.maintenance["alice"] is False
+
+
+@pytest.mark.asyncio
+async def test_sweeper_probe_disabled_restores_browser_only_behavior(env):
+    """SESSION_ACTIVITY_PROBE=false is the documented escape hatch."""
+    busy_sweepable(env, running=True)
+    env.gateway.settings = replace(env.settings, session_activity_probe=False)
+
+    await env.gateway.sweep_once()
+
+    assert env.k8s.patches == [("dsh-alice-sbx", "Suspended")]
+    assert env.upstream.session_list_requests == []
+
+
+@pytest.mark.asyncio
+async def test_sweeper_does_not_probe_an_active_or_owned_sandbox(env):
+    """The probe is a network call: skip it until the cheap checks pass."""
+    # Recently active: no probe.
+    busy_sweepable(env, running=True, idle=False)
+    await env.gateway.sweep_once()
+    assert env.upstream.session_list_requests == []
+
+    # In flight: no probe.
+    env.gateway.state.last_activity["alice"] = time.time() - 1000
+    env.gateway.state.in_flight["alice"] = 1
+    await env.gateway.sweep_once()
+    assert env.upstream.session_list_requests == []
+
+    # Not owned by the gateway: no probe.
+    env.gateway.state.in_flight["alice"] = 0
+    env.k8s.claims["alice"]["metadata"]["annotations"].pop("aaas.example.com/managed-by")
+    await env.gateway.sweep_once()
+    assert env.upstream.session_list_requests == []
+
+
+@pytest.mark.asyncio
+async def test_probe_reuses_cached_handshake_cookie(env):
+    """A steady-state probe must not re-scrape pod logs on every sweep.
+
+    A busy agent is never suspended, so the cached cookie survives across
+    sweeps and only the first one pays for the ``pods/log`` scrape.
+    """
+    busy_sweepable(env, running=True)
+    await env.gateway.sweep_once()
+    env.gateway.state.last_activity["alice"] = time.time() - 1000
+    await env.gateway.sweep_once()
+
+    assert len(env.upstream.handshake_requests) == 1
+    assert len(env.upstream.session_list_requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_posts_session_list_with_args_envelope(env):
+    """Remote calls travel as POST /api/session/list with an ``args`` object."""
+    busy_sweepable(env, running=False)
+
+    await env.gateway.sweep_once()
+
+    (request,) = env.upstream.session_list_requests
+    assert request.method == "POST"
+    assert json.loads(request.content) == {"args": {}}
+    # The probe authenticates with the gateway-minted DSH cookie, never a token.
+    assert request.headers["cookie"].startswith("dsh-auth-")
+    assert "token=" not in str(request.url)
+
+
+def test_sessions_running_reads_the_running_flag():
+    assert sessions_running({"sessions": [{"running": True}]}) is True
+    assert sessions_running({"sessions": [{"running": False}]}) is False
+    assert sessions_running({"sessions": []}) is False
+    assert sessions_running({"items": [{"running": True}]}) is True
+    assert sessions_running([{"running": True}]) is True
+    # Shapes this gateway does not understand are unknown, never "idle".
+    assert sessions_running({}) is None
+    assert sessions_running({"sessions": "nope"}) is None
+    assert sessions_running("nope") is None
+    assert sessions_running(None) is None
 
 
 # --- security regressions (audit fixes) ------------------------------------

@@ -215,6 +215,25 @@ def derive_state(sandbox: dict | None) -> str:
     return "Ready" if condition(sandbox, "Ready") else "Waking"
 
 
+def sessions_running(payload) -> bool | None:
+    """Read DSH's ``session/list`` result: is any agent still running?
+
+    Returns ``None`` for a shape this gateway does not understand (an older DSH
+    without the field, a wrapped envelope), which the caller must treat as
+    unknown rather than idle.  A well-formed empty list is a definite ``False``:
+    no session can be running in a sandbox that has none.
+    """
+    if isinstance(payload, dict):
+        sessions = payload.get("sessions", payload.get("items"))
+    elif isinstance(payload, list):
+        sessions = payload
+    else:
+        return None
+    if not isinstance(sessions, list):
+        return None
+    return any(isinstance(row, dict) and row.get("running") is True for row in sessions)
+
+
 def token_matches(claim: dict, token: str | None) -> bool:
     """Timing-safe check of a user token against the stored SHA-256."""
     want = (claim.get("metadata", {}).get("annotations") or {}).get(TOKEN_ANNOTATION, "")
@@ -435,6 +454,15 @@ class Settings:
     # Largest WebSocket message accepted from DSH, in bytes. Browser-to-DSH
     # frames are bounded by the ASGI server's own WebSocket limit.
     ws_max_message_bytes: int = 16 * 1024 * 1024
+    # Ask DSH whether an agent is still running before suspending an idle
+    # sandbox. Browser traffic alone cannot answer that: a closed tab or a
+    # sleeping laptop ends every proxied request while DSH keeps working, so
+    # without this probe the sweeper would delete the pod mid-turn. Off falls
+    # back to the browser-only heuristic.
+    session_activity_probe: bool = True
+    # Upper bound, in seconds, for one DSH session/list probe. It sits on the
+    # sweeper's critical path, so it is kept well below SWEEP_INTERVAL.
+    session_probe_timeout: float = 5.0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -472,6 +500,8 @@ class Settings:
             upstream_header_allowlist=_env_allowlist("UPSTREAM_HEADER_ALLOWLIST"),
             max_in_flight_per_user=_env_int("MAX_IN_FLIGHT_PER_USER", 32),
             ws_max_message_bytes=_env_int("WS_MAX_MESSAGE_BYTES", 16 * 1024 * 1024),
+            session_activity_probe=_env_bool("SESSION_ACTIVITY_PROBE", True),
+            session_probe_timeout=_env_float("SESSION_PROBE_TIMEOUT", 5.0),
         )
 
 
@@ -1092,6 +1122,71 @@ class Gateway:
             raise HandshakeError("the DSH handshake set no auth cookie")
         self.state.handshake[key] = cookie
         return cookie, key, False
+
+    # -- DSH agent activity probe -----------------------------------------
+
+    async def dsh_busy(self, user: str, sandbox: dict, fqdn: str) -> bool | None:
+        """Ask DSH whether any session's agent is still running.
+
+        Browser traffic cannot answer "is a task running?": closing the tab,
+        sleeping the laptop or losing the network ends every proxied request
+        (``_release`` even runs on a client disconnect) while the agent keeps
+        working inside the sandbox.  Suspending on that signal deletes the pod
+        and kills the turn, and DSH does not resume it on wake.
+
+        DSH tracks the truth as ``agent.status`` (``idle`` | ``running``), which
+        spans the whole driver drain interval and does not depend on a
+        connected client.  ``session/list`` projects it per session as
+        ``running`` and reads the persisted session list without resuming an
+        agent, so it is safe to call on an idle sandbox.
+
+        Returns ``True`` (busy), ``False`` (provably idle) or ``None``
+        (unknown).  ``None`` is the fail-closed answer: a probe that cannot
+        prove idleness must not authorize deleting the pod, so the sweeper
+        defers the suspension to a later cycle.  This never raises.
+        """
+        if not self.settings.session_activity_probe:
+            return False
+        host = self._probe_authority(sandbox, fqdn)
+        try:
+            cookie, _, _ = await self.dsh_cookie(user, sandbox, fqdn, host)
+            response = await self.http.post(
+                f"http://{fqdn}:{self.settings.dsh_port}/api/session/list",
+                json={"args": {}},
+                headers={
+                    "Host": host,
+                    "Cookie": cookie,
+                    "X-Forwarded-Host": host,
+                    "X-Forwarded-Proto": "http",
+                },
+                timeout=self.settings.session_probe_timeout,
+            )
+        except (HandshakeError, httpx.HTTPError, ApiException) as exc:
+            # Credential-free: the message may name the failure kind only.
+            print(f"activity probe for {user} failed: {type(exc).__name__}", flush=True)
+            return None
+        except Exception as exc:  # never let the probe break the sweeper
+            print(f"activity probe for {user} errored: {type(exc).__name__}", flush=True)
+            return None
+        if not 200 <= response.status_code < 300:
+            print(
+                f"activity probe for {user}: DSH answered {response.status_code}",
+                flush=True,
+            )
+            return None
+        try:
+            return sessions_running(response.json())
+        except (ValueError, TypeError):
+            # Non-JSON body (an auth redirect landing on HTML) is unknown, not idle.
+            print(f"activity probe for {user}: unparseable DSH response", flush=True)
+            return None
+
+    def _probe_authority(self, sandbox: dict, fqdn: str) -> str:
+        """The Host DSH accepts for its own bind address, same as the WS path."""
+        authority = self._pod_ip(sandbox) or fqdn
+        if ":" in authority and not authority.startswith("["):
+            authority = f"[{authority}]"  # IPv6 literal
+        return authority
 
     # -- landing page / health --------------------------------------------
 
@@ -1815,6 +1910,20 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                     continue
                 self.state.maintenance[user] = True
             try:
+                # Browser idleness is necessary but not sufficient: a closed
+                # tab ends every proxied request while DSH keeps running the
+                # turn.  Only a definite "nothing is running" authorizes
+                # deleting the pod; unknown defers to the next sweep.  The
+                # probe runs outside state.lock (it makes network calls) but
+                # inside the maintenance claim, so no request can slip in
+                # between the check and the patch (``continue`` still runs the
+                # finally below, which releases the claim).
+                fqdn = (sandbox.get("status") or {}).get("serviceFQDN") or ""
+                busy = await self.dsh_busy(user, sandbox, fqdn)
+                if busy is not False:
+                    if busy:
+                        print(f"keeping {user}: DSH reports a running agent", flush=True)
+                    continue
                 print(f"suspending {user} (idle {int(idle)}s)", flush=True)
                 await self.k8s.patch_operating_mode(sandbox["metadata"]["name"], "Suspended")
                 self._clear_handshake(user)
