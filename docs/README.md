@@ -35,6 +35,7 @@ DSH discovers project skills from `<git root>/.dsh/skills/<name>/SKILL.md`
 | [dsh-agents-as-a-service architecture](../examples/dsh-agents-as-a-service/docs/architecture.md) | Container/sequence diagrams, ADRs, security and RBAC, failure modes and the evolution path. |
 | [gateway README](../examples/dsh-agents-as-a-service/gateway/README.md) | The gateway's HTTP/WebSocket API, configuration, auth (including SSO), and limitations. |
 | [optional hardening](../examples/dsh-agents-as-a-service/docs/optional-hardening.md) | Opt-in gVisor, nodeSelector, NetworkPolicy, provider keys and failed-Pod recovery. |
+| [agentgateway evaluation](../examples/dsh-agents-as-a-service/docs/agentgateway-evaluation.md) | Where agentgateway fits (edge identity, LLM/MCP egress door) and why it cannot replace the gateway's data plane today. |
 | [exposure variants](../examples/dsh-agents-as-a-service/manifests/exposure/README.md) | The mutually exclusive Ingress and Gateway API + SSO exposure paths. |
 
 ## Project policies
