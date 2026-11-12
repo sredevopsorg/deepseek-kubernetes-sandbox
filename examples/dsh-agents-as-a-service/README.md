@@ -22,8 +22,9 @@ It ships in three layers:
    **opaque-cookie sessions**, auth rate limiting and an optional signup invite
    code, a `/u/{user}/**` proxy for HTTP **and WebSocket** that transparently
    **wakes suspended instances on connect**, and an idle sweeper that suspends
-   them again. The gateway performs the DSH launch-token handshake server-side,
-   so the browser never sees the token.
+   them again — but only once DSH reports that no agent is still running, so a
+   closed tab cannot delete the pod in the middle of a turn. The gateway performs
+   the DSH launch-token handshake server-side, so the browser never sees the token.
 3. **The exposure layer** (step 9): choose exactly one way in — a plain Traefik
    Ingress, or Gateway API + oauth2-proxy (GitHub SSO).
 

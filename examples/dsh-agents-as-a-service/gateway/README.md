@@ -212,7 +212,7 @@ can also be injected into `create_app` for tests.
 | --- | --- | --- |
 | `NAMESPACE` | `dsh-demo` | Namespace holding the claims, sandboxes and pods. |
 | `POOL` | `dsh-pool` | `warmPoolRef.name` for new claims. |
-| `IDLE_TIMEOUT` | `60` | Seconds of inactivity before the sweeper suspends a sandbox. Only claims the gateway created (annotation `aaas.example.com/managed-by=dsh-gateway`) are ever suspended. |
+| `IDLE_TIMEOUT` | `60` | Seconds of inactivity before the sweeper suspends a sandbox. Idleness is necessary but not sufficient: the sweeper also requires that DSH reports no running agent (see `SESSION_ACTIVITY_PROBE`). Only claims the gateway created (annotation `aaas.example.com/managed-by=dsh-gateway`) are ever suspended. |
 | `WAKE_TIMEOUT` | `120` | Seconds to wait for a sandbox to become Ready (signup and wake-on-connect). |
 | `DSH_PORT` | `3080` | Upstream DSH port. |
 | `DSH_CONTAINER` | `dsh-web` | Container whose logs carry the launch token. |
@@ -224,6 +224,8 @@ can also be injected into `create_app` for tests.
 | `MAX_BODY_MB` | `32` | Maximum buffered request body (and `413` threshold). |
 | `HTTP_TIMEOUT` | `300` | Upstream connect/read timeout in seconds. Proxied streams (SSE, long responses) keep the connect/write budget but have **no read timeout**, so an idle event stream is not cut every five minutes. |
 | `SWEEP_INTERVAL` | `15` | Seconds between idle sweeps. Sweeps also prune expired sessions and rate buckets and orphaned per-user state. |
+| `SESSION_ACTIVITY_PROBE` | `true` | Before suspending an idle sandbox, ask DSH (`POST /api/session/list`) whether any agent is still `running`. Browser idleness alone is not enough: a closed tab ends every proxied request while the turn keeps going, and suspending deletes the pod mid-turn. A probe that fails or returns a shape the gateway does not understand is treated as **unknown**, and the suspension is deferred to the next sweep (fail closed). `false` restores the browser-only heuristic. |
+| `SESSION_PROBE_TIMEOUT` | `5` | Upper bound in seconds for one activity probe. It sits on the sweeper's critical path, so keep it well below `SWEEP_INTERVAL`. |
 | `READY_CHECK_TIMEOUT` | `2` | Upper bound in seconds for the single Kubernetes API call made by `GET /readyz`. Keep it well below the readiness probe timeout. |
 | `SIGNUP_INVITE_CODE` | unset | When set, `POST /users` requires the matching `invite` form field or `X-Signup-Invite` header (timing-safe compare); the landing page then shows an invite input. Unset leaves signup open. |
 | `AUTH_RATE_LIMIT` | `30` | Attempts allowed per client per `AUTH_RATE_WINDOW` on `POST /users` and `POST /login`; `0` disables the limit. |
@@ -292,6 +294,14 @@ uvicorn's access log so bearer tokens in URLs are not logged.
   Log rotation, a very chatty container, or DSH changing its startup message
   breaks the handshake. Prefer a first-class token/credential API when DSH
   offers one.
+* **The activity probe targets a DSH-internal call.** `SESSION_ACTIVITY_PROBE`
+  reads the `running` field of DSH's `session/list` Remote. It is not a
+  published, versioned API, so a DSH upgrade could rename it or move the field.
+  The failure mode is safe but visible: the probe becomes "unknown", the
+  sweeper fails closed, and idle sandboxes stop suspending until the gateway is
+  updated (or `SESSION_ACTIVITY_PROBE=false` restores the browser-only
+  heuristic). That trade is intentional — an over-eager suspend kills a running
+  turn, which DSH does not resume.
 * **Single replica, in-memory state.** The handshake cookie cache, the opaque
   session table, idle activity clocks, in-flight counters and rate-limit
   buckets live in one process. Running more than one replica would need shared
