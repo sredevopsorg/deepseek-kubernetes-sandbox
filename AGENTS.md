@@ -85,7 +85,7 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 ## Versioning and releases
 
 - Release identity = DSH_VERSION plus an optional -rN repository revision.
-  The current identity is dsh-v0.2.2-rc.1 (first release at this DSH ref, so no
+  The current identity is dsh-v0.2.2-rc.1-r2 (first release at this DSH ref, so no
   suffix); a repository-only change at the same ref publishes -r2.
 - Channels: release tags are immutable; latest follows the newest release;
   main is the development channel for both image packages.

@@ -164,3 +164,4 @@ venv/
 .uvcache/
 coverage.xml
 
+.vscode/settings.json
