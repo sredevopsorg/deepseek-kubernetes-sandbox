@@ -155,9 +155,17 @@ class FakeUpstream:
             self.session_list_requests.append(request)
             if self.session_list_handler is not None:
                 return self.session_list_handler(request)
+            # The real DSH wraps the answer in its Connection RPC envelope
+            # ({"type": "server-response", "result": {"ok": true, "value": ...}}).
             return dsh_response(
                 self.session_list_status,
-                json.dumps({"sessions": self.sessions}).encode(),
+                json.dumps(
+                    {
+                        "type": "server-response",
+                        "rpcId": "dsh-gateway-activity-probe",
+                        "result": {"ok": True, "value": {"items": self.sessions}},
+                    }
+                ).encode(),
                 {"content-type": "application/json"},
             )
         self.proxy_requests.append(request)
@@ -2263,6 +2271,27 @@ async def test_sweeper_suspends_empty_session_list(env):
             lambda up: setattr(up, "session_list_handler", lambda _r: dsh_response(200, b"{}")),
             id="no-sessions-field",
         ),
+        pytest.param(
+            # The real DSH answer when the envelope or args are wrong.
+            lambda up: setattr(
+                up,
+                "session_list_handler",
+                lambda _r: dsh_response(
+                    200,
+                    json.dumps(
+                        {
+                            "type": "server-response",
+                            "rpcId": "invalid-request",
+                            "result": {
+                                "ok": False,
+                                "error": {"code": "gateway/bad-request"},
+                            },
+                        }
+                    ).encode(),
+                ),
+            ),
+            id="rpc-error-envelope",
+        ),
     ],
 )
 async def test_sweeper_fails_closed_when_probe_is_unknown(env, configure):
@@ -2352,22 +2381,39 @@ async def test_probe_posts_session_list_with_args_envelope(env):
 
     (request,) = env.upstream.session_list_requests
     assert request.method == "POST"
-    assert json.loads(request.content) == {"args": {}}
+    assert json.loads(request.content) == {
+        "type": "client-request",
+        "rpcId": "dsh-gateway-activity-probe",
+        "method": "session/list",
+        "payload": {"args": {"_request": {}}},
+    }
     # The probe authenticates with the gateway-minted DSH cookie, never a token.
     assert request.headers["cookie"].startswith("dsh-auth-")
     assert "token=" not in str(request.url)
 
 
 def test_sessions_running_reads_the_running_flag():
-    assert sessions_running({"sessions": [{"running": True}]}) is True
-    assert sessions_running({"sessions": [{"running": False}]}) is False
-    assert sessions_running({"sessions": []}) is False
-    assert sessions_running({"items": [{"running": True}]}) is True
-    assert sessions_running([{"running": True}]) is True
+    def envelope(items):
+        return {
+            "type": "server-response",
+            "rpcId": "x",
+            "result": {"ok": True, "value": {"items": items}},
+        }
+
+    assert sessions_running(envelope([{"running": True}])) is True
+    assert sessions_running(envelope([{"running": False}])) is False
+    assert sessions_running(envelope([])) is False
+    assert sessions_running(envelope([{"running": False}, {"running": True}])) is True
+
+    # A failed RPC means the question was not answered: unknown, not idle.
+    # (A real DSH rejects a malformed envelope with gateway/bad-request.)
+    assert sessions_running({"result": {"ok": False, "error": {"code": "x"}}}) is None
     # Shapes this gateway does not understand are unknown, never "idle".
     assert sessions_running({}) is None
-    assert sessions_running({"sessions": "nope"}) is None
+    assert sessions_running({"result": {"ok": True}}) is None
+    assert sessions_running({"items": "nope"}) is None
     assert sessions_running("nope") is None
+    assert sessions_running([{"running": True}]) is None
     assert sessions_running(None) is None
 
 

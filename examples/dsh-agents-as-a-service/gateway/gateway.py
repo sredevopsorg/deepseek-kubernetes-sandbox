@@ -218,17 +218,28 @@ def derive_state(sandbox: dict | None) -> str:
 def sessions_running(payload) -> bool | None:
     """Read DSH's ``session/list`` result: is any agent still running?
 
-    Returns ``None`` for a shape this gateway does not understand (an older DSH
-    without the field, a wrapped envelope), which the caller must treat as
-    unknown rather than idle.  A well-formed empty list is a definite ``False``:
-    no session can be running in a sandbox that has none.
+    The answer travels in DSH's Connection RPC envelope::
+
+        {"type": "server-response", "rpcId": "...",
+         "result": {"ok": true, "value": {"items": [{"running": true}, ...]}}}
+
+    An RPC that failed (``ok: false``) is **unknown**, never "idle": the gateway
+    could not ask the question, so it cannot authorize deleting the pod.
+    Returns ``None`` for any shape this gateway does not understand (an older
+    DSH without the field, a future envelope), which the caller must treat as
+    unknown.  A well-formed empty list is a definite ``False``: no session can
+    be running in a sandbox that has none.
     """
-    if isinstance(payload, dict):
-        sessions = payload.get("sessions", payload.get("items"))
-    elif isinstance(payload, list):
-        sessions = payload
-    else:
+    if not isinstance(payload, dict):
         return None
+    if "result" in payload:  # server-response envelope
+        result = payload.get("result")
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            return None
+        payload = result.get("value")
+        if not isinstance(payload, dict):
+            return None
+    sessions = payload.get("items", payload.get("sessions"))
     if not isinstance(sessions, list):
         return None
     return any(isinstance(row, dict) and row.get("running") is True for row in sessions)
@@ -1152,10 +1163,21 @@ class Gateway:
             cookie, _, _ = await self.dsh_cookie(user, sandbox, fqdn, host)
             response = await self.http.post(
                 f"http://{fqdn}:{self.settings.dsh_port}/api/session/list",
-                json={"args": {}},
+                # DSH's Connection carries Remote calls in an RPC envelope, and
+                # the Typert gateway requires args to match the descriptor
+                # exactly: ``session/list(_request, signal)`` takes ``_request``
+                # (reserved, empty).  A bare {"args": {}} is rejected with
+                # gateway/bad-request, which the parser reads as unknown.
+                json={
+                    "type": "client-request",
+                    "rpcId": "dsh-gateway-activity-probe",
+                    "method": "session/list",
+                    "payload": {"args": {"_request": {}}},
+                },
                 headers={
                     "Host": host,
                     "Cookie": cookie,
+                    "Content-Type": "application/json",
                     "X-Forwarded-Host": host,
                     "X-Forwarded-Proto": "http",
                 },
