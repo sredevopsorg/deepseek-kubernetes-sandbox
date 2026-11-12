@@ -215,6 +215,19 @@ DSH tracks the answer as `agent.status` (`idle` | `running`), which spans the wh
 interval and does not depend on a connected client; `session/list` projects it per session as
 `running` and reads the persisted list without resuming an agent. The gateway probes that endpoint
 with the same `dsh-auth-*` cookie it mints for the proxy (it never sends the launch or bearer token).
+
+`session/list` is a Remote, so it does **not** take a plain JSON body. DSH's Connection carries calls
+in an RPC envelope, and the Typert gateway requires the args to match the descriptor exactly:
+
+```json
+{"type": "client-request", "rpcId": "...", "method": "session/list",
+ "payload": {"args": {"_request": {}}}}
+```
+
+The answer comes back as `{"type": "server-response", "result": {"ok": true, "value": {"items": [...]}}}`.
+A body of just `{"args": {}}` is rejected with `gateway/bad-request`, which the probe reads as
+unknown — so the envelope and the `_request` arg are both required, not cosmetic.
+
 The answer is tri-state:
 
 | Probe result | Sweeper action |
