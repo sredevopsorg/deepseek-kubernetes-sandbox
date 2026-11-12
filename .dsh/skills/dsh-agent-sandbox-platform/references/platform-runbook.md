@@ -28,7 +28,7 @@ a missing CRD is a prerequisite failure, not an application bug.
 | `SandboxWarmPool` | Pre-warmed spares from one template | `spec.replicas`, `sandboxTemplateRef` |
 | `SandboxClaim` | One tenant/user request; adopts a spare | `spec.warmPoolRef`, `additionalPodMetadata`, `status.sandbox.name` |
 | `Sandbox` | Adopted or directly created pod + Service + PVC | `spec.operatingMode`, `status.conditions`, `status.serviceFQDN`, `status.podIPs` |
-| `Pod` | The DSH Web process | `:3080`, PVC at `/home/node/.dsh` and `/workspace` (`subPath: workspace`) |
+| `Pod` | The DSH Web process | `:3080`, PVC at `/home/node/.dsh` (workspace in `workspace/`, `subPath: workspace`) |
 | `PersistentVolumeClaim` | Per-sandbox DSH state + agent workspace | `dsh-home-<sandbox>` |
 | `Service` | Stable per-sandbox DNS | `<sandbox>`, `status.serviceFQDN` |
 
@@ -123,17 +123,19 @@ kubectl -n "$NS" patch sandboxwarmpool "$POOL" --type merge -p '{"spec":{"replic
   `0600`; the template uses `fsGroupChangePolicy: OnRootMismatch`. If a resumed
   sandbox crash-loops with a mode-660 error, suspend it, fix the file with a
   throwaway pod, patch the policy, then resume.
-- Agent files live at `/workspace`, the same PVC mounted with
-  `subPath: workspace`; it survives suspend/resume and dies with the PVC.
-- The templates set `HOME=/workspace` (the image default is `/home/node`). DSH's
-  directory picker lists `$HOME` when it opens and has no start-path setting, so
-  this is what makes the folder explorer start on the persisted workspace; `~`
-  and `$HOME`-relative tool caches/config also resolve there. `DSH_HOME` remains
-  `/home/node/.dsh`, so state and credentials stay out of the workspace. Pod env
-  is stamped at sandbox creation: a sandbox created before the override keeps
-  the old `HOME` until it is recreated (or its `podTemplate` is patched and the
-  sandbox resumed). Verify with
-  `kubectl -n "$NS" exec "$POD" -- printenv HOME`.
+- Agent files live at `/home/node/.dsh/workspace`, the same PVC's `workspace/`
+  subPath mounted again at that path; it survives suspend/resume and dies with
+  the PVC.
+- The image sets `HOME` and `WORKDIR` to `/home/node/.dsh/workspace`; the
+  templates do not override `HOME`. DSH's directory picker lists `$HOME` when it
+  opens and has no start-path setting, so the folder explorer starts on the
+  persisted workspace; `~` and `$HOME`-relative tool caches/config also resolve
+  there. `DSH_HOME` remains `/home/node/.dsh`, so state and credentials stay at
+  the volume root. The workspace is a subdirectory of `DSH_HOME`, not a separate
+  security boundary. Pod env is stamped at sandbox creation: a sandbox created
+  before this change keeps its old `HOME=/workspace` and mount until it is
+  recreated (or its `podTemplate` is patched and the sandbox resumed). Verify
+  with `kubectl -n "$NS" exec "$POD" -- printenv HOME`.
 - DSH confines bash with its own file sandbox (`bubblewrap`, else Landlock) and
   fails closed with `SANDBOX_UNAVAILABLE` when neither works. The image ships
   `bubblewrap`, but it is unsetuid and needs an unprivileged user namespace that

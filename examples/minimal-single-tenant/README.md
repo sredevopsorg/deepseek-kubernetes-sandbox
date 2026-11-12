@@ -103,24 +103,29 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 
 ## Folder picker and the workspace
 
-The template mounts the `dsh-home` PVC's `workspace/` subPath at
-`/workspace` and sets `HOME=/workspace`. DSH's directory picker (the folder
-explorer used to choose a workspace) has no start-path setting: it lists `$HOME`
-when it opens, so with the image default (`/home/node`) it would start on a
-directory that is not persisted. Pointing `HOME` at the PVC-backed workspace makes
-the picker open there (labelled *Home* in its breadcrumbs) and makes `~` in agent
-commands resolve to `/workspace`. The trade-off is that `$HOME`-relative tool
-caches and config (`.cache`, `.config`, `.local`, `.npm`, `.agents`) are written
-into the workspace on the PVC. DSH state is unaffected: `DSH_HOME` stays
-`/home/node/.dsh`. The rationale and the list of affected paths are in
+The image defaults `HOME` and `WORKDIR` to `/home/node/.dsh/workspace`, inside
+the single `dsh-home` PVC mounted at `/home/node/.dsh`. DSH's directory picker
+(the folder explorer used to choose a workspace) has no start-path setting: it
+lists `$HOME` when it opens, so it starts on the persisted workspace (labelled
+*Home* in its breadcrumbs), and `~` in agent commands resolves there. The
+template mounts the PVC's `workspace/` subPath again at
+`/home/node/.dsh/workspace` (parent mount first). That is not a second volume:
+it makes the kubelet create and chown `workspace/` on a fresh PVC. The trade-off
+is that `$HOME`-relative tool caches and config (`.cache`, `.config`, `.local`,
+`.npm`, `.agents`) are written into the workspace on the PVC. DSH state stays at
+the `DSH_HOME` root (`/home/node/.dsh`), not inside `workspace/`. The rationale
+is in
 [`10-sandboxtemplate.yaml`](../dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml).
-Pod specs are stamped at creation, so an existing sandbox keeps its old mounts and
-`HOME` until it is recreated; the PVC retains DSH state and workspace data.
+
+Pod specs are stamped at creation, so an existing sandbox keeps its old
+`HOME=/workspace` and `/workspace` mount until it is recreated. The PVC retains
+DSH state and the `workspace/` data, which is the same directory the new mount
+exposes; recreating the sandbox does not move files.
 
 Verify inside a running sandbox:
 
 ```bash
-kubectl -n dsh-demo exec "$SB" -- printenv HOME   # /workspace
+kubectl -n dsh-demo exec "$SB" -- printenv HOME   # /home/node/.dsh/workspace
 ```
 
 ## Network policy and optional hardening

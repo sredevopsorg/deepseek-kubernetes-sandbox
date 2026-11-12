@@ -41,10 +41,10 @@ To reproduce the equivalent by hand:
 docker build \
   --build-arg DSH_VERSION=dsh-v0.2.2-rc.1 \
   --build-arg DSH_COMMIT=66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db \
-  --build-arg RELEASE_REVISION= \
+  --build-arg RELEASE_REVISION=r2 \
   --build-arg PNPM_VERSION=11.28.5 \
   --build-arg VCS_REF="$(git rev-parse --short HEAD)" \
-  -t ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.1 .
+  -t ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.1-r2 .
 ```
 
 ### Build args
@@ -52,7 +52,7 @@ docker build \
 | Arg | Default / source | Purpose |
 | --- | --- | --- |
 | `DSH_REPO` | `https://github.com/deepseek-ai/deepseek-harness.git` | Upstream DSH repository to clone. |
-| `DSH_VERSION` | `DSH_VERSION` in [versions.env](../versions.env) | Upstream DSH git tag/ref to package. The Dockerfile records it as `io.sredevopsorg.dsh.version` and (for local builds) `org.opencontainers.image.version`; published builds set the version label to the full release identity. |
+| `DSH_VERSION` | `DSH_VERSION` in [versions.env](../versions.env) | Upstream DSH git tag/ref to package (the base tag, e.g. `dsh-v0.2.2-rc.1`), not the release identity. The Dockerfile records it as `io.sredevopsorg.dsh.version` and (for local builds) `org.opencontainers.image.version`; published builds set the version label to the full release identity. |
 | `DSH_COMMIT` | `DSH_COMMIT` in [versions.env](../versions.env) | Full commit SHA `DSH_VERSION` must resolve to upstream. The build stage fails unless `git rev-parse HEAD` in the clone equals this value, which pins the source independently of a movable tag. |
 | `RELEASE_REVISION` | `RELEASE_REVISION` in [versions.env](../versions.env) | Repository revision suffix (`rN`), recorded in `io.sredevopsorg.release.revision`. The release identity is `DSH_VERSION` plus `-RELEASE_REVISION` when set. See [versioning](versioning.md). |
 | `PNPM_VERSION` | `PNPM_VERSION` in [versions.env](../versions.env) | pnpm version activated with corepack in both stages. |
@@ -90,27 +90,37 @@ The entrypoint is `tini -- /usr/local/bin/dsh-entrypoint`:
 | `DSH_PUBLIC_URL` | `http://localhost:${DSH_PORT}` | Public base URL used to build links and the launch-token URL printed in the logs. Set it when the container is published on a different host port or behind a proxy. |
 | `DSH_TRUSTED_HOSTS` | empty | Extra `Host`/`Origin` allow-list entries, comma- or space-separated. `localhost`/`127.0.0.1` are always trusted. Required when a proxy forwards the browser's `Host`. |
 | `DEEPSEEK_API_KEY` | empty | Provider credential read by DSH. Inject it with `-e`/`envFrom`; never bake it into the image. Only model calls fail when it is missing. |
-| `DSH_HOME` | `/home/node/.dsh` | DSH state directory (conversations, sessions, config, credentials). Mount a volume here to persist it. |
-| `HOME` | `/home/node` | OS home: where `~` resolves and where tools keep caches and config. DSH's directory picker has no start-path setting, so it lists `$HOME` when opened. The shipped sandbox templates override it to `/workspace` so the picker opens on the persisted workspace; the trade-offs are below. |
+| `DSH_HOME` | `/home/node/.dsh` | DSH state directory (conversations, sessions, config, credentials). The agent workspace is its `workspace/` subdirectory; mount one volume here. |
+| `HOME` | `/home/node/.dsh/workspace` | OS home and process working directory: where `~` resolves, where tools keep caches and config, and where DSH's folder picker starts (it lists `$HOME` and has no start-path setting). See the workspace note below. |
 | `DSH_PERMISSION_MODE` | `workspace-write` | Deployment default for DSH's file policy: `read-only`, `workspace-write`, or `danger-full-access` (which also turns approval prompts off). The confined modes need `bubblewrap` or Landlock inside the container; where neither is usable every bash command fails closed with `SANDBOX_UNAVAILABLE`. See the note below. |
 
-The image also sets `NODE_ENV=production`, `HOME=/home/node`, and a `PATH` that
-includes `/app/node_modules/.bin`.
+The image also sets `NODE_ENV=production`, `HOME=/home/node/.dsh/workspace`,
+`DSH_HOME=/home/node/.dsh`, and a `PATH` that includes `/app/node_modules/.bin`.
 
 `HOME` decides where DSH's folder picker starts. DSH has no start-path setting:
 the picker's browse backend lists `$HOME` when the dialog opens and labels that
-listing *Home*. With the image default (`/home/node`) that listing is outside a
-mounted volume; the example sandbox templates
-([minimal](../examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml),
-[agents as a service](../examples/dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml))
-mount the same PVC's `workspace` subPath at `/workspace` and set `HOME=/workspace`
-so the picker opens on the persisted agent workspace. `~`
+listing *Home*. The image defaults `HOME` and `WORKDIR` to
+`/home/node/.dsh/workspace`, inside the single `/home/node/.dsh` volume, so the
+picker opens on the persisted agent workspace without a pod-level override. `~`
 and every tool that keeps caches or config under `$HOME` (`npm`/`pnpm`, `uv`,
 `git`, `gh`, DSH's global `~/.agents` instructions and skills) follow, so those
-dotfiles then live on the workspace volume too. `DSH_HOME` is separate and stays
-`/home/node/.dsh`, so sessions, config and credentials stay out of the
-workspace. An existing sandbox stamps this environment at pod creation, so the
-override only applies to sandboxes created after it was added.
+dotfiles live in the workspace. DSH state (sessions, config and credentials)
+stays at the `DSH_HOME` root; `.credentials.yaml` is not inside `workspace/`,
+but the workspace is a subdirectory of `DSH_HOME`, so a shell that can browse
+the parent can reach it. (The examples already run with
+`DSH_PERMISSION_MODE=danger-full-access`, so this is not a new access boundary.)
+
+The example sandbox templates
+([minimal](../examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml),
+[agents as a service](../examples/dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml))
+mount the PVC at `/home/node/.dsh` and mount its `workspace` subPath again at
+`/home/node/.dsh/workspace` (parent mount first). The second mount is not a
+second volume: it makes the kubelet create and chown `workspace/` before the
+container starts on a fresh PVC. Without it, the runtime would create the
+missing cwd as root and the non-root `node` user could not write. An existing
+sandbox created before this change keeps its stamped `HOME=/workspace` and old
+`/workspace` mount until it is recreated; its PVC data at `workspace/` is
+already in the new location, so recreating it does not move any files.
 
 DSH confines bash commands itself (a second layer inside whatever container
 sandbox you already run). Its Linux runners are `bubblewrap` and then Landlock,
@@ -152,10 +162,32 @@ procedure.
 | Item | Value | Notes |
 | --- | --- | --- |
 | Exposed port | `3080/tcp` | `EXPOSE 3080`; one port serves the UI, assets, API, SSE and WebSocket traffic. |
-| State volume | `/home/node/.dsh` | Declared with `VOLUME`; use a named volume (Docker) or PVC (Kubernetes). |
-| Working directory | `/workspace` | The agent workspace. Mount a volume here if agents should keep files; the shipped example templates mount the same PVC's `workspace` subPath here and point `HOME` at it, so DSH's folder picker opens on it. |
+| State + workspace volume | `/home/node/.dsh` | Declared with `VOLUME`; use a named volume (Docker) or PVC (Kubernetes). DSH state is at the root; the agent workspace is `workspace/`. |
+| Working directory | `/home/node/.dsh/workspace` | The agent workspace and image `WORKDIR` (also `HOME`). The shipped templates mount the same PVC's `workspace` subPath here so a fresh PVC gets a writable directory. |
 | Stop signal | `SIGTERM` | `tini` forwards it to `dsh web`; allow a graceful shutdown period. |
 | User | `node`, UID/GID `1000` | The process is non-root. A PVC mounted at `DSH_HOME` must be writable by UID 1000. |
+
+### Upgrading an existing deployment
+
+Existing Kubernetes sandboxes keep their old pod spec until recreated: the old
+`/workspace` was the same PVC's `workspace/` subPath, so recreating the sandbox
+(the PVC survives) applies the new mount and `HOME` without moving data.
+
+Docker needs one manual step because a pre-existing named volume is not
+repopulated from the new image (a fresh volume is; Docker copies the image's
+`/home/node/.dsh`, including `workspace/`):
+
+```bash
+# One-time: create the workspace with the image user's ownership.
+docker run --rm -u 0 --entrypoint sh \
+  -v dsh-home:/home/node/.dsh \
+  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.1-r2 \
+  -c 'mkdir -p /home/node/.dsh/workspace && chown 1000:1000 /home/node/.dsh/workspace'
+```
+
+For a bind mount, create the same directory on the host with UID/GID 1000
+instead. Do not start the new image against an old volume until
+`/home/node/.dsh/workspace` exists and is writable by UID 1000.
 
 ### Health probes
 
@@ -209,7 +241,7 @@ GitHub Container Registry:
 
 | Tag | Meaning |
 | --- | --- |
-| `dsh-v0.2.2-rc.1` | Current release identity. **Immutable**: once published it never moves. |
+| `dsh-v0.2.2-rc.1-r2` | Current release identity. **Immutable**: once published it never moves. |
 | `latest` | Most recent release; points at the same digest as the current identity. |
 | `main` | Development channel rebuilt when image-definition files change on `main`; not a release, not for production. |
 
@@ -218,7 +250,7 @@ Release identities, channels and rollback rules are defined in
 pin a digest:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.1
+docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.1-r2
 # ... pin the digest in your deployment manifests:
 #   image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
 ```
@@ -226,7 +258,7 @@ docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbo
 ## Verifying an image
 
 ```bash
-docker inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.1 \
+docker inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.1-r2 \
   --format '{{json .Config.Labels}}'
 # org.opencontainers.image.title / .version / .source
 # io.sredevopsorg.dsh.version / io.sredevopsorg.release.revision

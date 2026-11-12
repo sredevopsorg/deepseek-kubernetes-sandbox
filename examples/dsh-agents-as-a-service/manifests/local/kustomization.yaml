@@ -35,11 +35,11 @@ resources:
 # Prefer a digest for reproducible rollouts; never a mutable dev tag.
 # images:
 #   - name: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox/dsh-agents-as-a-service/gateway
-#     newTag: dsh-v0.2.2-rc.1
+#     newTag: dsh-v0.2.2-rc.1-r2
 #     # digest: sha256:<multi-arch-index-digest>
 #   # Optional: pin the sandbox image the SandboxTemplate stamps into every pod.
 #   - name: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox
-#     newTag: dsh-v0.2.2-rc.1
+#     newTag: dsh-v0.2.2-rc.1-r2
 
 # Enable only the patches this cluster needs. EVERY entry is commented out so
 # the default build equals the base. Each patch file's header repeats its exact
