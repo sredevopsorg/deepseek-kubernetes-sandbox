@@ -1,5 +1,8 @@
 # deepseek-kubernetes-sandbox
 
+<img width="900" height="516" alt="dsh-image" src="https://github.com/user-attachments/assets/6785a74d-0c8f-4960-9199-e5aeeb773f8f" />
+
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sredevopsorg/deepseek-kubernetes-sandbox)
 
 **DeepSeek Harness Web, packaged as a container.** This repository's primary
