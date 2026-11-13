@@ -1861,6 +1861,8 @@ async def test_proxied_requests_use_the_stream_timeout(env, monkeypatch):
 async def test_relay_ends_cleanly_when_the_upstream_stream_breaks(env):
     class Broken:
         closed = False
+        # A plain (non-SSE) upstream, so the relay takes its passthrough path.
+        headers = httpx.Headers()
 
         async def aiter_raw(self):
             yield b"chunk"
@@ -2788,3 +2790,110 @@ async def test_spoofed_header_ignored_when_sso_disabled(env):
     async with asgi_client(env) as client:
         response = await client.get("/u/alice/", headers={"X-Forwarded-User": "alice"})
     assert response.status_code == 401
+
+
+# --- SSE keepalive ---------------------------------------------------------
+
+
+class TimedSSE(httpx.AsyncByteStream):
+    """An SSE body that pauses between frames, so the relay goes idle."""
+
+    def __init__(self, frames, pause=0.2):
+        self.frames = frames
+        self.pause = pause
+
+    async def __aiter__(self):
+        for index, frame in enumerate(self.frames):
+            if index:
+                await asyncio.sleep(self.pause)
+            yield frame
+
+
+def env_with(env, **settings_overrides):
+    """A second app over the same fakes, for a setting the fixture fixes."""
+    settings = replace(env.settings, **settings_overrides)
+    app = create_app(
+        settings=settings,
+        k8s=env.k8s,
+        http_client=env.http_client,
+        ws_connect=env.ws_connect,
+    )
+    return SimpleNamespace(
+        app=app,
+        gateway=app.state.gateway,
+        settings=settings,
+        k8s=env.k8s,
+        upstream=env.upstream,
+        ws_connect=env.ws_connect,
+        http_client=env.http_client,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sse_relay_keeps_an_idle_stream_alive(env):
+    """A silent event stream is punctuated, without disturbing its frames."""
+    add_user(env.k8s)
+    idle = env_with(env, sse_keepalive_interval=0.05)
+    idle.upstream.proxy_handler = lambda request: httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        stream=TimedSSE([b"data: one\n\n", b"data: two\n\n"]),
+    )
+    async with asgi_client(idle, cookies=session_dict(idle)) as client:
+        response = await client.get("/u/alice/plugins/events")
+    assert response.status_code == 200
+    assert response.content.startswith(b"data: one\n\n")
+    assert b": keepalive\n\n" in response.content
+    assert response.content.endswith(b"data: two\n\n")
+
+
+@pytest.mark.asyncio
+async def test_sse_keepalive_never_touches_a_non_sse_body(env):
+    """Only event streams are punctuated; a binary body stays byte-exact."""
+    add_user(env.k8s)
+    idle = env_with(env, sse_keepalive_interval=0.05)
+    idle.upstream.proxy_handler = lambda request: httpx.Response(
+        200,
+        headers={"content-type": "application/octet-stream"},
+        stream=TimedSSE([b"first", b"second"], pause=0.1),
+    )
+    async with asgi_client(idle, cookies=session_dict(idle)) as client:
+        response = await client.get("/u/alice/api/blob")
+    assert response.content == b"firstsecond"
+
+
+@pytest.mark.asyncio
+async def test_sse_keepalive_zero_disables_it(env):
+    add_user(env.k8s)
+    quiet = env_with(env, sse_keepalive_interval=0)
+    quiet.upstream.proxy_handler = lambda request: httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        stream=TimedSSE([b"data: one\n\n", b"data: two\n\n"], pause=0.1),
+    )
+    async with asgi_client(quiet, cookies=session_dict(quiet)) as client:
+        response = await client.get("/u/alice/plugins/events")
+    assert b"keepalive" not in response.content
+
+
+@pytest.mark.asyncio
+async def test_sse_keepalive_skips_a_content_length_body(env):
+    """A declared length must not grow, even on an event-stream content type."""
+    add_user(env.k8s)
+    idle = env_with(env, sse_keepalive_interval=0.05)
+    idle.upstream.proxy_handler = lambda request: httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream", "content-length": "18"},
+        stream=TimedSSE([b"data: one\n\n", b"data: two\n\n"], pause=0.1),
+    )
+    async with asgi_client(idle, cookies=session_dict(idle)) as client:
+        response = await client.get("/u/alice/plugins/events")
+    assert b"keepalive" not in response.content
+
+
+def test_settings_sse_keepalive_interval(monkeypatch):
+    monkeypatch.setenv("ALLOW_INSECURE_COOKIES", "1")
+    monkeypatch.delenv("SSE_KEEPALIVE_INTERVAL", raising=False)
+    assert Settings.from_env().sse_keepalive_interval == 15.0
+    monkeypatch.setenv("SSE_KEEPALIVE_INTERVAL", "2.5")
+    assert Settings.from_env().sse_keepalive_interval == 2.5
