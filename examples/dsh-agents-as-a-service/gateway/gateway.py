@@ -112,6 +112,13 @@ HOP_BY_HOP = frozenset(
     }
 )
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# SSE comment line emitted when a proxied event stream goes quiet.  Comments
+# start with ":" and carry no event, so EventSource readers ignore the frame.
+SSE_KEEPALIVE_FRAME = b": keepalive\n\n"
+# Bounded hand-off between the upstream reader and the relay loop.  Keepalive
+# frames queue here too, so the bound must be larger than a normal burst to
+# avoid stalling the upstream read.
+SSE_QUEUE_CHUNKS = 64
 # Headers the gateway owns: never forwarded from the browser, overwritten with
 # the gateway's own view of the connection instead.
 OWNED_REQUEST_HEADERS = HOP_BY_HOP | {
@@ -474,6 +481,13 @@ class Settings:
     # Upper bound, in seconds, for one DSH session/list probe. It sits on the
     # sweeper's critical path, so it is kept well below SWEEP_INTERVAL.
     session_probe_timeout: float = 5.0
+    # Idle keepalive for proxied SSE responses, in seconds.  Intermediaries
+    # (Cloudflare closes a silent connection after ~100 s) and any proxy with a
+    # read timeout cut an event stream that stops writing, and DSH's HMR channel
+    # only writes a frame when the plugin graph changes.  A comment frame is
+    # part of the SSE wire format and ignored by EventSource, so it keeps the
+    # stream warm without changing what the browser sees.  0 disables it.
+    sse_keepalive_interval: float = 15.0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -513,6 +527,7 @@ class Settings:
             ws_max_message_bytes=_env_int("WS_MAX_MESSAGE_BYTES", 16 * 1024 * 1024),
             session_activity_probe=_env_bool("SESSION_ACTIVITY_PROBE", True),
             session_probe_timeout=_env_float("SESSION_PROBE_TIMEOUT", 5.0),
+            sse_keepalive_interval=_env_float("SSE_KEEPALIVE_INTERVAL", 15.0),
         )
 
 
@@ -1695,6 +1710,74 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
             pool=self.settings.http_timeout,
         )
 
+    def _sse_keepalive_interval(self, upstream: httpx.Response) -> float:
+        """How often to punctuate this response with an SSE comment, or 0.
+
+        Only an event stream with no declared length qualifies: a
+        ``Content-Length`` response must not gain bytes, and a keepalive on a
+        regular asset would corrupt it.
+        """
+        interval = self.settings.sse_keepalive_interval
+        if interval <= 0:
+            return 0.0
+        content_type = upstream.headers.get("content-type", "")
+        if not content_type.lower().startswith("text/event-stream"):
+            return 0.0
+        if "content-length" in upstream.headers:
+            return 0.0
+        return interval
+
+    async def _relay_sse(self, upstream: httpx.Response, interval: float):
+        """Relay an event stream, adding a comment frame when it goes quiet.
+
+        The upstream read is never cancelled to produce a beat: cancelling
+        ``aiter_raw`` would abandon a partially read chunk and corrupt the
+        event stream.  A pump task feeds a bounded queue and a beat task
+        appends to it, so a slow upstream delays a keepalive instead of losing
+        data.  ``last`` is only touched by the pump and the beat task, both of
+        which record when they last queued a frame.
+        """
+        queue: asyncio.Queue[object] = asyncio.Queue(maxsize=SSE_QUEUE_CHUNKS)
+        end = object()
+        last = time.monotonic()
+
+        async def pump() -> None:
+            nonlocal last
+            try:
+                async for chunk in upstream.aiter_raw():
+                    await queue.put(chunk)
+                    last = time.monotonic()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # relayed to _relay's handler
+                await queue.put(exc)
+            else:
+                await queue.put(end)
+
+        async def beat() -> None:
+            nonlocal last
+            while True:
+                await asyncio.sleep(interval)
+                if time.monotonic() - last >= interval:
+                    await queue.put(SSE_KEEPALIVE_FRAME)
+                    last = time.monotonic()
+
+        tasks = [asyncio.create_task(pump()), asyncio.create_task(beat())]
+        try:
+            while True:
+                item = await queue.get()
+                if item is end:
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with contextlib.suppress(BaseException):
+                    await task
+
     @staticmethod
     def _response_headers(upstream: httpx.Response, user: str):
         headers = []
@@ -1710,8 +1793,13 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
     async def _relay(self, user: str, upstream: httpx.Response):
         try:
             try:
-                async for chunk in upstream.aiter_raw():
-                    yield chunk
+                keepalive = self._sse_keepalive_interval(upstream)
+                if keepalive > 0:
+                    async for chunk in self._relay_sse(upstream, keepalive):
+                        yield chunk
+                else:
+                    async for chunk in upstream.aiter_raw():
+                        yield chunk
             except httpx.HTTPError as exc:
                 # The upstream stream ended abnormally (reset, network change,
                 # deadline). The browser reconnects; one traceback per idle SSE

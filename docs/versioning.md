@@ -15,18 +15,19 @@ release identity = DSH_VERSION + optional "-" + RELEASE_REVISION
 
 | Piece | Meaning |
 | --- | --- |
-| `DSH_VERSION` | The upstream DeepSeek Harness git ref being packaged, e.g. `dsh-v0.2.2-rc.2`. It mirrors upstream's own tag and is not the release identity. |
+| `DSH_VERSION` | The upstream DeepSeek Harness git ref being packaged, e.g. `dsh-v0.2.2-rc.3`. It mirrors upstream's own tag and is not the release identity. |
 | `RELEASE_REVISION` | An optional repository revision at that DSH ref: empty for the first release, `rN` (`N >= 2`) for a repository-only re-release. |
 
 Examples:
 
-- `DSH_VERSION=dsh-v0.2.2-rc.2`, `RELEASE_REVISION=` → identity
-  `dsh-v0.2.2-rc.2` (first release at that upstream ref).
-- `DSH_VERSION=dsh-v0.2.2-rc.2`, `RELEASE_REVISION=r2` → identity
-  `dsh-v0.2.2-rc.2` (repository-only re-release; no DSH upgrade).
+- `DSH_VERSION=dsh-v0.2.2-rc.3`, `RELEASE_REVISION=` → identity
+  `dsh-v0.2.2-rc.3` (first release at that upstream ref).
+- `DSH_VERSION=dsh-v0.2.2-rc.3`, `RELEASE_REVISION=<rN>` → identity
+  `dsh-v0.2.2-rc.3` with the revision appended (repository-only re-release;
+  no DSH upgrade).
 - `DSH_VERSION=<ref>`, `RELEASE_REVISION=rN` → identity `<ref>-rN` (for example,
-  documentation, CI or gateway changes on top of an already-released ref). Use
-  `r2` for the first re-release: revision 1 is the plain tag.
+  documentation, CI or gateway changes on top of an already-released ref). The
+  first re-release is numbered 2: revision 1 is the plain tag.
 
 A DSH upgrade produces a new base identity (for example the next upstream ref
 with an empty revision); a repository-only change at the same DSH ref increments
@@ -38,8 +39,9 @@ with an empty revision); a repository-only change at the same DSH ref increments
 change what an existing deployment runs. A fix therefore publishes a new identity;
 see the rules above.
 
-The current identity is `dsh-v0.2.2-rc.2`: the upstream ref
-`dsh-v0.2.2-rc.2` plus repository revision `r2`. The identity is stored in
+The current identity is `dsh-v0.2.2-rc.3`: the upstream ref
+`dsh-v0.2.2-rc.3` with no repository revision (the first release at that ref).
+A later repository-only change at this ref appends `-rN`. The identity is stored in
 [versions.env](../versions.env) and consumed everywhere: the Dockerfile labels
 (version and revision), the example manifests, the Makefile and the release
 workflow.
@@ -48,7 +50,7 @@ workflow.
 
 | Channel | Image tag | Meaning |
 | --- | --- | --- |
-| Release | `dsh-v0.2.2-rc.2` | The current immutable release identity. What production should pin (preferably by digest). |
+| Release | `dsh-v0.2.2-rc.3` | The current immutable release identity. What production should pin (preferably by digest). |
 | `latest` | `latest` | Alias for the most recent release; moves only when a new release is published. |
 | `main` | `main` | Development channel, rebuilt when image or gateway sources change on `main`. Never treat it as a release; it exists so `main` can be tested. |
 
@@ -62,9 +64,9 @@ Values from [versions.env](../versions.env) at the current identity:
 | Component | Pin | Source |
 | --- | --- | --- |
 | Upstream DSH source | `DSH_REPO` | [versions.env](../versions.env) |
-| DSH ref | `dsh-v0.2.2-rc.2` | `DSH_VERSION` |
-| DSH commit | `ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c` | `DSH_COMMIT`; the main image build fails unless the clone's `HEAD` matches |
-| Repository revision | `r2` | `RELEASE_REVISION` |
+| DSH ref | `dsh-v0.2.2-rc.3` | `DSH_VERSION` |
+| DSH commit | `38a6a5c965aa99ab525161efb7cc5cf1fe62fced` | `DSH_COMMIT`; the main image build fails unless the clone's `HEAD` matches |
+| Repository revision | _(none)_ | `RELEASE_REVISION` (empty) |
 | pnpm | `11.28.5` | `PNPM_VERSION` |
 | Node build image | `docker.io/node:24-trixie@sha256:8c761eca2bf7eec965f946cf47b8090143cb41f45f2f8699af0cc0298d2d2d19` | `NODE_BUILD_IMAGE`, digest-pinned |
 | Node runtime image | `docker.io/node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446` | `NODE_RUNTIME_IMAGE`, digest-pinned |
@@ -180,7 +182,7 @@ Release identities are immutable in theory; deployments should still pin the
 _resolved_ digest for reproducibility and supply-chain safety:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.2
+docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.3
 # then, in the deployment:
 #   image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
 ```
