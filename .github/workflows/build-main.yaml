@@ -5,6 +5,12 @@ name: Build main image
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: The version of the main image to build
+        required: false
+        default: main
+        type: string
   push:
     branches: [main]
     paths:
@@ -83,3 +89,4 @@ jobs:
         VCS_REF=${{ github.sha }}
       tags: |
         ${{ needs.meta.outputs.ghcr_image }}:main
+        ${{ github.event_name == 'workflow_dispatch' && format('{0}:{1}', needs.meta.outputs.ghcr_image, inputs.version) || '' }}
