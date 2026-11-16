@@ -197,11 +197,15 @@ all of these:
 3. Keep `75-networkpolicies.yaml` with the variant. It enforces the boundary in
    the network layer (gateway ← oauth2-proxy ← the Gateway implementation's
    namespace, and limited oauth2-proxy egress). The shipped
-   `oauth2-proxy-ingress` names the `traefik` namespace, not every namespace;
-   adjust the selector to wherever your Gateway implementation runs. This is
-   required, not optional: an exposure without the policy is demo-only, and a
-   custom exposure without an equivalent policy has no network
-   enforcement.
+   `oauth2-proxy-ingress` never accepts every namespace, and the overlay keeps
+   its source namespace in
+   `gateway-api-sso/patches/oauth2-proxy-ingress-gateway-namespace.yaml` —
+   set that to where **your** Gateway implementation runs (`kube-system` on
+   k3s and kind; a Helm release often uses `traefik`). A selector that matches
+   no pod allows nothing and every path answers `502 Bad Gateway`, so
+   `preflight-sso.sh` resolves it against live pods. This is required, not
+   optional: an exposure without the policy is demo-only, and a custom
+   exposure without an equivalent policy has no network enforcement.
 4. Apply the gateway egress policy too: the gateway talks to the Kubernetes API
    and to sandbox pods, and `75-networkpolicies.yaml` intentionally leaves that
    direction unrestricted because the API-server endpoint is cluster-specific.

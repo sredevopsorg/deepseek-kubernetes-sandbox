@@ -589,9 +589,11 @@ HTTPRoute hostname into `DSH_TRUSTED_HOSTS`; there is no manual
    `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, that the Gateway's TLS certificate
    reference resolves, that the gateway ServiceAccount may `patch`
    `sandboxclaims` (SSO token rotation), that all three of the variant's
-   NetworkPolicies are applied and that `oauth2-proxy-ingress` does not accept
-   every namespace, that no Ingress routes to `dsh-gateway`, and that no
-   `your-github-org`/`dsh-demo.example.com` placeholder was left applied. Full
+   NetworkPolicies are applied, that `oauth2-proxy-ingress` neither accepts
+   every namespace nor names one that matches no running pod (a wrong
+   namespace answers `502` on every path), that no Ingress routes to
+   `dsh-gateway`, and that no `your-github-org`/`dsh-demo.example.com`
+   placeholder was left applied. Full
    verification steps are in the
    [exposure README](manifests/exposure/README.md).
 
@@ -694,6 +696,7 @@ kustomization roots: `kubectl apply -k manifests/base` applies only the base.
 | Pod `CrashLoopBackOff`, probes failing with `401` | Probe path is `/`; change readiness/liveness to `/favicon.svg` |
 | Browser shows `401` from DSH through the gateway | Gateway handshake failed — check `kubectl -n dsh-demo logs deploy/dsh-gateway` and that RBAC grants `pods/log` |
 | `502` / `upstream unavailable` | Sandbox pod is not Ready (wake timed out) or the Service DNS is stale; check `kubectl get sandbox`, `WAKE_TIMEOUT` |
+| `502 Bad Gateway` on **every** path, `/healthz` included, right after applying the SSO variant | `oauth2-proxy-ingress` names a namespace no pod matches (e.g. `traefik` on k3s, where Traefik is in `kube-system`), so Traefik cannot connect to `oauth2-proxy:4180`. Set it in `manifests/exposure/gateway-api-sso/patches/oauth2-proxy-ingress-gateway-namespace.yaml` and re-apply; `scripts/preflight-sso.sh` reports it |
 | `503` with `Retry-After` | Either the launch token was not found in the pod logs yet (the gateway retries after a short delay; check the pod logs and `DSH_LOG_TAIL_LINES`) or the user hit `MAX_IN_FLIGHT_PER_USER` (default 32 concurrent requests/WebSockets); reduce client concurrency or raise the limit deliberately |
 | `429` with `Retry-After` on signup/login | The per-client auth rate limit (`AUTH_RATE_LIMIT`, default explicitly `30` per `AUTH_RATE_WINDOW=60` s) rejected the attempt before reading the body. Wait for the window, or raise the limit; behind a proxy make sure the real client IP is the rightmost `X-Forwarded-For` entry, not a shared NAT address |
 | `403` on signup: invite required/invalid | `SIGNUP_INVITE_CODE` is configured. Send the code as form field `invite` or header `X-Signup-Invite`; the landing page shows the field when enabled. A wrong code is rejected before the user lookup |

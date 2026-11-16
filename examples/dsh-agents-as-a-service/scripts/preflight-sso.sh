@@ -28,10 +28,11 @@
 #      for the gateway's own control paths (and by the shipped Role, which
 #      still grants it); without the verb those calls answer 503;
 #   8. all three SSO NetworkPolicies shipped by the variant are applied, and
-#      oauth2-proxy-ingress does not accept every namespace. Without them any
-#      Pod in the cluster can reach dsh-gateway:8080 (directly, or through
-#      oauth2-proxy) and spoof the identity header, so the exposure is
-#      demo-only.
+#      oauth2-proxy-ingress neither accepts every namespace nor names one that
+#      matches no running pod (a wrong namespace silently answers 502 on every
+#      path, /healthz included). Without them any Pod in the cluster can reach
+#      dsh-gateway:8080 (directly, or through oauth2-proxy) and spoof the
+#      identity header, so the exposure is demo-only.
 #
 # Exit status: 0 when every check passes (warnings allowed), 1 on any failure.
 # Every failure prints the fix. This script only reads cluster state.
@@ -355,7 +356,7 @@ for POLICY in dsh-gateway-ingress oauth2-proxy-ingress oauth2-proxy-egress; do
   if kubectl -n "$NS" get networkpolicy "$POLICY" >/dev/null 2>&1; then
     pass "NetworkPolicy $POLICY exists"
   else
-    fail "NetworkPolicy $POLICY is missing: any Pod in the cluster can reach dsh-gateway:8080 and spoof X-Forwarded-User, so the SSO identity is not trustworthy. Fix: kubectl apply -f manifests/exposure/gateway-api-sso/75-networkpolicies.yaml"
+    fail "NetworkPolicy $POLICY is missing: any Pod in the cluster can reach dsh-gateway:8080 and spoof X-Forwarded-User, so the SSO identity is not trustworthy. Fix: kubectl apply -k manifests/exposure/gateway-api-sso"
   fi
 done
 
@@ -371,8 +372,99 @@ for rule in ((policy.get("spec") or {}).get("ingress") or []):
             sys.exit(1)
 '; then
     pass "oauth2-proxy-ingress restricts source namespaces"
+
+    # A non-empty selector can still name a namespace no pod lives in. The
+    # policy then allows nothing, Traefik cannot connect to oauth2-proxy:4180
+    # and EVERY path answers 502 Bad Gateway (Traefik's own page, /healthz
+    # included), which reads like an outage rather than an auth problem.
+    PEER_STATE=$(printf '%s' "$NS_JSON" | NAMESPACE="$NS" python3 -c '
+import json, os, subprocess, sys
+
+policy = json.load(sys.stdin)
+default_namespace = os.environ.get("NAMESPACE") or "dsh-demo"
+
+peers = []
+for rule in ((policy.get("spec") or {}).get("ingress") or []):
+    ports = [str(p.get("port")) for p in rule.get("ports") or [] if isinstance(p, dict)]
+    if "4180" in ports:
+        peers.extend(rule.get("from") or [])
+
+if not peers:
+    print("unknown")
+    raise SystemExit
+
+
+def kubectl(*args):
+    done = subprocess.run(["kubectl", *args, "-o", "json"],
+                          capture_output=True, text=True, check=True)
+    return json.loads(done.stdout)
+
+
+def matches(labels, selector):
+    if selector is None:
+        return True
+    for key, value in (selector.get("matchLabels") or {}).items():
+        if labels.get(key) != value:
+            return False
+    for expression in selector.get("matchExpressions") or []:
+        key = expression.get("key")
+        operator = expression.get("operator")
+        values = expression.get("values") or []
+        if operator == "In" and labels.get(key) not in values:
+            return False
+        if operator == "NotIn" and labels.get(key) in values:
+            return False
+        if operator == "Exists" and key not in labels:
+            return False
+        if operator == "DoesNotExist" and key in labels:
+            return False
+    return True
+
+
+namespaces = None
+unresolved = False
+for peer in peers:
+    if "ipBlock" in peer:
+        unresolved = True
+        continue
+    namespace_selector = peer.get("namespaceSelector")
+    if namespace_selector is None:
+        targets = [default_namespace]
+    else:
+        if namespaces is None:
+            namespaces = kubectl("get", "namespaces")
+        targets = [item["metadata"]["name"] for item in namespaces["items"]
+                   if matches(item["metadata"].get("labels") or {}, namespace_selector)]
+    for target in targets:
+        try:
+            pods = kubectl("get", "pods", "-n", target)
+        except Exception:
+            continue
+        for item in pods.get("items") or []:
+            if (item.get("status") or {}).get("phase") != "Running":
+                continue
+            if matches(item["metadata"].get("labels") or {}, peer.get("podSelector")):
+                print("match:" + target + "/" + item["metadata"]["name"])
+                raise SystemExit
+
+print("ipblock" if unresolved else "nomatch")
+' 2>/dev/null || true)
+    case "$PEER_STATE" in
+      match:*)
+        pass "oauth2-proxy-ingress matches the Gateway implementation (${PEER_STATE#match:})"
+        ;;
+      nomatch)
+        fail "oauth2-proxy-ingress matches no running pod: the policy allows nothing, Traefik cannot reach oauth2-proxy:4180 and every path answers 502 Bad Gateway. Fix: set the namespace your Gateway implementation runs in (k3s/kind: kube-system; a Helm release often: traefik) in manifests/exposure/gateway-api-sso/patches/oauth2-proxy-ingress-gateway-namespace.yaml, then re-apply with kubectl apply -k manifests/exposure/gateway-api-sso"
+        ;;
+      ipblock)
+        warn "oauth2-proxy-ingress accepts an ipBlock peer; that cannot be resolved to pods here. Verify that the Gateway implementation's pods are covered by the policy."
+        ;;
+      *)
+        warn "could not resolve the oauth2-proxy-ingress source selector against live pods. Verify manually that it names the namespace the Gateway implementation runs in."
+        ;;
+    esac
   else
-    fail "oauth2-proxy-ingress accepts traffic from every namespace (empty namespaceSelector): any pod in the cluster can reach oauth2-proxy and inject X-Forwarded-User. Fix: scope the namespaceSelector to the Gateway implementation's namespace in manifests/exposure/gateway-api-sso/75-networkpolicies.yaml, then re-apply it."
+    fail "oauth2-proxy-ingress accepts traffic from every namespace (empty namespaceSelector): any pod in the cluster can reach oauth2-proxy and inject X-Forwarded-User. Fix: scope the namespaceSelector to the Gateway implementation's namespace in manifests/exposure/gateway-api-sso/patches/oauth2-proxy-ingress-gateway-namespace.yaml, then re-apply the overlay."
   fi
 fi
 

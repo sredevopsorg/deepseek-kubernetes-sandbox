@@ -1,0 +1,26 @@
+# The namespace the Gateway implementation runs in.
+#
+# `oauth2-proxy-ingress` must name that namespace. When it names one no pod
+# lives in, the policy allows nothing, Traefik cannot open the connection to
+# `oauth2-proxy:4180` and every path answers 502 Bad Gateway - including
+# `/healthz`, so it looks like an outage rather than an auth problem.
+# `scripts/preflight-sso.sh` resolves this selector against live pods and
+# fails when nothing matches.
+#
+# `kube-system` is where Traefik runs on the reference platforms (k3s and
+# kind). A Helm release commonly installs it in `traefik`; ingress-nginx in
+# `ingress-nginx`; another implementation elsewhere. This file is the single
+# place to change it, then re-apply the overlay:
+#
+#   kubectl apply -k manifests/exposure/gateway-api-sso
+#
+# Keep the selector non-empty: `namespaceSelector: {}` would accept every
+# namespace, letting any pod POST a forged X-Forwarded-User to oauth2-proxy.
+#
+# This is a JSON 6902 patch (a top-level list), so the `target` in
+# kustomization.yaml is required. The label KEY is
+# `kubernetes.io/metadata.name`, whose `/` is escaped as `~1` in the JSON
+# pointer: an unescaped `/` is read as a path separator and the patch fails.
+- op: replace
+  path: /spec/ingress/0/from/0/namespaceSelector/matchLabels/kubernetes.io~1metadata.name
+  value: kube-system

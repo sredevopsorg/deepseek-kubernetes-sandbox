@@ -14,10 +14,12 @@
 # ../../../docs/optional-hardening.md#gateway-egress-required-for-production.
 #
 # This manifest assumes Traefik, matching gatewayClassName: traefik in
-# 70-gateway.yaml. Adjust the app.kubernetes.io/name selector for another
-# implementation. NetworkPolicy enforcement of kubelet probes is CNI-dependent;
-# if the gateway or proxy fails its probes, allow the node CIDR on the probe
-# port or remove the ingress policy.
+# 70-gateway.yaml, in the `kube-system` namespace (k3s and kind). Adjust the
+# app.kubernetes.io/name selector for another implementation, and the
+# namespace in patches/oauth2-proxy-ingress-gateway-namespace.yaml, which the
+# overlay above applies on top of this file. NetworkPolicy enforcement of
+# kubelet probes is CNI-dependent; if the gateway or proxy fails its probes,
+# allow the node CIDR on the probe port or remove the ingress policy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -54,13 +56,15 @@ spec:
     # `namespaceSelector: {}` here would accept every namespace, and any pod in
     # the cluster could then POST to oauth2-proxy with a forged
     # X-Forwarded-User and be forwarded to the gateway as that user.
-    # The shipped default is the namespace Traefik commonly runs in; set it to
-    # whatever namespace your Gateway implementation actually uses and keep it
-    # non-empty. preflight-sso.sh fails on an empty selector.
+    # `kube-system` is the reference platforms' Traefik namespace (k3s, kind);
+    # patches/oauth2-proxy-ingress-gateway-namespace.yaml is the authoritative
+    # value when the variant is applied with `kubectl apply -k`. Keep it
+    # non-empty. preflight-sso.sh rejects an empty selector and a selector
+    # that matches no running pod (a wrong namespace answers 502 on every path).
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: traefik
+              kubernetes.io/metadata.name: kube-system
           podSelector:
             matchLabels:
               app.kubernetes.io/name: traefik
