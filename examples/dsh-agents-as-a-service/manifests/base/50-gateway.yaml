@@ -28,8 +28,11 @@ metadata:
   namespace: dsh-demo
 ---
 # Least privilege:
-#   - claims are created/deleted per user (signup/delete) and patched only to
-#     rotate the token-hash annotation when a session is minted;
+#   - claims are created/deleted per user (signup/delete) and listed; `patch`
+#     on sandboxclaims is RESERVED: the current gateway never patches a claim
+#     and never rotates the token-hash marker (the marker is the claim's
+#     server-side identity). The verb is kept in the Role for future control
+#     paths, not used today;
 #   - sandboxes are read, and patched only to flip operatingMode (suspend/resume);
 #   - pods are read, and pods/log is read to capture DSH's launch token from
 #     the startup log line (`dsh web: ...?token=...`).
@@ -90,6 +93,14 @@ spec:
         app: dsh-gateway
     spec:
       serviceAccountName: dsh-gateway
+      # Mirror the sandbox ndots setting: external names with two or more dots
+      # are resolved absolute-first instead of through the search path.
+      # single-request-reopen is sandbox-specific (it serializes glibc's
+      # parallel A/AAAA queries for DSH's GitHub plugin preflight).
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
       # OPTIONAL: run the gateway under gVisor. Requires a RuntimeClass named
       # "gvisor" and nodes that can run it. See docs/optional-hardening.md.
       # runtimeClassName: gvisor

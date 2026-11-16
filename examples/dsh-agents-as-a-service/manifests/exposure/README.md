@@ -155,8 +155,10 @@ kubectl -n dsh-demo create secret generic oauth2-proxy \
 kubectl -n dsh-demo create secret tls dsh-demo-tls --cert=tls.crt --key=tls.key
 
 # 2. Replace the placeholders that stay in the variant YAMLs:
-#    dsh-demo.example.com (70-gateway certificate host, 71-httproute hostnames,
-#    72 --redirect-url) and your-github-org (72 --github-org).
+#    dsh-demo.example.com in 71-httproute.yaml (hostnames) and
+#    72-oauth2-proxy.yaml (--redirect-url); the full host never appears in
+#    70-gateway.yaml, which only carries the TLS certificateRef.
+#    Replace your-github-org (72 --github-org) as well.
 #    The overlay copies the HTTPRoute hostname into DSH_TRUSTED_HOSTS.
 
 # 3. Apply the overlay: it includes the base, enables SSO on the gateway
@@ -167,9 +169,10 @@ kubectl apply -k manifests/exposure/gateway-api-sso
 
 # 4. Preflight: fails loudly on missing Secrets, a bad oauth2-proxy cookie
 #    secret, missing gateway SSO env, a dangling TLS reference, leftover
-#    placeholders, a second path to the gateway, a Role without `patch` on
-#    sandboxclaims, or missing SSO NetworkPolicies; warns when
-#    TRUSTED_PROXY_HOPS is unset or 0.
+#    placeholders, a second path to the gateway, a Role that cannot patch
+#    `sandboxes` (RBAC for suspend/resume), or missing SSO NetworkPolicies;
+#    warns when TRUSTED_PROXY_HOPS is unset or 0 and when the reserved
+#    `sandboxclaims/patch` verb is absent.
 ./scripts/preflight-sso.sh
 ```
 

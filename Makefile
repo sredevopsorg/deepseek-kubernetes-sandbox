@@ -52,7 +52,7 @@ cov: ## Gateway unit tests with coverage (needs pytest-cov)
 lint: ## Lint Python, shell, YAML and Dockerfiles (skips missing tools locally)
 	cd $(GATEWAY_DIR) && $(PYTHON) -m ruff check .
 	cd $(GATEWAY_DIR) && $(PYTHON) -m ruff format --check .
-	shellcheck build.sh scripts/*.sh $(EXAMPLE_DIR)/scripts/*.sh
+	shellcheck build.sh scripts/*.sh $(EXAMPLE_DIR)/scripts/*.sh .dsh/skills/*/scripts/*.sh
 	@command -v yamllint >/dev/null 2>&1 && yamllint . || echo "yamllint not installed; CI enforces it"
 	@command -v actionlint >/dev/null 2>&1 && actionlint || echo "actionlint not installed; CI enforces it"
 

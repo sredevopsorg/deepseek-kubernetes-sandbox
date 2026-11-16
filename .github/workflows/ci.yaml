@@ -68,7 +68,7 @@ jobs:
           ./scripts/check-versions.sh
           ./scripts/check-examples.sh
       - name: Shellcheck
-        run: shellcheck -x build.sh scripts/*.sh examples/*/scripts/*.sh
+        run: shellcheck -x build.sh scripts/*.sh examples/*/scripts/*.sh .dsh/skills/*/scripts/*.sh
       - name: Actionlint
         run: actionlint -color
       - name: Yamllint

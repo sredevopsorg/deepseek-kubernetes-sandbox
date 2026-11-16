@@ -43,6 +43,11 @@ expect .env.sample "RELEASE_REVISION=$RELEASE_REVISION"
 # Human-facing docs embed the resolved commit in the build example and table.
 expect docs/main-image.md "$DSH_COMMIT"
 expect docs/versioning.md "$DSH_COMMIT"
+# ... and the digest-pinned Node.js base images those docs quote.
+expect docs/main-image.md "$NODE_BUILD_IMAGE"
+expect docs/main-image.md "$NODE_RUNTIME_IMAGE"
+expect docs/versioning.md "$NODE_BUILD_IMAGE"
+expect docs/versioning.md "$NODE_RUNTIME_IMAGE"
 
 # Every container image is pinned to an immutable multi-arch index digest, not
 # a mutable tag. This is a supply-chain invariant: don't "fix" a failing check

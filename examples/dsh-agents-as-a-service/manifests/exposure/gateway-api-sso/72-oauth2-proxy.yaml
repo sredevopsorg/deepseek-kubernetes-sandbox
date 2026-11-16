@@ -67,6 +67,13 @@ spec:
       # oauth2-proxy never talks to the Kubernetes API: the default
       # ServiceAccount token is not needed and should not be mounted.
       automountServiceAccountToken: false
+      # Mirror the sandbox ndots setting: external names with two or more dots
+      # (github.com, api.github.com) are resolved absolute-first. The sandbox's
+      # single-request-reopen option is DSH-specific and intentionally absent.
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
       securityContext:
         runAsNonRoot: true
         runAsUser: 2000

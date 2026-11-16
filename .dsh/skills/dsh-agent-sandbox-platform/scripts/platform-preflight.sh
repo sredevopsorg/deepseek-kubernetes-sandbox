@@ -279,12 +279,26 @@ if [ -n "$MCP_URL" ]; then
     base="${MCP_URL%/}"
     base="${base%/mcp}"
     for endpoint in healthz readyz; do
-      body="$(curl -fsS --max-time 5 "$base/$endpoint" 2>/dev/null | head -c 300 || true)"
-      if [ -n "$body" ]; then
-        pass "MCP /$endpoint: $body"
-      else
-        fail "MCP /$endpoint is unreachable at $base/$endpoint"
-      fi
+      # Capture the HTTP status too: a 503 means the server answered (running)
+      # but is not ready, which is different from being unreachable.
+      response="$(curl -sS --max-time 5 -w '\n%{http_code}' "$base/$endpoint" 2>/dev/null || true)"
+      status="${response##*$'\n'}"
+      body="${response%$'\n'*}"
+      body="${body:0:300}"
+      case "$status" in
+        200)
+          pass "MCP /$endpoint: $body" ;;
+        503)
+          if [ "$endpoint" = "readyz" ]; then
+            fail "MCP /readyz is running but not Ready (503): $body"
+          else
+            fail "MCP /healthz is running but not healthy (503): $body"
+          fi ;;
+        000|"")
+          fail "MCP /$endpoint is unreachable at $base/$endpoint" ;;
+        *)
+          fail "MCP /$endpoint returned HTTP $status: $body" ;;
+      esac
     done
   fi
 else

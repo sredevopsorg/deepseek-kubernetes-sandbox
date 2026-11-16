@@ -35,8 +35,14 @@ manifests/local/
    kubectl apply -k manifests/local         # apply base + enabled patches
    ```
 
-4. Apply only the settings this cluster needs: `kubectl apply -k` is
-   idempotent, so re-running after uncommenting another patch is safe.
+4. Apply only the settings this cluster needs. Re-running is not a no-op:
+   `kubectl apply -k` reconciles the base, so any local tuning that is not
+   recorded in this overlay is reverted — `SandboxWarmPool.spec.replicas` goes
+   back to the base's `2`, and the gateway's `IDLE_TIMEOUT`/`WAKE_TIMEOUT` and
+   image ref go back to the shipped values. Record local tuning in the patch
+   files (for example `sandboxwarmpool-replicas.yaml` and `gateway-env.yaml`)
+   rather than with a manual `kubectl patch`/`kubectl scale`, or it will be
+   reverted on the next overlay apply.
 
 Rollback: re-comment the entry and re-apply. `kubectl apply` tracks the last
 applied configuration for each object, so rendering the base again (without the
@@ -113,14 +119,33 @@ Every file under `patches/` is inert until its entry is uncommented.
 | `networkpolicy-oauth2-proxy-traefik-namespace.yaml` | SSO-only: scope oauth2-proxy ingress to the Gateway namespace | yes (NetworkPolicy) |
 
 The three SSO-only patches match objects that exist only when the overlay
-includes `../exposure/gateway-api-sso`; enabling them with the base or the
-plain ingress variant makes the build fail (no matching object) rather than
-silently doing nothing.
+includes `../exposure/gateway-api-sso`. **A Kustomize patch whose `target`
+matches nothing is silently ignored** — it does not fail the build, so enabling
+one of these with the base or the plain ingress variant renders unchanged and
+you may believe it applied. Check every render with
+`kubectl kustomize manifests/local` (and `kubectl diff -k manifests/local`
+against the cluster) before applying.
+
+`networkpolicy-oauth2-proxy-traefik-namespace.yaml` duplicates the SSO overlay's
+own `patches/oauth2-proxy-ingress-gateway-namespace.yaml` (both set the
+`oauth2-proxy-ingress` source namespace). It is only for a local overlay that
+composes with the SSO variant; if both are enabled they must set the same
+namespace, and this local patch is applied after the overlay's patch, so it wins.
+Prefer changing the variant file (the single documented place) and leaving this
+patch off.
 
 The patch target paths were written against the shipped base (namespace
 `dsh-demo`, SandboxTemplate `dsh-web`, warm pool `dsh-pool`, gateway Deployment
 `dsh-gateway`). If you rename those or change the namespace, update the
 `target:` blocks and the JSON paths together.
+
+`sandboxtemplate-trusted-hosts.yaml` is a JSON-6902 patch that addresses
+`DSH_TRUSTED_HOSTS` by its index in the base env list (`/env/1/value` in the
+shipped base). That index follows the base's env order: if the base gains,
+removes or reorders env entries, the patch silently overwrites the wrong value.
+Re-check the rendered env with
+`kubectl kustomize manifests/local | grep -A2 DSH_TRUSTED_HOSTS` whenever the
+base env entries change.
 
 ## Readiness-path caveat
 

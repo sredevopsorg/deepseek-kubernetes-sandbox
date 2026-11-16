@@ -6,12 +6,17 @@ unauthenticated; its service account is the security boundary.
 
 ## Connection matrix
 
-| `K8S_SANDBOX_CONNECTION__TYPE` | Required env | Use when |
+Settings are environment variables prefixed with `K8S_SANDBOX_`, and nested
+connection fields join their parts with a double underscore — for example
+`K8S_SANDBOX_CONNECTION__TYPE`. The matrix lists the suffixes; add the prefix
+for the real variable name.
+
+| `CONNECTION__TYPE` | Other settings (defaults noted) | Use when |
 | --- | --- | --- |
-| `gateway` | `GATEWAY_NAME`, `GATEWAY_NAMESPACE=default`, `GATEWAY_READY_TIMEOUT=180`, `SERVER_PORT=8888` | Gateway API + implementation exist |
-| `direct` | `API_URL` (router URL), `SERVER_PORT=8888` | sandbox-router is deployed |
-| `in-cluster` | `USE_POD_IP=false` (DNS) or `true` (`status.podIPs`), `SERVER_PORT=8888` | Bypass the router from inside the cluster |
-| `sandboxd-in-cluster` (v1.0.8+) | `MODE=in-cluster-service` or `in-cluster-pod-ip`, `REST_PORT=8080`, `GRPC_PORT=9090` | Template runs sandboxd |
+| `gateway` | `GATEWAY_NAME`; `GATEWAY_NAMESPACE` (default `default`); `GATEWAY_READY_TIMEOUT` (default `180`); `SERVER_PORT` (default `8888`) | Gateway API + implementation exist |
+| `direct` | `API_URL` (router URL); `SERVER_PORT` (default `8888`) | sandbox-router is deployed |
+| `in-cluster` | `USE_POD_IP` (default `false`: DNS; `true` uses `status.podIPs`); `SERVER_PORT` (default `8888`) | Bypass the router from inside the cluster |
+| `sandboxd-in-cluster` (v1.0.8+) | `MODE=in-cluster-service` or `in-cluster-pod-ip`; `REST_PORT` (default `8080`); `GRPC_PORT` (default `9090`) | Template runs sandboxd |
 
 Also set `K8S_SANDBOX_PROBE_NAMESPACE` to a namespace the server's service
 account can list claims in, and optionally

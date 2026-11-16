@@ -1,6 +1,6 @@
 # NEGATIVE demo: this claim carries spec.env, which the template's
 # envVarsInjectionPolicy: Disallowed rejects. The claim never binds a
-# sandbox — inspect it to see the rejection (step 6 of the README).
+# sandbox — inspect it to see the rejection (step 7 of the README).
 #
 # Why a platform wants rejection over acceptance: env injection forces a
 # cold start that bypasses the warm pool, silently turning a ~2s signup into

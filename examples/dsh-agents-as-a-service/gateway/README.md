@@ -71,8 +71,8 @@ token. A failed handshake returns `503` with `Retry-After: 10`.
 | `POST` | `/login` | none | Form (`user`, `token`) returns `303` to `/u/<user>/`; JSON returns `200`. Sets the session cookie. `401` on a bad token **and** for an unknown user (no username enumeration). `429` when the auth rate limit is hit. Both auth routes reject a form post whose `Origin`/`Referer` contradicts `Host` (`403`) when the browser sent one. |
 | `POST` | `/logout` | none | Revokes the server-side session, clears the cookie and `303`s to `/`. |
 | `POST` | `/recreate` | trusted proxy header | **SSO only.** Deletes the authenticated user's claim (cascading sandbox + PVC, so workspace data is wiped), waits out finalizers, provisions a fresh claim and `303`s to `/u/<user>/`. `401` without a valid identity header for a gateway-managed claim; **every** call must be same-origin (`403` otherwise, cookie or not) because the proxy attaches the identity header to cross-site POSTs too. |
-| `GET` | `/users/{user}` | bearer or cookie (SSO header for gateway-managed claims) | Derived state: `Provisioning`, `Waking`, `Ready`, `Suspending`, `Suspended`. |
-| `DELETE` | `/users/{user}` | bearer or cookie | Delete the claim (sandbox + PVC cascade). Cookie-auth mutations require a same-origin `Origin`/`Referer`. |
+| `GET` | `/users/{user}` | bearer, cookie or trusted proxy header (gateway-managed claims) | Derived state: `Provisioning`, `Waking`, `Ready`, `Suspending`, `Suspended`. |
+| `DELETE` | `/users/{user}` | bearer, cookie or trusted proxy header (gateway-managed claims) | Delete the claim (sandbox + PVC cascade). Cookie-auth mutations require a same-origin `Origin`/`Referer`. |
 | `GET` | `/u/{user}` | — | `308` redirect to `/u/{user}/`. |
 | `*` | `/u/{user}/{path}` | bearer or cookie | HTTP proxy to DSH. Waits for a suspended sandbox to wake. Wakes on connect. |
 | `WS` | `/u/{user}/{path}` | bearer or cookie | WebSocket proxy (e.g. `/api/remote.mux`). |
@@ -158,7 +158,12 @@ provided the value is a valid DNS-1123 label; the header is never trusted when
 the variable is unset. The header alone authorizes nothing beyond that: it is
 only honored for a claim **this gateway minted** (one carrying the
 `aaas.example.com/token-sha256` marker), so a hand-applied claim or a claim from
-another tool is refused (`403` on `/`, `401` on the proxy). The landing page
+another tool is refused. The shorthand for "refused": an SSO request for the
+requester's own such claim bounces off the proxy path with a `303` to `/` and
+lands on `403` there (the proxy redirects a caller without a matching session
+cookie to `/` before the claim check), while `401` means the request lacks a
+matching credential (bad bearer token, a session cookie for another user, or —
+on `/recreate` — a claim the gateway did not mint). The landing page
 then auto-provisions the user (creates their claim idempotently and mints an
 opaque session cookie; the marker is never rotated) and
 redirects to `/u/<user>/`, and `POST /recreate` becomes available for a clean
@@ -197,7 +202,8 @@ oauth2-proxy's egress to the gateway, DNS and public HTTPS.
 | Sandbox not provisioned, wake timeout, handshake failure | `503` + `Retry-After: 10`. The handshake error body is a fixed message: it never contains the launch token, the handshake URL or pod/credential details. |
 | User over `MAX_IN_FLIGHT_PER_USER` | `503` + `Retry-After` (HTTP); the existing in-flight requests are untouched |
 | Upstream connection/protocol failure | `502` |
-| Kubernetes API error (API unreachable/throttled, RBAC `403`, `5xx`) | `503` + `Retry-After: 10`. The body is a fixed message; the Kubernetes `Status` payload (which can name cluster objects) is never proxied, and the API `status`/`reason` is logged once |
+| Kubernetes API answered with an HTTP error (RBAC `403`, throttle, API `5xx`) | `503` + `Retry-After: 10`. The body is a fixed message; the Kubernetes `Status` payload (which can name cluster objects) is never proxied, and the API `status`/`reason` is logged once |
+| Kubernetes API unreachable at the connection level (`MaxRetryError`, connection refused, timeout) | `500`. These escape the `ApiException` handler because the client never got an HTTP answer; `/readyz` is `503` at the same time, so Kubernetes pulls the pod out of the Service endpoints |
 | WS auth failure (unknown user, bad token, cross-origin) | accept, then close `4401` |
 | WS per-user concurrency cap | accept, then close `1011` |
 | WS upstream/handshake failure | accept, then close `1011` |
@@ -260,8 +266,10 @@ would never be sent). HTTPS deployments must set `COOKIE_SECURE=true`.
 The gateway's ServiceAccount needs, in its namespace:
 
 * `sandboxclaims` (`extensions.agents.x-k8s.io`): get, list, create, patch, delete
-  (patch rotates the token-hash annotation when a session is minted)
-* `sandboxes` (`agents.x-k8s.io`): get, list, patch
+  — `patch` is **reserved**: the current gateway never patches claims and never
+  rotates the `aaas.example.com/token-sha256` marker, so the verb exists for
+  forward compatibility only
+* `sandboxes` (`agents.x-k8s.io`): get, list, patch (the only CRD write: suspend/resume)
 * `pods`: get, list
 * `pods/log`: get
 

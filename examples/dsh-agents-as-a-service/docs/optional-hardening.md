@@ -349,9 +349,10 @@ The `dsh-gateway` Service must still stay ClusterIP; do not apply both exposure
 variants. After applying the SSO variant, run
 [`scripts/preflight-sso.sh`](../scripts/preflight-sso.sh): it checks the
 gateway's SSO env, the Secrets, the TLS reference, leftover placeholders,
-accidental second paths (such as an Ingress), the gateway Role's `patch` verb on
-`sandboxclaims` (SSO token rotation) and that both SSO NetworkPolicies are
-applied.
+accidental second paths (such as an Ingress), the gateway Role's `patch` on
+`sandboxes` (the suspend/resume mutation it actually uses), and that all three
+SSO NetworkPolicies are applied; it warns when the reserved
+`sandboxclaims/patch` verb is absent.
 
 Verify the negative case from a sandbox pod (it is not the proxy):
 
@@ -615,9 +616,10 @@ done
 ```
 
 For a fresh install, enable
-`manifests/local/patches/sandboxtemplate-failed-pod-policy.yaml` in
-[`manifests/local/kustomization.yaml`](../manifests/local/README.md) instead of
-patching live objects.
+`manifests/local/patches/sandboxtemplate-failed-pod-policy.yaml` in the local
+overlay's `kustomization.yaml` (see
+[`manifests/local/README.md`](../manifests/local/README.md)) instead of patching
+live objects.
 
 ### Verify
 

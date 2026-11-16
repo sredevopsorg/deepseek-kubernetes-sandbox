@@ -57,6 +57,11 @@ workflow.
 The same channels exist for every published package, including the nested
 example component image.
 
+`build-main.yaml` and `build-gateway.yaml` also accept an optional
+`workflow_dispatch` `version` input used only as an additional image tag. Use a
+development-only tag with it, never an existing release identity or `latest`:
+release identities remain reserved for `release.yaml`.
+
 ## Compatibility matrix
 
 Values from [versions.env](../versions.env) at the current identity:
@@ -68,8 +73,8 @@ Values from [versions.env](../versions.env) at the current identity:
 | DSH commit | `38a6a5c965aa99ab525161efb7cc5cf1fe62fced` | `DSH_COMMIT`; the main image build fails unless the clone's `HEAD` matches |
 | Repository revision | _(none)_ | `RELEASE_REVISION` (empty) |
 | pnpm | `11.28.5` | `PNPM_VERSION` |
-| Node build image | `docker.io/node:24-trixie@sha256:8c761eca2bf7eec965f946cf47b8090143cb41f45f2f8699af0cc0298d2d2d19` | `NODE_BUILD_IMAGE`, digest-pinned |
-| Node runtime image | `docker.io/node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446` | `NODE_RUNTIME_IMAGE`, digest-pinned |
+| Node build image | `docker.io/node:24-trixie@sha256:6e5d4c38403930b420404f190be8563396dca2bd156a6cb4722707b0efcf6fc1` | `NODE_BUILD_IMAGE`, digest-pinned |
+| Node runtime image | `docker.io/node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0` | `NODE_RUNTIME_IMAGE`, digest-pinned |
 | Gateway Python image | `docker.io/python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159` | `GATEWAY_PYTHON_IMAGE`, digest-pinned |
 | agent-sandbox (CRDs) | `v1.0.10` | `AGENT_SANDBOX_VERSION`, used by the examples and CI dry-run |
 | Kubernetes Gateway API | `v1.6.1` | `GATEWAY_API_VERSION`, used by the SSO exposure variant |

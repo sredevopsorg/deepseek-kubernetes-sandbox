@@ -44,8 +44,10 @@ cleanup() {
 trap cleanup EXIT
 
 echo "=== 1. install prereqs (throwaway key) + template + warm pool"
+# manifests/base/00-prereqs.yaml creates the namespace only: the provider key is
+# never committed, so it is created here with a throwaway value.
 kubectl apply -f manifests/base/00-prereqs.yaml
-# The provider key is never committed; generate a throwaway value.
+# Recreate a throwaway key if a previous run on the same cluster left one.
 kubectl -n "$NS" delete secret dsh-provider-keys --ignore-not-found >/dev/null
 kubectl -n "$NS" create secret generic dsh-provider-keys \
   --from-literal=DEEPSEEK_API_KEY="sk-test-$(openssl rand -hex 16)"
@@ -92,6 +94,15 @@ WORKSPACE_MOUNT=$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{range .spec.cont
 kubectl -n "$NS" exec "$POD" -- test ! -e /workspace || fail "legacy /workspace path is present in the pod"
 kubectl -n "$NS" exec "$POD" -- sh -c 'echo "remember me too" > /home/node/.dsh/workspace/marker.txt'
 pass "workspace marker written in $POD (subPath=$WORKSPACE_MOUNT)"
+# The sandbox DNS tuning must reach the pod: ndots:2 keeps multi-dot external
+# names absolute-first, and single-request-reopen serializes glibc's A/AAAA
+# queries so DSH's 5 s GitHub plugin preflight does not stall.
+RESOLV=$(kubectl -n "$NS" exec "$POD" -- cat /etc/resolv.conf || true)
+printf '%s\n' "$RESOLV" | grep -q 'ndots:2' \
+  || fail "sandbox /etc/resolv.conf does not set ndots:2"
+printf '%s\n' "$RESOLV" | grep -q 'single-request-reopen' \
+  || fail "sandbox /etc/resolv.conf does not set single-request-reopen"
+pass "sandbox resolv.conf: ndots:2 and single-request-reopen"
 
 echo "=== 4. suspend (pod deleted, PVC + Service retained)"
 kubectl -n "$NS" patch sandbox "$SB" --type merge -p '{"spec":{"operatingMode":"Suspended"}}'
@@ -145,6 +156,14 @@ if command -v docker >/dev/null && command -v kind >/dev/null; then
   # exercised in seconds instead of minutes.
   kubectl -n "$NS" set env deploy/dsh-gateway IDLE_TIMEOUT=60 WAKE_TIMEOUT=120
   kubectl -n "$NS" rollout status deploy/dsh-gateway --timeout=120s
+  # The gateway pod mirrors the sandbox ndots setting (single-request-reopen
+  # stays sandbox-specific).
+  GW_POD=$(kubectl -n "$NS" get pod -l app=dsh-gateway -o jsonpath='{.items[0].metadata.name}')
+  [ -n "$GW_POD" ] || fail "no dsh-gateway pod found for the resolv.conf check"
+  GW_RESOLV=$(kubectl -n "$NS" exec "$GW_POD" -- cat /etc/resolv.conf || true)
+  printf '%s\n' "$GW_RESOLV" | grep -q 'ndots:2' \
+    || fail "gateway /etc/resolv.conf does not set ndots:2"
+  pass "gateway resolv.conf: ndots:2"
   # Local port-forward uses 18080 (NOT 3080, which stays in-cluster).
   kubectl -n "$NS" port-forward svc/dsh-gateway 18080:8080 >/dev/null 2>&1 &
   PF=$!

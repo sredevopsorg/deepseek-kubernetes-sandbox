@@ -1,5 +1,6 @@
-# Portable base for the DSH "Agents as a Service" platform: namespace, shared
-# provider keys, SandboxTemplate, warm pool, demo claims and the gateway.
+# Portable base for the DSH "Agents as a Service" platform: namespace,
+# SandboxTemplate, warm pool, demo claims and the gateway. The shared provider
+# Secret is created per install (README step 1), not shipped by this base.
 #
 # Apply with:  kubectl apply -k manifests/base
 #

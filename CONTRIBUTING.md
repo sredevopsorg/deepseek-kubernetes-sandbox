@@ -62,10 +62,11 @@ it by hand; the release workflow regenerates it.
 
 ## Adding an example
 
-Read docs/examples.md, then add examples/<name>/ with a README.md,
-numbered manifests/NN-*.yaml, optional manifests/optional/<feature>/ or
-manifests/exposure/<variant>/ (each with a README), optional components (a
-Dockerfile plus README and tests), and executable, idempotent, self-cleaning
+Read docs/examples.md, then add examples/<name>/ with a README.md and either
+plain numbered manifests (manifests/NN-*.yaml) or a Kustomize layout
+(manifests/base/NN-*.yaml plus kustomization.yaml, with sibling overlays under
+manifests/exposure/ or manifests/optional/). Add optional components (a
+Dockerfile plus README and tests) and executable, idempotent, self-cleaning
 scripts. Add the literal examples/<name>/ entry to examples/README.md;
 scripts/check-examples.sh enforces the layout.
 

@@ -146,7 +146,7 @@ Self-contained implementations that consume the image. Index and contract:
 | Example | What it demonstrates |
 | --- | --- |
 | [`examples/dsh-agents-as-a-service/`](examples/dsh-agents-as-a-service/) | Full multi-tenant platform: SandboxTemplate with per-user PVCs, warm pool, one claim per user, suspend-when-idle, wake-on-return, browser gateway with signup + `HttpOnly` sessions + HTTP/WebSocket proxy, Ingress or Gateway API + GitHub SSO exposure, and opt-in gVisor/NetworkPolicy/provider-key hardening and failed-Pod recovery. Start with the [walkthrough](examples/dsh-agents-as-a-service/README.md) and the [architecture](examples/dsh-agents-as-a-service/docs/architecture.md). |
-| [`examples/minimal-single-tenant/`](examples/minimal-single-tenant/) | The smallest useful setup: one `SandboxTemplate` and one `SandboxClaim`, reached through `kubectl port-forward` + the launch-token URL. Manifest: [`manifests/10-sandboxtemplate.yaml`](examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml). |
+| [`examples/minimal-single-tenant/`](examples/minimal-single-tenant/) | The smallest useful setup: one `SandboxTemplate`, a one-replica warm pool and one `SandboxClaim`, reached through `kubectl port-forward` + the launch-token URL. Manifest: [`manifests/10-sandboxtemplate.yaml`](examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml). |
 
 The gateway is a component of the multi-tenant example and has its own
 [README](examples/dsh-agents-as-a-service/gateway/README.md) (API, configuration,
@@ -170,7 +170,7 @@ guide and troubleshooting notes live beside `SKILL.md`.
 | [`Dockerfile`](Dockerfile) | Primary artifact: the multi-stage DSH Web image (port `3080`). |
 | [`versions.env`](versions.env) | Single source of truth for the DSH ref, repository revision, pnpm/control-plane versions and image names. |
 | [`Makefile`](Makefile), [`build.sh`](build.sh) | Canonical local entrypoint; `build.sh` is a deprecated shim. |
-| [`docs/`](docs/README.md) | Repository docs: image contract, example contract, gitflow, versioning. |
+| [`docs/`](docs/README.md) | Repository docs: image contract, example contract, gitflow, versioning, [workflow security](docs/workflow-security.md). |
 | [`examples/`](examples/README.md) | One self-contained implementation per directory. |
 | [`examples/dsh-agents-as-a-service/`](examples/dsh-agents-as-a-service/) | Multi-tenant platform example: `manifests/`, `gateway/`, `docs/`, `scripts/`. |
 | [`examples/minimal-single-tenant/`](examples/minimal-single-tenant/) | Single-sandbox quickstart. |

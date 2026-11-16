@@ -68,7 +68,8 @@ portable. Cluster-specific hardening lives in the
   sets `failedPodPolicy: Recreate` (agent-sandbox v1.0.8+) so a Failed Pod is
   replaced instead of parked.
 - **Provider keys:** unchanged. Create the optional `dsh-provider-keys-extra`
-  Secret; the base `dsh-provider-keys` Secret remains the one required key.
+  Secret; the required `dsh-provider-keys` Secret (README step 1) remains the
+  only mandatory key.
 
 Full prerequisites, exact commands, verification and caveats:
 [optional hardening](../../docs/optional-hardening.md).

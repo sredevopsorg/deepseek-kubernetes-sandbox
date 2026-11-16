@@ -1,5 +1,8 @@
 # Development channel for the example gateway image: a merge that touches the
 # gateway publishes ghcr.io/<owner>/<repo>/dsh-agents-as-a-service/gateway:main.
+#
+# The optional workflow_dispatch input `version` is used only as an additional
+# image tag for a manual run; it is never interpolated into a run script.
 name: Build gateway image
 
 on:
