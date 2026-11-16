@@ -12,8 +12,8 @@
 #   VCS_REF               this repository's commit, recorded in OCI labels
 #   NODE_BUILD_IMAGE      node image used to build DSH (pinned by digest)
 #   NODE_RUNTIME_IMAGE    node image used at runtime (pinned by digest)
-ARG NODE_BUILD_IMAGE=docker.io/node:24-trixie@sha256:8c761eca2bf7eec965f946cf47b8090143cb41f45f2f8699af0cc0298d2d2d19
-ARG NODE_RUNTIME_IMAGE=docker.io/node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446
+ARG NODE_BUILD_IMAGE=docker.io/node:24-trixie@sha256:6e5d4c38403930b420404f190be8563396dca2bd156a6cb4722707b0efcf6fc1
+ARG NODE_RUNTIME_IMAGE=docker.io/node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0
 
 # ---------------------------------------------------------------------------
 # Build stage: clone DSH at the pinned ref, build, and package the CLI.
