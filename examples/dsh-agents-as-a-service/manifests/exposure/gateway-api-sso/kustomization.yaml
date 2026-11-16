@@ -60,6 +60,18 @@ patches:
                   - name: ALLOW_INSECURE_COOKIES
                     $patch: delete
 
+  # The Gateway implementation's namespace, for the required
+  # oauth2-proxy-ingress policy. It must be the namespace Traefik actually
+  # runs in: a selector that matches no pod turns every request into a 502
+  # Bad Gateway from Traefik. This is the single place to change it (k3s and
+  # kind use kube-system; a Helm release often uses traefik).
+  - path: patches/oauth2-proxy-ingress-gateway-namespace.yaml
+    target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: oauth2-proxy-ingress
+
 replacements:
   # The HTTPRoute hostname is the single source of truth for the public host.
   - source:
