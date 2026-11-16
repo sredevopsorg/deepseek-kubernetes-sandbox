@@ -28,6 +28,7 @@ from gateway import (
     Session,
     Settings,
     UserExists,
+    browser_proto,
     claim_name,
     claim_user,
     condition,
@@ -476,6 +477,22 @@ def test_same_origin_origin_header():
 def test_same_origin_referer_fallback_and_missing():
     assert same_origin({"host": "gw.test", "referer": "http://gw.test/u/a/"}) is True
     assert same_origin({"host": "gw.test"}) is False
+
+
+def test_browser_proto_reads_only_the_outermost_hop():
+    # oauth2-proxy and Traefik append; the left-most entry is the browser's.
+    assert browser_proto({"x-forwarded-proto": "https"}) == "https"
+    assert browser_proto({"x-forwarded-proto": "https, http"}) == "https"
+    assert browser_proto({"x-forwarded-proto": " HTTPS "}) == "https"
+
+
+def test_browser_proto_defaults_to_http_for_a_direct_path():
+    # No proxy in front (the base manifest's port-forward demo) or an
+    # unrecognised value: plain HTTP, trust only the Host.
+    assert browser_proto({}) == "http"
+    assert browser_proto({"x-forwarded-proto": ""}) == "http"
+    assert browser_proto({"x-forwarded-proto": "ftp"}) == "http"
+    assert browser_proto({"x-forwarded-proto": "http, https"}) == "http"
 
 
 def test_rewrite_location_prefixes_absolute_paths_only():
@@ -1336,6 +1353,102 @@ async def test_dsh_cookie_is_cached_per_pod_uid_and_host(env):
     assert len(env.upstream.proxy_requests) == 2
 
 
+# --- browser-facing scheme ------------------------------------------------
+#
+# DSH's /api trust fence compares Host against its accepted authorities under
+# the Origin's scheme, so a browser page served over TLS sends
+# ``Origin: https://HOST`` and a `Host: HOST:3080` forwarded as plain HTTP is
+# refused (403) for every API call and the remote.mux WebSocket.  The gateway
+# must forward the scheme the browser actually used, on every path that
+# reaches DSH.
+
+
+@pytest.mark.asyncio
+async def test_tls_requests_forward_the_browser_scheme_everywhere(env):
+    add_user(env.k8s)
+    tls_headers = {"X-Forwarded-Proto": "https", "Origin": "https://gateway.test"}
+    async with asgi_client(env, cookies=session_dict(env)) as client:
+        response = await client.get("/u/alice/api/state", headers=tls_headers)
+    assert response.status_code == 200
+    assert env.upstream.handshake_requests[0].headers["x-forwarded-proto"] == "https"
+    assert env.upstream.proxy_requests[0].headers["x-forwarded-proto"] == "https"
+    # DSH receives the browser's authority, which is the one its fence checks
+    # against DSH_TRUSTED_HOSTS.
+    assert env.upstream.proxy_requests[0].headers["host"] == "gateway.test"
+
+
+@pytest.mark.asyncio
+async def test_tls_ws_upgrade_forwards_the_browser_scheme(env):
+    add_user(env.k8s)
+    with TestClient(env.app) as client:
+        with client.websocket_connect(
+            "/u/alice/api/remote.mux",
+            headers={
+                "cookie": session_cookie(env),
+                "origin": "http://testserver",
+                # TestClient speaks ws:// but the deployment it stands for is
+                # behind TLS; the proxy's declaration is what DSH's fence reads.
+                "X-Forwarded-Proto": "https",
+            },
+        ) as ws:
+            ws.send_text("hello")
+            assert ws.receive_text() == "welcome"
+            assert ws.receive_text() == "pong"
+    headers = env.ws_connect.calls[0][1]["additional_headers"]
+    assert headers["x-forwarded-proto"] == "https"
+    assert env.upstream.handshake_requests[0].headers["x-forwarded-proto"] == "https"
+
+
+@pytest.mark.asyncio
+async def test_plain_http_demo_still_forwards_http(env):
+    add_user(env.k8s)
+    async with asgi_client(env, cookies=session_dict(env)) as client:
+        response = await client.get("/u/alice/api/state")
+    assert response.status_code == 200
+    assert env.upstream.handshake_requests[0].headers["x-forwarded-proto"] == "http"
+    assert env.upstream.proxy_requests[0].headers["x-forwarded-proto"] == "http"
+
+
+@pytest.mark.asyncio
+async def test_client_supplied_forwarded_proto_cannot_override_tls(env):
+    # Only the outermost entry counts: a trailing entry the client appended
+    # must not downgrade the scheme the TLS hop reported. A hand-written
+    # ``Forwarded`` is still dropped outright.
+    add_user(env.k8s)
+    async with asgi_client(env, cookies=session_dict(env)) as client:
+        response = await client.get(
+            "/u/alice/api/state",
+            headers={
+                # One usable chain: oauth2-proxy appended over the browser's.
+                "X-Forwarded-Proto": "https, http",
+                "Forwarded": "proto=http",
+            },
+        )
+    assert response.status_code == 200
+    assert env.upstream.proxy_requests[0].headers["x-forwarded-proto"] == "https"
+    assert "forwarded" not in env.upstream.proxy_requests[0].headers
+
+
+def test_settings_derive_the_declared_scheme_from_cookie_secure():
+    # The sweeper's activity probe has no browser request, so it reports the
+    # deployment's declared scheme. The base demo is plain HTTP; an HTTPS
+    # deployment sets COOKIE_SECURE=true, which is the same statement.
+    assert Settings().browser_proto == "http"
+    assert Settings(cookie_secure=False).browser_proto == "http"
+    assert Settings(cookie_secure=True).browser_proto == "https"
+
+
+@pytest.mark.asyncio
+async def test_sweeper_activity_probe_reports_the_declared_scheme(env):
+    env.gateway.settings = replace(env.settings, browser_proto="https")
+    _sandbox_name, _pod_name = add_user(env.k8s)
+    sandbox = env.k8s.sandboxes["dsh-alice-sbx"]
+    assert await env.gateway.dsh_busy("alice", sandbox, FQDN, "https") is False
+    probe = env.upstream.session_list_requests[0]
+    assert probe.headers["x-forwarded-proto"] == "https"
+    assert probe.headers["host"] == POD_IP
+
+
 @pytest.mark.asyncio
 async def test_missing_launch_token_returns_503_with_retry_after(env):
     _sandbox_name, pod_name = add_user(env.k8s)
@@ -1435,7 +1548,12 @@ async def test_proxy_strips_gateway_auth_cookie_and_hop_headers(env):
     assert proxy.headers["host"] == "gateway.test"
     assert proxy.headers["origin"] == "http://gateway.test"
     assert proxy.headers["x-forwarded-for"] == "127.0.0.1"
-    assert proxy.headers["x-forwarded-proto"] == "http"
+    # X-Forwarded-Proto is the one forwarding header the client does choose,
+    # because the gateway cannot observe the TLS-terminating leg; see
+    # ``test_tls_requests_forward_the_browser_scheme_everywhere``. The port
+    # default follows the declared scheme, not the plain-HTTP upstream dial.
+    assert proxy.headers["x-forwarded-proto"] == "https"
+    assert proxy.headers["x-forwarded-port"] == "443"
     # Upstream Set-Cookie and hop-by-hop headers never reach the browser.
     assert "set-cookie" not in response.headers
     assert "connection" not in response.headers
