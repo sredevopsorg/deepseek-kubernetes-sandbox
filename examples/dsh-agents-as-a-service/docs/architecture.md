@@ -430,7 +430,13 @@ Notes and limits:
   uvicorn. These are in-process guards, not an ingress rate limiter or audit log.
 - **Host allow-list:** DSH rejects unknown `Host` headers. The gateway forwards the browser's
   `Host`, so every public hostname must be in `DSH_TRUSTED_HOSTS`; `localhost`/`127.0.0.1` are
-  always trusted.
+  always trusted. DSH compares that `Host` **under the `Origin`'s scheme**
+  (`isTrustedApiRequest` in `dsh-client-connection`), so the scheme must travel with it: behind
+  TLS the gateway forwards the proxy's `X-Forwarded-Proto: https`, never the plain-HTTP scheme of
+  the connection it dials the pod over. Without that, a page served over HTTPS sends
+  `Origin: https://<host>`, DSH compares it against the port-less `DSH_TRUSTED_HOSTS` entry, and
+  every `/api` call and the `remote.mux` WebSocket answer `403` while the page itself loads.
+  `scripts/cluster-drift.sh` checks the pair (trusted host + forwarded scheme).
 - **TLS is external.** The gateway serves plain HTTP; terminate TLS at the Ingress and set
   `COOKIE_SECURE=true`. The base demo sets `COOKIE_SECURE=false` with
   `ALLOW_INSECURE_COOKIES=1` for the port-forward walkthrough; without TLS, session cookies are

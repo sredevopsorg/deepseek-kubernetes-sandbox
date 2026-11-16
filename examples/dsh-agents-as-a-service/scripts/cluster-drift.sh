@@ -22,6 +22,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(cd ../.. && pwd)
+EXAMPLE_DIR=$(cd "$(dirname "$0")/.." && pwd)
 
 set -a
 # shellcheck source=/dev/null
@@ -52,6 +53,68 @@ if ! "${KUBECTL[@]}" -n "$NS" get namespace "$NS" >/dev/null 2>&1; then
   echo "FAIL   namespace $NS not found" >&2
   exit 1
 fi
+
+# DSH fenced /api on the browser authority: `Host` is compared against
+# DSH_TRUSTED_HOSTS (or the pod's bind address) *under the Origin's scheme*, so
+# an HTTPS browser page (Origin: https://HOST) is 403 on every /api call and on
+# the remote.mux WebSocket unless the gateway forwards the scheme the browser
+# used. The gateway dials the pod over plain HTTP and cannot see the external
+# leg, so it trusts the proxy's X-Forwarded-Proto (browser_proto() in
+# gateway/gateway.py). This is the other half of the DSH_TRUSTED_HOSTS check:
+# that check proves the gateway *knows* the host, this one proves DSH *accepts*
+# it for the scheme browsers actually use. It is static (no traffic) and reads
+# the same declaration oauth2-proxy makes: its --redirect-url is the public
+# origin, and any TLS listener (Gateway/Ingress) terminates HTTPS.
+check_gateway_scheme() {
+  local host=$1 published redirect tls listeners public deep
+
+  if ! "${KUBECTL[@]}" -n "$NS" get deployment dsh-gateway >/dev/null 2>&1; then
+    return
+  fi
+  published=$("${KUBECTL[@]}" -n "$NS" get deployment dsh-gateway \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
+  if [ "$published" != "$GATEWAY_IMAGE:$EXPECTED_TAG" ]; then
+    drift "gateway image '$published' is not the release identity; browser_proto() cannot be verified statically"
+    return
+  fi
+  if ! grep -q 'def browser_proto' "$EXAMPLE_DIR/gateway/gateway.py" 2>/dev/null; then
+    drift "the checked-in gateway has no browser_proto(); an image older than it forwards X-Forwarded-Proto: http and every /api call 403s behind TLS"
+    return
+  fi
+  if [ "$(gw '{.status.updatedReplicas}')" != "$(gw '{.status.replicas}')" ]; then
+    warn "gateway rollout is incomplete; the scheme check assumes the current template"
+    return
+  fi
+
+  # What scheme browsers actually use, from this deployment's own edges: the
+  # SSO proxy's --redirect-url, or TLS on an Ingress/Gateway listener.
+  redirect=$("${KUBECTL[@]}" -n "$NS" get deployment oauth2-proxy \
+    -o jsonpath='{range .spec.template.spec.containers[*].args[*]}{@}{"\n"}{end}' 2>/dev/null \
+    | sed -n 's/^--redirect-url=\([a-z]*\):.*$/\1/p' | head -n1 || true)
+  tls=$("${KUBECTL[@]}" -n "$NS" get ingress dsh-gateway \
+    -o jsonpath='{.spec.tls[*].secretName}' 2>/dev/null || true)
+  listeners=$("${KUBECTL[@]}" -n "$NS" get gateway dsh-gateway \
+    -o jsonpath='{.spec.listeners[*].tls}' 2>/dev/null || true)
+  if [ "$redirect" = "https" ] || [ -n "$tls" ] || [ -n "$listeners" ]; then
+    public=https
+  else
+    public=http
+  fi
+
+  # The gateway must report that same scheme to DSH: browser_proto() reads the
+  # forwarded header, and Settings derives the sweeper's default from
+  # COOKIE_SECURE, so an HTTPS deployment always declares https.
+  deep=$("${KUBECTL[@]}" -n "$NS" get deployment dsh-gateway \
+    -o jsonpath='{range .spec.template.spec.containers[*].env[*]}{.name}={.value}{"\n"}{end}' 2>/dev/null \
+    | awk -F= '$1 == "COOKIE_SECURE" { print tolower($2) }')
+  if [ "$public" = "https" ] && [ "$deep" != "true" ]; then
+    drift "browsers reach $host over HTTPS but the gateway declares COOKIE_SECURE=$deep: it reports http to DSH, whose fence 403s every /api call and remote.mux"
+  elif [ "$public" = "https" ]; then
+    pass "gateway and DSH agree on the public scheme (https for $host)"
+  else
+    info "browsers reach $host over plain HTTP; the scheme check is trivially satisfied"
+  fi
+}
 
 echo "== Context"
 printf 'context: %s\n' "$("${KUBECTL[@]}" config current-context)"
@@ -162,6 +225,7 @@ if printf '%s\n' "$TEMPLATE_LIST" | grep -qxF "$TEMPLATE"; then
       drift "$TEMPLATE DSH_TRUSTED_HOSTS='$TRUSTED' does not match the exposed host '$ROUTE_HOST' (DSH will reject /api)"
     elif [ -n "$ROUTE_HOST" ]; then
       pass "DSH_TRUSTED_HOSTS matches the HTTPRoute host ($ROUTE_HOST)"
+      check_gateway_scheme "$ROUTE_HOST"
     fi
   fi
 fi

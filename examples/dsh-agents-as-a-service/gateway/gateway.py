@@ -303,6 +303,35 @@ def same_origin(headers) -> bool:
     return False
 
 
+def browser_proto(headers) -> str:
+    """The scheme the browser used for this request: ``http`` or ``https``.
+
+    The gateway speaks plain HTTP to uvicorn, so ``request.url.scheme`` is
+    ``http`` no matter how the browser connected.  Behind a TLS-terminating
+    entry point that answer is wrong, and it is also unanswerable from the
+    connection: the gateway deliberately dials the pod rather than the public
+    Service, so no authority in the request names the public scheme.
+    ``X-Forwarded-Proto`` is the declaration for that leg (oauth2-proxy and
+    Traefik set it; ``TRUSTED_PROXY_HOPS`` already trusts the forwarding chain
+    they touch).  Only its first entry is read: it is the scheme the outermost
+    proxy received from the browser, and only a direct path (no proxy) makes it
+    client-controlled.
+
+    This value is forwarded to DSH as the *scheme of the public authority*, and
+    only that: it must never be used to pick the gateway's own TLS handling,
+    which stays keyed on the real connection (``COOKIE_SECURE``).
+
+    It matters because DSH's ``/api`` trust fence compares ``Host`` against
+    its accepted authorities **under the Origin's scheme**
+    (``isTrustedApiRequest`` in dsh-client-connection).  A browser page served
+    over HTTPS sends ``Origin: https://HOST``; a mismatch against the port-less
+    ``DSH_TRUSTED_HOSTS`` entry is 403 for every API call, including the
+    ``/api/remote.mux`` WebSocket, however correct the proxy is.
+    """
+    first = (headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    return "https" if first == "https" else "http"
+
+
 def strip_forwarding_header(name: str) -> bool:
     """True for client-supplied identity/forwarding headers we never forward.
 
@@ -460,6 +489,14 @@ class Settings:
     # identity that cannot be forged. Set it to the real hop count, e.g. 1
     # behind one ingress; the header is still never trusted beyond it.
     trusted_proxy_hops: int = 0
+    # Scheme the *deployment* serves browsers on, used only where no request is
+    # available to carry one: the idle sweeper's DSH activity probe reports it
+    # as X-Forwarded-Proto. None derives it from cookie_secure in __post_init__
+    # (an HTTPS deployment is exactly one with a Secure cookie); an explicit
+    # value only matters for an exotic split, e.g. Secure cookies behind an
+    # HTTP loopback. It never overrides a browser request's own scheme, which
+    # is browser_proto()'s job.
+    browser_proto: str | None = None
     # When set, signup requires this invite code (form field ``invite`` or the
     # ``X-Signup-Invite`` header). None keeps signup open, as in the demo.
     signup_invite_code: str | None = None
@@ -488,6 +525,11 @@ class Settings:
     # part of the SSE wire format and ignored by EventSource, so it keeps the
     # stream warm without changing what the browser sees.  0 disables it.
     sse_keepalive_interval: float = 15.0
+
+    def __post_init__(self) -> None:
+        if self.browser_proto is None:
+            # Frozen dataclass: only the initializer may still write.
+            object.__setattr__(self, "browser_proto", "https" if self.cookie_secure else "http")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -1095,8 +1137,15 @@ class Gateway:
         fqdn: str,
         host: str,
         force: bool = False,
+        proto: str = "http",
     ) -> tuple[str, tuple[str, str, str], bool]:
         """Return ``(cookie, cache_key, was_cached)``, handshaking on a miss.
+
+        ``host``/``proto`` are the authority the *browser* used, not the
+        connection the gateway dials; DSH keys its auth cookie to that
+        authority, so callers reach it by taking it from the incoming request
+        (``browser_proto``).  A caller that omits ``proto`` accepts the pod's
+        own default (``http``), which is right only for a plain-HTTP deployment.
 
         Every failure raises ``HandshakeError`` with a fixed, credential-free
         message: the exception reaches the browser in the 503 body, so it must
@@ -1130,7 +1179,9 @@ class Gateway:
         headers = {
             "Host": host,
             "X-Forwarded-Host": host,
-            "X-Forwarded-Proto": "http",
+            # Not the connection's own scheme: this asserts the browser-facing
+            # authority, which DSH fences Host against (see ``browser_proto``).
+            "X-Forwarded-Proto": proto,
         }
         try:
             response = await self.http.get(
@@ -1151,7 +1202,9 @@ class Gateway:
 
     # -- DSH agent activity probe -----------------------------------------
 
-    async def dsh_busy(self, user: str, sandbox: dict, fqdn: str) -> bool | None:
+    async def dsh_busy(
+        self, user: str, sandbox: dict, fqdn: str, proto: str = "http"
+    ) -> bool | None:
         """Ask DSH whether any session's agent is still running.
 
         Browser traffic cannot answer "is a task running?": closing the tab,
@@ -1194,7 +1247,9 @@ class Gateway:
                     "Cookie": cookie,
                     "Content-Type": "application/json",
                     "X-Forwarded-Host": host,
-                    "X-Forwarded-Proto": "http",
+                    # The probe sends no Origin, so DSH's fence only checks the
+                    # Host; report the browser's scheme rather than claiming one.
+                    "X-Forwarded-Proto": proto,
                 },
                 timeout=self.settings.session_probe_timeout,
             )
@@ -1605,7 +1660,8 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         try:
             sandbox, fqdn = await self._resolve_sandbox(user, claim)
             host = request.headers.get("host", "")
-            cookie, _, was_cached = await self.dsh_cookie(user, sandbox, fqdn, host)
+            proto = browser_proto(request.headers)
+            cookie, _, was_cached = await self.dsh_cookie(user, sandbox, fqdn, host, proto=proto)
             body = await self._read_body(request)
 
             upstream = await self._send_upstream(request, user, fqdn, cookie, body)
@@ -1613,7 +1669,9 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 # The cached DSH cookie expired (pod restart, logout, ...):
                 # handshake once more and replay the (already buffered) request.
                 await upstream.aclose()
-                cookie, _, _ = await self.dsh_cookie(user, sandbox, fqdn, host, force=True)
+                cookie, _, _ = await self.dsh_cookie(
+                    user, sandbox, fqdn, host, force=True, proto=proto
+                )
                 upstream = await self._send_upstream(request, user, fqdn, cookie, body)
 
             response = StreamingResponse(
@@ -1666,13 +1724,14 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         headers["host"] = host
         headers["cookie"] = cookie  # only the cached DSH auth cookie
         headers["x-forwarded-host"] = host
-        headers["x-forwarded-proto"] = request.url.scheme
+        proto = browser_proto(request.headers)
+        headers["x-forwarded-proto"] = proto
         if request.client:
             headers["x-forwarded-for"] = request.client.host
         else:
             headers["x-forwarded-for"] = ""
         port = host.rsplit(":", 1)[1] if ":" in host else ""
-        headers["x-forwarded-port"] = port or ("443" if request.url.scheme == "https" else "80")
+        headers["x-forwarded-port"] = port or ("443" if proto == "https" else "80")
 
         last_error: Exception | None = None
         for attempt in range(self.settings.upstream_attempts):
@@ -1857,6 +1916,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
             try:
                 sandbox, fqdn = await self._resolve_sandbox(user, claim)
                 host = websocket.headers.get("host", "")
+                proto = browser_proto(websocket.headers)
                 path = websocket.path_params.get("path", "")
                 # DSH's Host fence accepts its own bind address and binds the
                 # auth cookie to the request authority. websockets derives the
@@ -1869,7 +1929,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 if ":" in upstream_host and not upstream_host.startswith("["):
                     upstream_host = f"[{upstream_host}]"  # IPv6 literal
                 authority = f"{upstream_host}:{self.settings.dsh_port}"
-                cookie, _, _ = await self.dsh_cookie(user, sandbox, fqdn, authority)
+                cookie, _, _ = await self.dsh_cookie(user, sandbox, fqdn, authority, proto=proto)
                 url = f"ws://{authority}/{path}"
                 query = filtered_query(websocket.url.query)
                 if query:
@@ -1889,7 +1949,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                     headers[key] = value
                 headers["cookie"] = cookie
                 headers["x-forwarded-host"] = host
-                headers["x-forwarded-proto"] = websocket.url.scheme
+                headers["x-forwarded-proto"] = proto
                 if websocket.client:
                     headers["x-forwarded-for"] = websocket.client.host
                 subprotocols = [
@@ -2029,7 +2089,7 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
                 # between the check and the patch (``continue`` still runs the
                 # finally below, which releases the claim).
                 fqdn = (sandbox.get("status") or {}).get("serviceFQDN") or ""
-                busy = await self.dsh_busy(user, sandbox, fqdn)
+                busy = await self.dsh_busy(user, sandbox, fqdn, self.settings.browser_proto)
                 if busy is not False:
                     if busy:
                         print(f"keeping {user}: DSH reports a running agent", flush=True)

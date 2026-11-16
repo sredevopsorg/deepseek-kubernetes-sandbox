@@ -112,10 +112,21 @@ token. A failed handshake returns `503` with `Retry-After: 10`.
 * Proxy requests strip client-supplied forwarding/identity headers in both
   HTTP and WebSocket paths: `Forwarded`, every `X-Forwarded-*`
   (including `X-Forwarded-User`), every `X-Auth-Request-*`, and `X-Real-IP`.
-  The gateway sets its own `X-Forwarded-For/Host/Proto/Port` values from the
-  connection. `UPSTREAM_HEADER_ALLOWLIST` optionally narrows the forwarded
+  The gateway sets its own `X-Forwarded-For/Host/Proto/Port` values.
+  `UPSTREAM_HEADER_ALLOWLIST` optionally narrows the forwarded
   client headers further (comma-separated, case-insensitive); unset keeps the
   denylist behavior, and the gateway's own values are always added.
+* The browser-facing scheme comes from the inbound `X-Forwarded-Proto` — its
+  **first** (outermost) entry, as set by the TLS-terminating proxy — and never
+  from the connection the gateway dials, which is always plain HTTP to the pod.
+  DSH fences `/api` on the browser authority under the `Origin`'s scheme, so an
+  HTTPS page whose requests arrive with `X-Forwarded-Proto: http` is refused
+  with `403` on every API call and on the `remote.mux` WebSocket. The same
+  value is used for the handshake, the proxy, the WebSocket upgrade and the
+  `X-Forwarded-Port` default (`443`/`80`); the idle sweeper's activity probe,
+  which has no request to read, reports the deployment's own scheme
+  (derived from `COOKIE_SECURE`). It never decides the gateway's own TLS
+  handling: that stays keyed on the real connection and `COOKIE_SECURE`.
 * The gateway's bearer token, the browser `Cookie` header and any `?token=`
   query parameter are never forwarded upstream. Only the cached `dsh-auth-*`
   cookie is injected.
