@@ -4,6 +4,13 @@ name: Build gateway image
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: The version of the gateway image to build
+        required: false
+        default: main
+        type: string
+
   push:
     branches: [main]
     paths:
@@ -66,3 +73,4 @@ jobs:
       dockerfile: Dockerfile
       tags: |
         ${{ needs.meta.outputs.gateway_image }}:main
+        ${{ github.event_name == 'workflow_dispatch' && format('{0}:{1}', needs.meta.outputs.gateway_image, inputs.version) || '' }}
