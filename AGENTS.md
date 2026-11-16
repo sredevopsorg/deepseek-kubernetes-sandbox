@@ -50,7 +50,7 @@ before changing anything; it encodes the conventions the CI enforces.
 | versions.env | Every pinned version and image name |
 | Makefile | Canonical local entrypoint |
 | build.sh | Deprecated shim that forwards to make |
-| docs/ | main-image.md, examples.md, gitflow.md, versioning.md (index: README.md) |
+| docs/ | main-image.md, examples.md, gitflow.md, versioning.md, workflow-security.md (index: README.md) |
 | examples/ | One implementation per directory (contract in docs/examples.md) |
 | examples/dsh-agents-as-a-service/ | The multi-tenant platform example (manifests, gateway, docs, scripts) |
 | examples/minimal-single-tenant/ | The just-one-DSH-Web quickstart |

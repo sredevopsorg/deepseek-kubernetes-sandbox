@@ -198,8 +198,8 @@ variant and can ship independently.
 - **Do not swap the data plane for `HTTPRoute` + `dynamicForwardProxy`.** The
   per-user target still needs log-scraping and wake/suspend coordination; the
   proxied `Host` must stay the browser's, and the launch token must never be a
-  set of CEL expressions. This trades a tested 1,900-line gateway with unit
-  tests for a config that cannot express its two riskiest steps.
+  set of CEL expressions. This trades a tested gateway with unit tests for a
+  config that cannot express its two riskiest steps.
 - **Do not model the account API in CEL.** `POST /users`, `/recreate` and
   `DELETE /users/{user}` mutate `SandboxClaim` objects; they are not routing.
 - **Do not enable the mesh/Substrate/keyless egress modes as a first step.**

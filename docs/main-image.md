@@ -22,8 +22,9 @@ digest in [versions.env](../versions.env): a mutable tag alone is not trusted, a
    CLI with `pnpm pack`, and installs its production dependencies with npm.
 2. **Runtime stage** (`NODE_RUNTIME_IMAGE`) copies `/opt/dsh` to `/app`, adds the
    CLI tools DSH agents commonly use (`git`, `ripgrep`, `jq`, `yq`, `curl`, `wget`,
-   `gh`, `tini`, `uv`), installs `bubblewrap` as DSH's preferred command-sandbox
-   runner, and starts `dsh web` through a small entrypoint.
+   `gh`, `tini`) plus `python3`/`python3-pip`/`python3-venv`, installs
+   `bubblewrap` as DSH's preferred command-sandbox runner, and starts `dsh web`
+   through a small entrypoint.
 
 ## Build it
 
@@ -57,8 +58,8 @@ docker build \
 | `RELEASE_REVISION` | `RELEASE_REVISION` in [versions.env](../versions.env) | Repository revision suffix (`rN`), recorded in `io.sredevopsorg.release.revision`. The release identity is `DSH_VERSION` plus `-RELEASE_REVISION` when set. See [versioning](versioning.md). |
 | `PNPM_VERSION` | `PNPM_VERSION` in [versions.env](../versions.env) | pnpm version activated with corepack in both stages. |
 | `VCS_REF` | `git rev-parse --short HEAD` (via `make image`) | Source revision recorded for traceability. |
-| `NODE_BUILD_IMAGE` | `docker.io/node:24-trixie@sha256:8c761eca2bf7eec965f946cf47b8090143cb41f45f2f8699af0cc0298d2d2d19` | Build-stage base image, pinned to the multi-arch index digest. |
-| `NODE_RUNTIME_IMAGE` | `docker.io/node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446` | Runtime-stage base image, pinned to the multi-arch index digest. |
+| `NODE_BUILD_IMAGE` | `docker.io/node:24-trixie@sha256:6e5d4c38403930b420404f190be8563396dca2bd156a6cb4722707b0efcf6fc1` | Build-stage base image, pinned to the multi-arch index digest. |
+| `NODE_RUNTIME_IMAGE` | `docker.io/node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0` | Runtime-stage base image, pinned to the multi-arch index digest. |
 
 Base images are pinned by digest because tags are mutable: `node:24-trixie` can be
 re-pointed at a new build at any time. Bumping the tag and its digest is a
@@ -102,12 +103,12 @@ the picker's browse backend lists `$HOME` when the dialog opens and labels that
 listing *Home*. The image defaults `HOME` and `WORKDIR` to
 `/home/node/.dsh/workspace`, inside the single `/home/node/.dsh` volume, so the
 picker opens on the persisted agent workspace without a pod-level override. `~`
-and every tool that keeps caches or config under `$HOME` (`npm`/`pnpm`, `uv`,
-`git`, `gh`, DSH's global `~/.agents` instructions and skills) follow, so those
-dotfiles live in the workspace. DSH state (sessions, config and credentials)
-stays at the `DSH_HOME` root; `.credentials.yaml` is not inside `workspace/`,
-but the workspace is a subdirectory of `DSH_HOME`, so a shell that can browse
-the parent can reach it. (The examples already run with
+and every tool that keeps caches or config under `$HOME` (`npm`/`pnpm`, `uv` if
+installed, `git`, `gh`, DSH's global `~/.agents` instructions and skills) follow,
+so those dotfiles live in the workspace. DSH state (sessions, config and
+credentials) stays at the `DSH_HOME` root; `.credentials.yaml` is not inside
+`workspace/`, but the workspace is a subdirectory of `DSH_HOME`, so a shell that
+can browse the parent can reach it. (The examples already run with
 `DSH_PERMISSION_MODE=danger-full-access`, so this is not a new access boundary.)
 
 The example sandbox templates

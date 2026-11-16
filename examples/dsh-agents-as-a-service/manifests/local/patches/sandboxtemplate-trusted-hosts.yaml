@@ -9,7 +9,7 @@
 #
 # TODO: replace the placeholder with the public host browsers use
 # (comma-separated if there is more than one). The base declares
-# DSH_TRUSTED_HOSTS at env index 2; if you edit the base env list, update the
+# DSH_TRUSTED_HOSTS at env index 1; if you edit the base env list, update the
 # index here.
 #
 # Enable by uncommenting this entry under `patches:` in
@@ -25,5 +25,5 @@
 #
 # This is a JSON 6902 patch (a list), so the target above is REQUIRED.
 - op: replace
-  path: /spec/podTemplate/spec/containers/0/env/2/value
+  path: /spec/podTemplate/spec/containers/0/env/1/value
   value: dsh.example.com

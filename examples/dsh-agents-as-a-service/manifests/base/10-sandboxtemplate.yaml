@@ -3,8 +3,8 @@
 # are injected via envFrom, and claims that would bypass the warm pool are
 # rejected outright (see 40-claim-rejected.yaml).
 #
-# A stripped-down single-tenant variant of this template (no warm pool, no
-# policy enforcement) lives in examples/minimal-single-tenant/.
+# A stripped-down single-tenant variant (one-replica warm pool, no policy
+# enforcement, no gateway) lives in examples/minimal-single-tenant/.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
@@ -13,7 +13,7 @@ metadata:
 spec:
   # Claims must not inject env or volumeClaimTemplates: with Disallowed, such
   # claims are REJECTED instead of silently taking the cold (non-warm-pool)
-  # provisioning path. Demonstrated in step 6.
+  # provisioning path. Demonstrated in step 7.
   envVarsInjectionPolicy: Disallowed
   volumeClaimTemplatesPolicy: Disallowed
 
@@ -61,17 +61,31 @@ spec:
       # nodeSelector:
       #   dsh.example.com/node-pool: dsh
       restartPolicy: "OnFailure"
-      # glibc resolves a name by sending its A and AAAA queries in parallel from
-      # one UDP socket. On some clusters (NetworkPolicy-enforcing CNIs, a
-      # CoreDNS pod on another node) one of the pair is intermittently dropped,
-      # so the first external lookup of any fresh process stalls for the 5 s
-      # resolver timeout. That is just long enough to trip DSH's plugin-manager
-      # GitHub preflight (`git ls-remote`, githubConnectionTimeoutMs = 5000 ms),
-      # which surfaces as "dsh: connection to github.com timed out after 5000ms"
-      # when adding a plugin. Serializing the two queries removes the stall
-      # (~5 s -> ~0.1 s) without disabling IPv6 DNS.
+      # DNS resolver tuning for DSH's outbound calls:
+      #   - ndots: "2": Kubernetes defaults ndots to 5, so a name with fewer
+      #     than five dots is tried against the search path
+      #     (dsh-demo.svc.cluster.local, svc.cluster.local, cluster.local)
+      #     BEFORE the absolute name. That adds resolver round trips on every
+      #     external lookup for names such as api.github.com or
+      #     registry.npmjs.org (two dots). ndots:2 makes names with two or more
+      #     dots absolute-first, while short single-label Service names still
+      #     resolve through the search path.
+      #   - single-request-reopen: glibc resolves a name by sending its A and
+      #     AAAA queries in parallel from one UDP socket. On some clusters
+      #     (NetworkPolicy-enforcing CNIs, a CoreDNS pod on another node) one of
+      #     the pair is intermittently dropped, so the first external lookup of
+      #     any fresh process stalls for the 5 s resolver timeout. That is just
+      #     long enough to trip DSH's plugin-manager GitHub preflight
+      #     (`git ls-remote`, githubConnectionTimeoutMs = 5000 ms), which
+      #     surfaces as "dsh: connection to github.com timed out after 5000ms"
+      #     when adding a plugin. Serializing the two queries removes the stall
+      #     (~5 s -> ~0.1 s) without disabling IPv6 DNS.
+      # Keep in sync with the minimal variant:
+      # examples/minimal-single-tenant/manifests/10-sandboxtemplate.yaml.
       dnsConfig:
         options:
+          - name: ndots
+            value: "2"
           - name: single-request-reopen
       securityContext:
         runAsUser: 1000   # the 'node' user in the DSH image

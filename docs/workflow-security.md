@@ -10,15 +10,16 @@ notes in [SECURITY.md](../SECURITY.md) and the release procedure in
 
 | Control | Where | What it does |
 | --- | --- | --- |
-| Least-privilege tokens | Every workflow | A top-level `permissions:` block defaults to read-only; `packages: write`, `contents: write`, `id-token: write` and `attestations: write` are granted only to the jobs that publish images, attestations or releases. |
+| Least-privilege tokens | Every workflow except `codeql.yml`, which sets job-level permissions | A top-level `permissions:` block defaults to read-only; `packages: write`, `contents: write`, `id-token: write` and `attestations: write` are granted only to the jobs that publish images, attestations or releases. |
 | Pinned actions | Every `uses:` | Third-party actions and reusable workflows are pinned to a full 40-character commit SHA (the version is kept in the trailing comment). Dependabot updates the pins weekly. The only unpinned reference is the in-repository `./.github/workflows/_build-image.yaml`. |
 | No privileged untrusted triggers | Trigger blocks | No workflow uses `pull_request_target` or `workflow_run`. PR-triggered workflows run untrusted code with a read-only token and no secrets. |
 | Untrusted input is data | `release.yaml` | The release tag (from a tag push or `workflow_dispatch` input) is passed through `env:` and read as a shell variable; it is never interpolated into a `run:` script, so metacharacters in a tag name cannot execute. |
+| Manual image dispatch | `build-main.yaml`, `build-gateway.yaml` | The optional `workflow_dispatch` `version` input is used only in the image tag list, never in a `run:` block. It can publish any tag, so a development-only tag is expected there: release identities and `latest` remain reserved for `release.yaml`. |
 | Checkout credential hygiene | Checkout steps | `persist-credentials: false` is set wherever the job does not need to push. The changelog job keeps credentials because it pushes a branch and opens a PR with `GITHUB_TOKEN`. |
 | Download integrity | `ci.yaml`, `release.yaml` | actionlint, hadolint and git-cliff are downloaded with `curl --proto '=https'` and verified against a pinned SHA-256 with `sha256sum -c` before execution. |
-| Cluster manifest integrity | `ci-manifests.yaml`, `e2e-kind.yaml` | The agent-sandbox and Gateway API release manifests are downloaded and checked against the `*_MANIFEST_SHA256` pins in [versions.env](../versions.env) before `kubectl apply`. |
+| Cluster manifest integrity | `ci-manifests.yaml`, `e2e-kind.yaml` | `ci-manifests.yaml` downloads both the agent-sandbox and the Gateway API release manifests and checks them against the `AGENT_SANDBOX_MANIFEST_SHA256` / `GATEWAY_API_MANIFEST_SHA256` pins in [versions.env](../versions.env) before `kubectl apply`; `e2e-kind.yaml` only re-checks the agent-sandbox manifest. |
 | Log and artifact hygiene | `ci-image.yaml`, `e2e-kind.yaml` | Pod logs are truncated and token material is redacted before logs are printed or diagnostic files are uploaded as artifacts. |
-| Supply-chain monitoring | Repository settings | Dependabot (GitHub Actions and pip; base-image digests are manual) updates pins weekly and opens security updates in their own group. CodeQL advanced setup and the dependency-review action run on every applicable change. CODEOWNERS covers the whole repository, including `.github/workflows/`. |
+| Supply-chain monitoring | Repository settings | Dependabot (GitHub Actions and pip; base-image digests are manual) updates pins weekly and opens security updates in their own pip-only group (the GitHub Actions group covers version updates only). CodeQL advanced setup and the dependency-review action run on every applicable change. CODEOWNERS covers the whole repository, including `.github/workflows/`. |
 
 ## Maintaining the pins
 
@@ -29,8 +30,9 @@ notes in [SECURITY.md](../SECURITY.md) and the release procedure in
   `AGENT_SANDBOX_MANIFEST_SHA256` or `GATEWAY_API_MANIFEST_SHA256` together with
   the corresponding version, otherwise CI fails the digest check by design.
 - GitHub Actions pins are updated by Dependabot; never replace a SHA with a tag.
-- Dependabot opens security updates in a dedicated group so a fix is not
-  bundled with routine weekly bumps. Every update PR still needs a review.
+- Dependabot opens security updates in a dedicated pip-only group so a fix is
+  not bundled with routine weekly bumps; the GitHub Actions group is
+  version-updates only. Every update PR still needs a review.
 - Container base images are not managed by Dependabot: its Docker parser
   ignores `FROM ${ARG}` references, and [versioning.md](versioning.md) keeps
   digest refreshes manual. Bump the image and digest in `versions.env` and the
@@ -54,6 +56,7 @@ GitHub's [Secure use reference](https://docs.github.com/en/actions/reference/sec
 | 8 | Supply chain | `ci-manifests.yaml`, `e2e-kind.yaml` | Medium | Upstream CRD/controller manifests applied without integrity checks | Fixed: pinned SHA-256 in `versions.env` |
 | 9 | Secret hygiene | `e2e-kind.yaml` | Low | Raw gateway logs uploaded in a 7-day artifact | Fixed: `token=` values redacted |
 | 10 | Repository controls | Repository settings | Low | No environment approval gate on publishing; single CODEOWNER | Recommendation: see below |
+| 11 | Tag integrity | `build-main.yaml`, `build-gateway.yaml` | Low | The manual `version` input can re-push an existing release tag (and any other tag) via `workflow_dispatch` | Recommendation: restrict it to development tags, or remove it before relying on tag immutability |
 
 Checked and clean: no `pull_request_target`/`workflow_run`, no self-hosted
 runners, all third-party actions pinned, PR workflows read-only, no secrets in

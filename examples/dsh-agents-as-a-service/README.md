@@ -35,7 +35,7 @@ base plus overlays:
 manifests/
 +-- base/                         # portable base (apply with kubectl apply -k manifests/base)
 |   +-- kustomization.yaml
-|   +-- 00-prereqs.yaml           # namespace + empty provider-key Secret
+|   +-- 00-prereqs.yaml           # namespace only; provider Secret created in step 1
 |   +-- 10-sandboxtemplate.yaml   # the DSH Web blueprint
 |   +-- 20-sandboxwarmpool.yaml   # 2 pre-warmed spares
 |   +-- 30-claim-alice.yaml       # one user
@@ -121,11 +121,10 @@ Run the walkthrough from this example's directory (`examples/dsh-agents-as-a-ser
 
 ## 1. Install the platform resources
 
-First the namespace, then the shared provider keys. The keys reach **every**
-tenant sandbox (a warm-pool constraint: pod env is stamped before any user
-exists), so they are **never committed** — generate fresh values per install.
-`00-prereqs.yaml` already creates the empty `dsh-provider-keys` Secret, so use
-an upsert:
+`00-prereqs.yaml` creates only the namespace. The shared provider keys are a
+per-install step: they reach **every** tenant sandbox (a warm-pool constraint:
+pod env is stamped before any user exists), so they are **never committed** —
+generate fresh values per install and create the Secret with an upsert:
 
 ```bash
 kubectl apply -f manifests/base/00-prereqs.yaml
@@ -133,6 +132,11 @@ kubectl -n dsh-demo create secret generic dsh-provider-keys \
   --from-literal=DEEPSEEK_API_KEY="sk-..." \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+> **Create it before the template/warm pool.** The template's `envFrom` entry
+> for `dsh-provider-keys` is required (only `dsh-provider-keys-extra` is marked
+> optional), so applying the base without this Secret leaves the sandbox pods
+> waiting on the missing Secret instead of booting DSH.
 
 Optional: additional providers (OpenRouter, Gemini, NVIDIA, OpenAI, Anthropic,
 ...) go in a second Secret. It is referenced with `optional: true`, so the
@@ -215,10 +219,12 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 > DSH's trusted-host list, so the forwarded request is accepted.
 
 > **Why the pod stays up:** this claim was applied by hand, so it carries no
-> gateway ownership annotation (`aaas.example.com/managed-by`). The gateway's idle
-> sweeper only suspends claims it created through `POST /users`; the resource-layer
-> claims from these manifests are never touched. You can deploy the gateway
-> (step 8) and still keep a sandbox you are port-forwarding to.
+> gateway ownership annotation (`aaas.example.com/managed-by`). The gateway's
+> idle sweeper only suspends claims the gateway created (through `POST /users`
+> or SSO auto-provisioning), and only after its activity probe
+> reports no running agent. The resource-layer claims from these manifests are
+> never touched. You can deploy the gateway (step 8) and still keep a sandbox
+> you are port-forwarding to.
 
 ## 4. Write state on the PVC
 
@@ -240,8 +246,9 @@ folder explorer used to choose a workspace) has no start-path setting, so it
 lists `$HOME`, and the image default makes the picker open on the persisted
 workspace (labelled *Home* in its breadcrumbs). `~` in agent commands means the
 same path. The trade-off is that tools keeping caches or config under `$HOME`
-(`npm`/`pnpm`, `uv`, `git`, `gh`, and DSH's global `~/.agents` instructions and
-skills) write dotfiles onto the PVC inside the agent workspace, where the agent
+(`npm`/`pnpm`, `git`, `gh`, and DSH's global `~/.agents` instructions and
+skills — plus anything you install yourself, such as `uv`, which the image does
+not ship) write dotfiles onto the PVC inside the agent workspace, where the agent
 and the file explorer can see them.
 
 Pod specs are stamped when a sandbox is created: a sandbox from before this
@@ -329,9 +336,12 @@ kubectl -n dsh-demo port-forward svc/dsh-gateway 18080:8080
 >
 > **Applying over an existing install?** Run
 > `kubectl diff -f manifests/base/10-sandboxtemplate.yaml` first. Cluster-specific
-> fields such as `nodeAffinity` and the warm-pool replica count are intentionally
-> not in the repo manifests; preserve them with a targeted patch instead of a
-> blind apply. Moving the probes to `/favicon.svg` is the crash-loop fix.
+> fields such as `nodeAffinity` are never in the repo manifests, and the base
+> ships its own defaults for the warm-pool replica count (`replicas: 2`) and the
+> gateway timeouts: a base re-apply resets any local tuning to those values
+> unless it is recorded in [`manifests/local/`](manifests/local/README.md).
+> Preserve local tweaks with a targeted patch instead of a blind apply. Moving
+> the probes to `/favicon.svg` is the crash-loop fix.
 >
 > The template also sets `fsGroupChangePolicy: OnRootMismatch` (see the note in
 > step 6). Existing `Sandbox` objects snapshot their pod template, so a template
@@ -580,15 +590,20 @@ HTTPRoute hostname into `DSH_TRUSTED_HOSTS`; there is no manual
 2. Create a GitHub OAuth App whose homepage/callback match the public FQDN, and
    create the oauth2-proxy and TLS Secrets from
    `73-oauth2-proxy-secret.yaml.example` and `74-tls-secret.yaml.example`.
-3. Replace `dsh-demo.example.com` (70/71/72) and `your-github-org` (72) in the
-   variant manifests with the real public host and allowed GitHub organization.
+3. Replace `dsh-demo.example.com` in `71-httproute.yaml` and
+   `72-oauth2-proxy.yaml`, plus `your-github-org` (72), with the real public
+   host and allowed GitHub organization. `70-gateway.yaml` carries the TLS
+   `certificateRefs` but no hostname, so leave it alone unless you rename the
+   TLS Secret.
 4. `kubectl apply -k manifests/exposure/gateway-api-sso`; then run
    [`scripts/preflight-sso.sh`](scripts/preflight-sso.sh) and fix everything it
    reports **before** pointing real traffic at the Gateway. It verifies the
    Secrets (including a valid oauth2-proxy cookie secret length), the gateway's
    `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, that the Gateway's TLS certificate
    reference resolves, that the gateway ServiceAccount may `patch`
-   `sandboxclaims` (SSO token rotation), that all three of the variant's
+   `sandboxes` (the suspend/resume mutation it actually uses; the
+   `sandboxclaims/patch` verb is reserved, so a missing grant only warns), that
+   all three of the variant's
    NetworkPolicies are applied, that `oauth2-proxy-ingress` neither accepts
    every namespace nor names one that matches no running pod (a wrong
    namespace answers `502` on every path), that no Ingress routes to
@@ -656,8 +671,9 @@ settings and a production checklist. In short:
   Edit the TODO placeholder in `manifests/local/patches/*.yaml`, uncomment the
   matching entry in `manifests/local/kustomization.yaml`, then
   `kubectl apply -k manifests/local`. It renders exactly the base until you
-  enable something; keeping these values out of the shipped manifests is what
-  makes a re-apply safe and the cluster reproducible.
+  enable something; recording these values in `manifests/local/` prevents a base
+  re-apply from silently reverting them, since the base does ship its own
+  replica count and timeouts.
 - **gVisor** — enable the `sandboxtemplate-runtime-class.yaml` (and, for the
   gateway, `gateway-runtime-class.yaml`) patches in the local overlay; or
   uncomment `runtimeClassName: gvisor` before applying. Requires a `gvisor`
@@ -694,7 +710,7 @@ kustomization roots: `kubectl apply -k manifests/base` applies only the base.
 | Symptom | Cause / fix |
 | --- | --- |
 | Pod `CrashLoopBackOff`, probes failing with `401` | Probe path is `/`; change readiness/liveness to `/favicon.svg` |
-| Browser shows `401` from DSH through the gateway | Gateway handshake failed — check `kubectl -n dsh-demo logs deploy/dsh-gateway` and that RBAC grants `pods/log` |
+| Browser shows `401` from DSH through the gateway | DSH rejected the request as unauthenticated: its upstream auth cookie is missing or expired (a stale gateway cache, a resumed pod, or a gateway restart). The gateway re-handshakes once and replays the request, so a single 401 usually self-heals; a persistent one means the handshake cache cannot refresh (check `kubectl -n dsh-demo logs deploy/dsh-gateway` and RBAC `pods/log`). A gateway handshake failure returns `503`, and a `Host`/`Origin` fence mismatch is a `403` (not a 401) |
 | `502` / `upstream unavailable` | Sandbox pod is not Ready (wake timed out) or the Service DNS is stale; check `kubectl get sandbox`, `WAKE_TIMEOUT` |
 | `502 Bad Gateway` on **every** path, `/healthz` included, right after applying the SSO variant | `oauth2-proxy-ingress` names a namespace no pod matches (e.g. `traefik` on k3s, where Traefik is in `kube-system`), so Traefik cannot connect to `oauth2-proxy:4180`. Set it in `manifests/exposure/gateway-api-sso/patches/oauth2-proxy-ingress-gateway-namespace.yaml` and re-apply; `scripts/preflight-sso.sh` reports it |
 | `503` with `Retry-After` | Either the launch token was not found in the pod logs yet (the gateway retries after a short delay; check the pod logs and `DSH_LOG_TAIL_LINES`) or the user hit `MAX_IN_FLIGHT_PER_USER` (default 32 concurrent requests/WebSockets); reduce client concurrency or raise the limit deliberately |
@@ -706,7 +722,7 @@ kustomization roots: `kubectl apply -k manifests/base` applies only the base.
 | WebSocket closes after a very large message from DSH | A message received from DSH exceeded `WS_MAX_MESSAGE_BYTES` (16 MiB), so the relay closed it instead of buffering; raise the limit only if DSH legitimately sends larger frames. Browser-to-DSH frames are bounded by uvicorn's own limit |
 | Every user path returns `500`, gateway log repeats `MaxRetryError ... host='10.43.0.1', port=443 ... Connection refused`, while `/healthz` is `200` | The gateway cannot reach the Kubernetes API. If an egress NetworkPolicy was just applied, it allows the `kubernetes` Service ClusterIP but not the real endpoint: kube-router enforces egress on the post-DNAT destination, so allow `kubectl -n default get endpoints kubernetes` (usually `:6443`) as well. `/readyz` returns `503` in this state; see the gateway-egress recipe in [optional hardening](docs/optional-hardening.md#gateway-egress-required-for-production) |
 | `/readyz` returns `503` but `/healthz` is `200` | The process is alive but its Kubernetes API dependency is not (policy, API outage, or a revoked RBAC verb). Kubernetes removes the pod from the Service endpoints, so fix the API path instead of restarting; `kubectl -n dsh-demo get endpoints dsh-gateway` is empty while this lasts |
-| `scripts/preflight-sso.sh` exits non-zero | It names the failing item: a missing Secret/key, a bad oauth2-proxy cookie-secret length, missing `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, a dangling Gateway TLS reference, a leftover `your-github-org`/`dsh-demo.example.com` placeholder, a second path to the gateway (an Ingress), a gateway Role without `patch` on `sandboxclaims`, or a missing SSO NetworkPolicy. It warns (does not fail) when `TRUSTED_PROXY_HOPS` is unset/`0`. Fix all items before exposing the SSO variant |
+| `scripts/preflight-sso.sh` exits non-zero | It names the failing item: a missing Secret/key, a bad oauth2-proxy cookie-secret length, missing `AUTH_PROXY_HEADER`/`COOKIE_SECURE`, a dangling Gateway TLS reference, a leftover `your-github-org`/`dsh-demo.example.com` placeholder, a second path to the gateway (an Ingress), a gateway Role that cannot `patch` `sandboxes` (RBAC for suspend/resume), or a missing SSO NetworkPolicy. It warns (does not fail) when `TRUSTED_PROXY_HOPS` is unset/`0` and when the reserved `sandboxclaims/patch` verb is absent. Fix all failures before exposing the SSO variant |
 | `409` on signup | User already has a claim; use `POST /login` with the existing token or delete the user first |
 | Cookie set but browser keeps getting `401` | `COOKIE_SECURE=true` while serving over plain HTTP (secure cookies are not sent); use HTTPS or set `false` **and** `ALLOW_INSECURE_COOKIES=1` for local demos |
 | WebSocket closes immediately (`4401`) | Missing/expired gateway cookie, or the upgrade's `Origin` does not match `Host` (CSWSH check); DSH rejecting `Host` instead surfaces as close `1011` — add the host to `DSH_TRUSTED_HOSTS` |
@@ -724,11 +740,11 @@ kustomization roots: `kubectl apply -k manifests/base` applies only the base.
 | SSO: oauth2-proxy `cookie_secret must be 16, 24, or 32 bytes ... but is 44 bytes` | The cookie secret was generated as standard base64. Use URL-safe unpadded base64 (see `73-oauth2-proxy-secret.yaml.example`) |
 | SSO: redirect loop (`ERR_TOO_MANY_REDIRECTS`) | oauth2-proxy `--redirect-url` / callback does not match the public FQDN, or TLS is not terminating at the Gateway listener; fix the OAuth App URLs and the manifest placeholders |
 | SSO: DSH rejects the public host behind the proxy | Set the public host in `manifests/exposure/gateway-api-sso/71-httproute.yaml`; the overlay propagates it to `DSH_TRUSTED_HOSTS`. For a custom exposure use the local overlay's trusted-hosts patch. The gateway forwards the browser's `Host` |
-| Page loads, but **every** `/api` call is `403 (Forbidden)` and `remote.mux` never connects | DSH's fence compares `Host` against `DSH_TRUSTED_HOSTS` **under the `Origin`'s scheme**: an HTTPS page sends `Origin: https://<host>`, so the request must reach DSH with `X-Forwarded-Proto: https`. A gateway image that forwards the plain-HTTP scheme (pre-`browser_proto()`) 403s every API call behind TLS, however correct `DSH_TRUSTED_HOSTS` is. Use a release image, keep the TLS hop declaring `X-Forwarded-Proto`, and run `scripts/cluster-drift.sh` — it reports this pair together |
+| Page loads, but **every** `/api` call is `403 (Forbidden)` and `remote.mux` never connects | DSH's fence compares `Host` against `DSH_TRUSTED_HOSTS` **under the `Origin`'s scheme**: an HTTPS page sends `Origin: https://<host>`, so the request must reach DSH with `X-Forwarded-Proto: https`. The gateway must forward that header from the TLS hop (not the plain-HTTP connection it dials to the pod); an older gateway image that forwards the connection scheme (pre-`browser_proto()`) 403s every API call behind TLS, however correct `DSH_TRUSTED_HOSTS` is. Use a release image, keep the TLS hop declaring `X-Forwarded-Proto: https`, and run `scripts/cluster-drift.sh` — it reports this pair together |
 | Pods `Pending` after setting `nodeSelector` | No node matches the label, the pool is full, or a tainted pool needs a toleration; inspect `kubectl describe pod` and the node labels |
 | gVisor: `kubectl port-forward` fails or the connection is refused | Port-forward is incompatible with gVisor; reach DSH through the gateway (or a reachable Service/Sandbox Router) |
 | Sandbox cannot reach a model API after applying the optional NetworkPolicy | The policy allows DNS and public TCP `443` only; a proxy, custom base URL, port `80` or non-443 endpoint needs an explicit egress rule |
-| Adding a plugin from GitHub fails with `dsh: connection to github.com timed out after 5000ms` | DSH's plugin manager bounds its GitHub preflight (`git ls-remote`) by `githubConnectionTimeoutMs` (default `5000`). When glibc's parallel A/AAAA DNS queries lose one response — which happens on some CNI/DNS combinations — the first lookup of a fresh process waits the full 5 s resolver timeout, so the check fails before pnpm runs. The template now sets `dnsConfig.options: single-request-reopen` to serialize the queries (~5 s → ~0.1 s); for an existing sandbox patch its `spec.podTemplate` with that `dnsConfig` and resume. Alternatively, raise `githubConnectionTimeoutMs` (e.g. `20000`) in the profile's `cordis.patch.yml` to tolerate the slow lookup |
+| Adding a plugin from GitHub fails with `dsh: connection to github.com timed out after 5000ms` | DSH's plugin manager bounds its GitHub preflight (`git ls-remote`) by `githubConnectionTimeoutMs` (default `5000`). Two resolver behaviors can eat that budget: glibc's parallel A/AAAA queries lose one response on some CNI/DNS combinations (the first lookup of a fresh process waits the full 5 s resolver timeout), and with the Kubernetes default `ndots: 5` a multi-dot name such as `api.github.com` is tried against the search path before the absolute name, adding failed lookups. The template sets `dnsConfig.options` to `ndots: "2"` (names with two or more dots are tried absolute-first; short Service names still use the search path) and `single-request-reopen` (serialize A/AAAA), which removes the stall. Existing sandboxes need the patched `spec.podTemplate` **and** a resume before the change applies. Alternatively, raise `githubConnectionTimeoutMs` (e.g. `20000`) in the profile's `cordis.patch.yml` to tolerate the slow lookup |
 | Gateway cannot reach a sandbox after applying an exposure NetworkPolicy | Check that the CNI enforces NetworkPolicy and that the Traefik/oauth2-proxy pod labels match; kubelet probes may also need the node CIDR |
 | New provider key not visible in a sandbox | Pod env is stamped at creation: delete the warm-pool spares and recreate claimed pods. A key saved in DSH's credential store also wins over env |
 | Folder picker opens on `/home/node` instead of the workspace | The sandbox predates the image default `HOME=/home/node/.dsh/workspace`, or its pod template still stamps `HOME=/workspace`/`/home/node`; pod env is stamped at creation. Verify with `kubectl -n dsh-demo exec "$SB" -- printenv HOME`; recreate the sandbox (the PVC keeps DSH state and workspace) or patch its `podTemplate` to remove the `HOME` override, then resume |

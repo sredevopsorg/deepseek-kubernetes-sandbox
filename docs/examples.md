@@ -107,10 +107,11 @@ make check
   `kubectl apply -k <root>` and rendered with `kubectl kustomize <root>`.
   Kustomize is built into `kubectl`, so no extra tool is needed. No Helm and no
   custom installer.
-- **Bases are portable.** No active cluster-specific values, namespaces or
-  environment literals in `base/`; overlays add them. An overlay references its
-  base with a relative `resources:` entry and the dependency arrow points one
-  way: overlay → base.
+- **Bases are portable.** The base may hard-code the example's own fixed demo
+  namespace (`dsh-demo`); every other cluster-specific value (scheduling,
+  storage, hosts, image pins, environment literals) belongs in an overlay. An
+  overlay references its base with a relative `resources:` entry and the
+  dependency arrow points one way: overlay → base.
 - **Overlays are siblings, not children.** A base must never reference an
   overlay, and an overlay must not be nested inside the base directory it
   references. Kustomize detects that as a cycle (`candidate root ... contains
@@ -236,4 +237,4 @@ implementation: it runs the README walkthrough and deletes everything it created
 | Example | Demonstrates |
 | --- | --- |
 | [`examples/dsh-agents-as-a-service/`](../examples/dsh-agents-as-a-service/) | The full multi-tenant platform pattern: SandboxTemplate, warm pool, per-user claims, suspend/resume, and the browser gateway. |
-| [`examples/minimal-single-tenant/`](../examples/minimal-single-tenant/) | A single DSH Web sandbox: one SandboxTemplate and a claim. |
+| [`examples/minimal-single-tenant/`](../examples/minimal-single-tenant/) | A single DSH Web sandbox: one SandboxTemplate, a one-replica warm pool and one claim. |

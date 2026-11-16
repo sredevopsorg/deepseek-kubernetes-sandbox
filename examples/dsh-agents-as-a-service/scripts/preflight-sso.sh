@@ -24,9 +24,12 @@
 #   6. no Ingress in the namespace routes to dsh-gateway (matched on the
 #      backend Service, not the object name). With SSO enabled the Service must
 #      be reachable only through oauth2-proxy;
-#   7. the gateway ServiceAccount may `patch` sandboxclaims. It is required
-#      for the gateway's own control paths (and by the shipped Role, which
-#      still grants it); without the verb those calls answer 503;
+#   7. the gateway ServiceAccount may mutate sandboxes: `patch` on
+#      sandboxes.agents.x-k8s.io is the verb the gateway actually uses for
+#      suspend/resume, so a missing verb is a failure. `patch` on
+#      sandboxclaims is checked separately but is RESERVED (the current gateway
+#      never patches a claim and never rotates the token-hash marker), so a
+#      missing claim verb is only a warning;
 #   8. all three SSO NetworkPolicies shipped by the variant are applied, and
 #      oauth2-proxy-ingress neither accepts every namespace nor names one that
 #      matches no running pod (a wrong namespace silently answers 502 on every
@@ -183,7 +186,7 @@ elif [ "$HOPS" = "0" ]; then
 else
   case "$HOPS" in
     '' | *[!0-9]*)
-      fail "TRUSTED_PROXY_HOPS='$HOPS' is not a non-negative integer; Settings.from_env() refuses to start with a non-numeric value. Fix: kubectl -n $NS set env deploy/$GATEWAY_DEPLOY TRUSTED_PROXY_HOPS=2"
+      fail "TRUSTED_PROXY_HOPS='$HOPS' is not a non-negative integer; _env_int() silently falls back to 0, so the value is IGNORED and treated as 0, which collapses the auth rate-limit bucket to the oauth2-proxy pod (every user shares one bucket). Fix: kubectl -n $NS set env deploy/$GATEWAY_DEPLOY TRUSTED_PROXY_HOPS=2"
       ;;
     *)
       pass "TRUSTED_PROXY_HOPS=$HOPS"
@@ -192,16 +195,24 @@ else
 fi
 
 echo
-echo "== Gateway RBAC (sandboxclaims write access)"
-# The gateway's control paths (account deletion, token rotation on a new
-# signup, operatingMode changes) need write access to sandboxclaims. Without
-# `patch` those calls answer 503. The SSO landing path itself never rotates the
-# token-hash annotation - it is the claim's server-side identity marker.
+echo "== Gateway RBAC (sandbox mutations)"
+# The gateway actually mutates Sandboxes: suspend pops operatingMode to
+# Suspended and resume flips it back, so `patch` on sandboxes is the mutation
+# its control paths perform; without it suspend/resume (and wake-on-connect)
+# answer 403/503. Claims are created, listed and deleted per user, but `patch`
+# on sandboxclaims is RESERVED: the current gateway never patches a claim and
+# never rotates the token-hash marker (that marker is the claim's server-side
+# identity). A missing claim verb is therefore only a warning.
 GATEWAY_SA=$(kubectl -n "$NS" get deployment "$GATEWAY_DEPLOY" \
   -o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null || true)
 GATEWAY_SA=${GATEWAY_SA:-default}
-CAN_I=$(kubectl auth can-i patch sandboxclaims.extensions.agents.x-k8s.io \
-  -n "$NS" --as="system:serviceaccount:$NS:$GATEWAY_SA" 2>&1 || true)
+
+# can_i <verb> <resource>: kubectl's answer ("yes"/"no"), or the error text
+# when impersonation is unavailable.
+can_i() {
+  kubectl auth can-i "$1" "$2" -n "$NS" \
+    --as="system:serviceaccount:$NS:$GATEWAY_SA" 2>&1 || true
+}
 
 # read_gateway_rules: one "apiGroups|resources|verbs" line per rule of the
 # Role (or ClusterRole) the gateway RoleBinding points at. Used only when
@@ -220,20 +231,46 @@ read_gateway_rules() {
   esac
 }
 
-if [ "$CAN_I" = "yes" ]; then
-  pass "ServiceAccount $GATEWAY_SA can patch sandboxclaims"
-elif [ "$CAN_I" = "no" ]; then
-  fail "ServiceAccount $GATEWAY_SA cannot patch sandboxclaims: SSO sign-in answers 503 whenever the browser has no valid gateway session (after a gateway restart, cookie expiry or in a new browser). Fix: grant 'patch' on sandboxclaims to Role $GATEWAY_ROLE (the shipped Role in manifests/base/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
+# role_grants <apiGroup> <resource> <verb>: static check against the gateway
+# Role. Returns 0 when granted, 1 when the rule is absent, 2 when the Role
+# could not be read.
+role_grants() {
+  local group=$1 resource=$2 verb=$3 rules
+  rules=$(read_gateway_rules)
+  [ -n "$rules" ] || return 2
+  printf '%s\n' "$rules" | awk -F'|' -v g="$group" -v r="$resource" -v v="$verb" '
+    index("," $1, "," g ",") && index("," $2, "," r ",") && index("," $3, "," v ",") { found = 1 }
+    END { exit found ? 0 : 1 }'
+}
+
+SANDBOX_CAN_I=$(can_i patch sandboxes.agents.x-k8s.io)
+if [ "$SANDBOX_CAN_I" = "yes" ]; then
+  pass "ServiceAccount $GATEWAY_SA can patch sandboxes (suspend/resume)"
+elif [ "$SANDBOX_CAN_I" = "no" ]; then
+  fail "ServiceAccount $GATEWAY_SA cannot patch sandboxes.agents.x-k8s.io: suspend/resume and wake-on-connect answer 403/503. Fix: grant 'patch' on sandboxes to Role $GATEWAY_ROLE (the shipped Role in manifests/base/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
 else
-  RULES=$(read_gateway_rules)
-  if printf '%s\n' "$RULES" | awk -F'|' \
-    '$1 ~ /(^|,)extensions\.agents\.x-k8s\.io(,|$)/ && $2 ~ /(^|,)sandboxclaims(,|$)/ && $3 ~ /(^|,)patch(,|$)/ { found = 1 } END { exit found ? 0 : 1 }'; then
-    pass "the gateway Role grants patch on sandboxclaims (static check; impersonation unavailable)"
-  elif [ -n "$RULES" ]; then
-    fail "Role $GATEWAY_ROLE does not grant 'patch' on sandboxclaims: SSO sign-in answers 503 whenever the browser has no valid gateway session. Fix: grant that verb to the Role (the shipped Role in manifests/base/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed."
-  else
-    warn "could not verify that ServiceAccount $GATEWAY_SA may patch sandboxclaims ($CAN_I). Check manually that Role $GATEWAY_ROLE grants 'patch' on extensions.agents.x-k8s.io/sandboxclaims."
-  fi
+  rc=0
+  role_grants agents.x-k8s.io sandboxes patch || rc=$?
+  case "$rc" in
+    0) pass "the gateway Role grants patch on sandboxes (static check; impersonation unavailable)" ;;
+    1) fail "Role $GATEWAY_ROLE does not grant 'patch' on sandboxes.agents.x-k8s.io: suspend/resume and wake-on-connect answer 403/503. Fix: grant that verb to the Role (the shipped Role in manifests/base/50-gateway.yaml has it; re-applying just the Role/RoleBinding is enough). RBAC is evaluated per request; no gateway restart is needed." ;;
+    *) warn "could not verify that ServiceAccount $GATEWAY_SA may patch sandboxes ($SANDBOX_CAN_I). Check manually that Role $GATEWAY_ROLE grants 'patch' on agents.x-k8s.io/sandboxes." ;;
+  esac
+fi
+
+CLAIMS_CAN_I=$(can_i patch sandboxclaims.extensions.agents.x-k8s.io)
+if [ "$CLAIMS_CAN_I" = "yes" ]; then
+  pass "ServiceAccount $GATEWAY_SA can patch sandboxclaims (reserved verb)"
+elif [ "$CLAIMS_CAN_I" = "no" ]; then
+  warn "ServiceAccount $GATEWAY_SA cannot patch sandboxclaims. The verb is reserved; the current gateway never patches claims and never rotates the token-hash marker, so this is not a failure. Keep it in Role $GATEWAY_ROLE only if you add such a control path later."
+else
+  rc=0
+  role_grants extensions.agents.x-k8s.io sandboxclaims patch || rc=$?
+  case "$rc" in
+    0) pass "the gateway Role grants patch on sandboxclaims (reserved verb; static check)" ;;
+    1) warn "Role $GATEWAY_ROLE does not grant 'patch' on sandboxclaims. The verb is reserved; the current gateway never patches claims and never rotates the token-hash marker, so this is not a failure." ;;
+    *) warn "could not verify that ServiceAccount $GATEWAY_SA may patch sandboxclaims ($CLAIMS_CAN_I). Check manually that Role $GATEWAY_ROLE grants 'patch' on extensions.agents.x-k8s.io/sandboxclaims; it is reserved, so a missing verb is not a failure." ;;
+  esac
 fi
 
 echo

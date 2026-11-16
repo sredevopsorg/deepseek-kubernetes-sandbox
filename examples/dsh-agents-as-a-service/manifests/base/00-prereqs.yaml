@@ -1,16 +1,18 @@
-# DSH "Agents as a Service" — prerequisites: namespace + shared provider keys.
+# DSH "Agents as a Service" — prerequisites: the namespace only.
 #
-# The dsh-provider-keys Secret is deliberately NOT committed with a usable
-# value. DEEPSEEK_API_KEY reaches every tenant sandbox (injected via envFrom
-# on the SandboxTemplate, stamped before any user exists — a warm-pool
-# constraint), so a real key committed here would be shared by every install
-# of this example. Generate a fresh value per install (README step 1;
-# scripts/e2e-kind.sh uses a throwaway). Use an upsert: this manifest already
-# creates the empty Secret, so a plain `kubectl create` would fail:
+# The dsh-provider-keys Secret is intentionally NOT shipped: DEEPSEEK_API_KEY
+# reaches every tenant sandbox (injected via envFrom on the SandboxTemplate,
+# stamped before any user exists — a warm-pool constraint), so a real key
+# committed here would be shared by every install of this example. Create the
+# Secret per install with the documented upsert (README step 1;
+# scripts/e2e-kind.sh uses a throwaway):
 #
 #   kubectl -n dsh-demo create secret generic dsh-provider-keys \
 #     --from-literal=DEEPSEEK_API_KEY="sk-..." \
 #     --dry-run=client -o yaml | kubectl apply -f -
+#
+# Because this base does not contain the Secret, re-applying `kubectl apply -k`
+# (or the plain manifests) never clears the real key.
 #
 # Optional: additional providers (OpenRouter, Gemini, NVIDIA, OpenAI, ...) go
 # in a second, optional Secret. The SandboxTemplate references it with
@@ -33,12 +35,3 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: dsh-demo
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: dsh-provider-keys
-  namespace: dsh-demo
-type: Opaque
-# stringData:
-#   DEEPSEEK_API_KEY: "sk-your-key-here"

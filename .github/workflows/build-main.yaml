@@ -1,6 +1,9 @@
 # Development channel for the main DSH Web image: every merge to main that
 # touches the image definition publishes ghcr.io/<owner>/<repo>:main.
 # Releases are published by release.yaml with immutable version tags.
+#
+# The optional workflow_dispatch input `version` is used only as an additional
+# image tag for a manual run; it is never interpolated into a run script.
 name: Build main image
 
 on:

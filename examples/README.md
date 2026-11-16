@@ -9,7 +9,7 @@ libraries.
 | Example | What it demonstrates | Needs |
 | --- | --- | --- |
 | [`examples/dsh-agents-as-a-service/`](dsh-agents-as-a-service/) | The full multi-tenant platform pattern: one `SandboxTemplate` with per-user PVCs, a warm pool, one ~10-line `SandboxClaim` per user, suspend-when-idle / wake-on-return, and a browser gateway with signup, `HttpOnly` sessions, an HTTP + WebSocket proxy and two exposure variants (Ingress, or Gateway API + GitHub SSO). | agent-sandbox with extensions; kind for the e2e script. |
-| [`examples/minimal-single-tenant/`](minimal-single-tenant/) | The smallest useful setup: a single `SandboxTemplate` and one `SandboxClaim`, no gateway — reach DSH Web with a launch-token URL through `kubectl port-forward`. | agent-sandbox with extensions. |
+| [`examples/minimal-single-tenant/`](minimal-single-tenant/) | The smallest useful setup: a single `SandboxTemplate`, a one-replica warm pool and one `SandboxClaim`, no gateway — reach DSH Web with a launch-token URL through `kubectl port-forward`. | agent-sandbox with extensions. |
 
 The multi-tenant example also documents opt-in gVisor, `nodeSelector`,
 NetworkPolicy, extra provider-key hardening and failed-Pod recovery in

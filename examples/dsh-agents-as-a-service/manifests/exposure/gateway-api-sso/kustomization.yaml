@@ -19,7 +19,9 @@
 # The committed *.yaml.example Secret templates are deliberately NOT resources:
 # create the real Secrets first (see ../README.md), they never enter git.
 # Placeholders that stay in the variant YAMLs: the public host
-# (`dsh-demo.example.com` in 70/71/72) and the allowed GitHub organization
+# (`dsh-demo.example.com` in 71-httproute.yaml's hostnames and
+# 72-oauth2-proxy.yaml's --redirect-url; 70-gateway.yaml carries only the TLS
+# certificateRef and no hostname) and the allowed GitHub organization
 # (`--github-org` in 72-oauth2-proxy.yaml).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

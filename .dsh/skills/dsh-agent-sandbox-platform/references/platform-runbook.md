@@ -87,12 +87,19 @@ Resume and verify state:
 kubectl -n "$NS" patch sandbox "$SB" --type merge \
   -p '{"spec":{"operatingMode":"Running"}}'
 kubectl -n "$NS" wait sandbox "$SB" --for=condition=Ready --timeout=180s
-kubectl -n "$NS" exec "$SB" -- cat /home/node/.dsh/marker.txt
+kubectl -n "$NS" exec "$POD" -- cat /home/node/.dsh/marker.txt
 ```
 
 The gateway wakes a suspended sandbox on the first request. The idle sweeper
 only suspends claims it created (`aaas.example.com/managed-by=dsh-gateway`);
 hand-applied claims are never swept.
+
+Idle suspend is not browser-only. Before suspending, the gateway probes DSH's
+session state: a running agent (any session `running: true`) keeps the sandbox;
+a probe error, timeout or unparseable answer is "unknown" and defers the
+suspend to the next sweep; only fully idle sessions plus `IDLE_TIMEOUT` of
+browser inactivity suspend it. Never "fix" a stuck sweep by disabling
+`SESSION_ACTIVITY_PROBE`: that can delete a pod mid-turn.
 
 ## 6. Warm pool
 
@@ -160,14 +167,38 @@ It performs the DSH launch-token handshake server-side. With SSO enabled
 authenticating proxy; never add a second path or port-forward it on a shared
 host. A resource-only install has no gateway: that is a warning, not a failure.
 
+- **SSO marker binding.** The gateway honors `AUTH_PROXY_HEADER` only for a
+  claim it minted itself (the `aaas.example.com/token-sha256` annotation). A
+  hand-applied or foreign claim is refused, and the gateway never rotates the
+  marker.
+- **Cookies and TLS.** TLS terminates outside the gateway: set
+  `COOKIE_SECURE=true` and drop `ALLOW_INSECURE_COOKIES`. The gateway refuses
+  `COOKIE_SECURE=false` unless `ALLOW_INSECURE_COOKIES=1`, which is only for the
+  plain-HTTP local demo; never expose that combination.
+- **Trusted proxies.** The auth rate limit keys on the socket peer by default;
+  `TRUSTED_PROXY_HOPS` declares how many proxies append to `X-Forwarded-For`
+  (the SSO variant needs `2`: Traefik and oauth2-proxy). Never trust the header
+  without that declaration.
+- **Browser scheme.** Behind TLS, requests must reach DSH with
+  `X-Forwarded-Proto: https`: DSH compares `Host` under the `Origin` scheme, so
+  a plain-HTTP forward makes every `/api` call `403` however correct
+  `DSH_TRUSTED_HOSTS` is.
+- **Verification.** Both read-only scripts exit non-zero on the condition they
+  check: `scripts/cluster-drift.sh` compares the live install with the manifests
+  (stale image, readiness probe, trusted host/scheme pair, gateway env) and
+  `scripts/preflight-sso.sh` checks the SSO variant (Secrets, gateway env, TLS
+  reference, placeholders, second paths, all three NetworkPolicies). Run both
+  before and after an exposure change.
+
 ## 9. Security boundaries
 
 - Provider keys (`dsh-provider-keys` plus the optional
   `dsh-provider-keys-extra`) are shared by all sandboxes; the example is not
   tenant-isolated.
-- gVisor, `nodeSelector`, the sandbox/exposure NetworkPolicies and extra
-  provider keys are opt-in, not active by default. A NetworkPolicy only helps
-  with a CNI that enforces it; see
+- gVisor, `nodeSelector`, the sandbox/exposure NetworkPolicies, the gateway
+  egress policy, extra provider keys and failed-Pod recovery (`failedPodPolicy:
+  Recreate`) are opt-in, not active by default. A NetworkPolicy only helps with
+  a CNI that enforces it; see
   [optional hardening](../../../../examples/dsh-agents-as-a-service/docs/optional-hardening.md).
 - Secret data, kubeconfigs, and pod logs are sensitive; RBAC may allow Secret
   access, policy does not. Keep gateway RBAC namespace-scoped; it needs pod logs
@@ -183,7 +214,8 @@ host. A resource-only install has no gateway: that is a warning, not a failure.
 | Pod Pending | `kubectl describe pod` | Requests/taints/affinity, unbound PVC |
 | CrashLoopBackOff | logs, `--previous` | Startup failure, bad config, probe 401, fsGroup mode 660 |
 | ImagePullBackOff | describe events | Wrong tag, private registry, missing pull secret |
-| DSH 401 in browser | gateway logs | Launch-token handshake failed; check gateway RBAC `pods/log` |
+| DSH 401 in browser | gateway logs, cookie | Missing/expired DSH auth cookie (the gateway re-handshakes once); check gateway RBAC `pods/log`. A handshake failure is `503`; a `Host`/`Origin` fence mismatch is `403`. |
+| Every `/api` call 403 behind TLS | browser network tab, gateway/DSH `Host`/`Origin` | The request reached DSH over plain HTTP; forward `X-Forwarded-Proto: https` at the TLS hop |
 | 502/503 through gateway | sandbox Ready, gateway logs | Wake timeout, DNS stale, token not in logs yet |
 | Warm pool empty | sandboxes label count | Scale the pool or wait for replenishment |
 | Suspended but expected running | `operatingMode` | Resume it; the gateway only wakes on a request |
@@ -197,6 +229,9 @@ Delete only claims/sandboxes you created, by name:
 kubectl -n "$NS" delete sandboxclaim "$CLAIM" --dry-run=server
 kubectl -n "$NS" delete sandboxclaim "$CLAIM"
 ```
+
+Never `kubectl delete -k <root>`: the kustomization includes the namespace, so
+it deletes the namespace and everything in it. Delete the named object instead.
 
 Report context/namespace, evidence, conclusion, change, rollback, and what was
 deleted. Leave the namespace, pools, templates, and unrelated claims alone.

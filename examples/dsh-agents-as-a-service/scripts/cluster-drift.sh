@@ -45,6 +45,22 @@ info() { printf 'INFO   %s\n' "$*"; }
 warn() { printf 'WARN   %s\n' "$*"; WARNS=$((WARNS + 1)); }
 drift() { printf 'DRIFT  %s\n' "$*"; DRIFTS=$((DRIFTS + 1)); }
 
+# gw <jsonpath>: read a field from the gateway Deployment (empty when it does
+# not exist). Defined before check_gateway_scheme(), which calls it.
+gw() { "${KUBECTL[@]}" -n "$NS" get deployment dsh-gateway -o jsonpath="$1" 2>/dev/null || true; }
+
+# image_matches <live-image> <expected-name:tag>: true when the live reference
+# is the expected tag. A digest pin (repo:tag@sha256:...) still carries the
+# expected tag, so it matches: the repo permits digest-pinned deployments.
+image_matches() {
+  local live=$1 expected=$2
+  [ "$live" = "$expected" ] && return 0
+  case "$live" in
+    "$expected"@sha256:*) return 0 ;;
+  esac
+  return 1
+}
+
 if ! "${KUBECTL[@]}" version >/dev/null 2>&1; then
   echo "FAIL   kubectl cannot reach a cluster; select a context first" >&2
   exit 1
@@ -73,7 +89,7 @@ check_gateway_scheme() {
   fi
   published=$("${KUBECTL[@]}" -n "$NS" get deployment dsh-gateway \
     -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
-  if [ "$published" != "$GATEWAY_IMAGE:$EXPECTED_TAG" ]; then
+  if ! image_matches "$published" "$GATEWAY_IMAGE:$EXPECTED_TAG"; then
     drift "gateway image '$published' is not the release identity; browser_proto() cannot be verified statically"
     return
   fi
@@ -127,7 +143,8 @@ echo "== Control plane"
 CONTROLLER_IMAGE=$("${KUBECTL[@]}" -n agent-sandbox-system get deployment agent-sandbox-controller \
   -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
 case "$CONTROLLER_IMAGE" in
-  *":$AGENT_SANDBOX_VERSION") pass "agent-sandbox-controller image matches pin ($AGENT_SANDBOX_VERSION)" ;;
+  *":$AGENT_SANDBOX_VERSION" | *":$AGENT_SANDBOX_VERSION"@sha256:*)
+    pass "agent-sandbox-controller image matches pin ($AGENT_SANDBOX_VERSION)" ;;
   "") warn "agent-sandbox-controller Deployment not found; is agent-sandbox installed?" ;;
   *) drift "agent-sandbox-controller is $CONTROLLER_IMAGE, repo pins $AGENT_SANDBOX_VERSION" ;;
 esac
@@ -164,10 +181,27 @@ if printf '%s\n' "$TEMPLATE_LIST" | grep -qxF "$TEMPLATE"; then
   fi
 
   TEMPLATE_IMAGE=$(tpl '{.spec.podTemplate.spec.containers[0].image}')
-  if [ "$TEMPLATE_IMAGE" = "$GHCR_IMAGE:$EXPECTED_TAG" ]; then
+  if image_matches "$TEMPLATE_IMAGE" "$GHCR_IMAGE:$EXPECTED_TAG"; then
     pass "$TEMPLATE image is the release identity ($EXPECTED_TAG)"
   else
     drift "$TEMPLATE image is '$TEMPLATE_IMAGE', expected '$GHCR_IMAGE:$EXPECTED_TAG'"
+  fi
+
+  # DNS options are part of the shipped behavior: ndots:2 keeps external
+  # multi-dot names (api.github.com, registry.npmjs.org) absolute-first, and
+  # single-request-reopen serializes glibc's A/AAAA pair so DSH's 5 s GitHub
+  # plugin preflight does not trip.
+  TEMPLATE_NDOTS=$(tpl '{.spec.podTemplate.spec.dnsConfig.options[?(@.name=="ndots")].value}')
+  TEMPLATE_DNS_OPTIONS=$(tpl '{range .spec.podTemplate.spec.dnsConfig.options[*]}{.name}{"\n"}{end}')
+  if [ "$TEMPLATE_NDOTS" = "2" ]; then
+    pass "$TEMPLATE sets dnsConfig ndots: 2 (external names absolute-first)"
+  else
+    drift "$TEMPLATE is missing dnsConfig.options ndots: \"2\" (Kubernetes defaults ndots to 5, so multi-dot names go through the search path first)"
+  fi
+  if printf '%s\n' "$TEMPLATE_DNS_OPTIONS" | grep -qxF single-request-reopen; then
+    pass "$TEMPLATE sets single-request-reopen (serializes glibc A/AAAA queries)"
+  else
+    drift "$TEMPLATE is missing dnsConfig.options single-request-reopen (parallel A/AAAA queries can stall the first lookup and trip DSH's 5 s GitHub preflight)"
   fi
 
   for field in runtimeClassName 'nodeSelector' 'affinity'; do
@@ -270,14 +304,21 @@ fi
 echo
 echo "== Gateway"
 if "${KUBECTL[@]}" -n "$NS" get deployment dsh-gateway >/dev/null 2>&1; then
-  gw() { "${KUBECTL[@]}" -n "$NS" get deployment dsh-gateway -o jsonpath="$1" 2>/dev/null || true; }
-
   LIVE_GATEWAY_IMAGE=$(gw '{.spec.template.spec.containers[0].image}')
   EXPECTED_GATEWAY_IMAGE="$GATEWAY_IMAGE:$EXPECTED_TAG"
-  if [ "$LIVE_GATEWAY_IMAGE" = "$EXPECTED_GATEWAY_IMAGE" ]; then
+  if image_matches "$LIVE_GATEWAY_IMAGE" "$EXPECTED_GATEWAY_IMAGE"; then
     pass "gateway image is the release identity ($EXPECTED_TAG)"
   else
     drift "gateway image is '$LIVE_GATEWAY_IMAGE', expected '$EXPECTED_GATEWAY_IMAGE'"
+  fi
+
+  # The gateway mirrors the sandbox ndots setting; single-request-reopen is
+  # sandbox-specific and intentionally absent here.
+  GATEWAY_NDOTS=$(gw '{.spec.template.spec.dnsConfig.options[?(@.name=="ndots")].value}')
+  if [ "$GATEWAY_NDOTS" = "2" ]; then
+    pass "gateway sets dnsConfig ndots: 2"
+  else
+    drift "gateway Deployment is missing dnsConfig.options ndots: \"2\" (external names with two or more dots otherwise go through the search path first)"
   fi
 
   REPLICAS=$(gw '{.spec.replicas}')

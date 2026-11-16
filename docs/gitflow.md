@@ -71,8 +71,8 @@ checks that skip when unrelated to the change.
 
 The image build workflows (`_build-image.yaml`, `build-main.yaml`,
 `build-gateway.yaml`) and `e2e-kind.yaml` are **not** required on every PR: the
-image builds run where they are needed, and the kind end-to-end suite is reserved
-for release validation and manual dispatch because it is slow.
+image builds run where they are needed, and the kind end-to-end suite runs on a
+weekly schedule (`e2e-kind.yaml`) plus manual dispatch because it is slow.
 
 ## Releases
 

@@ -22,14 +22,16 @@ events, then compare desired vs observed state. Keep output bounded. Never
 | Folder picker opens on `/home/node`, not the workspace | `kubectl exec <pod> -- printenv HOME` | The sandbox predates the image default `HOME=/home/node/.dsh/workspace`, or its pod template still stamps an old `HOME`; pod env is stamped at creation. Recreate the sandbox (PVC survives) or patch its `podTemplate` to remove the override, then resume. Workspace dotfiles (`.cache`, `.config`, `.npm`, `.agents`) are expected with HOME on the PVC, not a fault. |
 | PVC `Pending` | `kubectl describe pvc`, StorageClass | No default provisioner, access mode, zone binding. |
 | Launch token not found | `kubectl logs <pod> --tail=2000 | grep 'dsh web:'` | Pod not ready yet, or logs rotated. Do not guess tokens; wait for readiness. |
+| Slow or failing DNS in a sandbox (plugin install, `git`/`npm` lookups take ~5 s or time out) | `kubectl exec <pod> -- cat /etc/resolv.conf`, DSH plugin-preflight errors | The pod template needs `dnsConfig.options` `ndots: "2"` (external names absolute-first instead of Kubernetes' default 5) and `single-request-reopen` (serializes glibc's parallel A/AAAA queries). Patch the template and recreate or suspend/resume the sandbox; `scripts/cluster-drift.sh` reports the pair. |
 | Sandbox reports `Finished=True` | pod phase, `kubectl get events` | The backing Pod reached `Failed` (eviction, spot reclaim) and `failedPodPolicy` defaults to `Retain`. Delete the Pod to force a replacement, or set `Recreate` (v1.0.8+) on the Sandbox/template; the claim and PVCs survive either way. |
 | Hand-applied sandbox disappeared | claim annotations, gateway logs | Idle sweeper only manages claims with `aaas.example.com/managed-by=dsh-gateway`; if it was managed, recreate/resume. |
-| Gateway 401 | gateway logs, cookie flags | Missing/expired cookie, DSH handshake failed, or `COOKIE_SECURE=true` over HTTP. |
+| Gateway 401 | gateway logs, cookie flags | Missing/expired DSH auth cookie (the gateway re-handshakes once), or `COOKIE_SECURE=true` over HTTP. A gateway handshake failure is `503`; a `Host`/`Origin` fence mismatch is `403`. |
+| Page loads but every `/api` call is `403` behind TLS | browser network tab, gateway/DSH logs | DSH fences `Host` under the `Origin` scheme, so the request must reach DSH over HTTPS semantically: forward `X-Forwarded-Proto: https` at the TLS hop. A gateway forwarding the plain-HTTP scheme 403s every API call however correct `DSH_TRUSTED_HOSTS` is; release images handle it. |
 | Gateway 502/503 | sandbox Ready, gateway logs | Wake timeout, stale DNS, token not yet in logs; check `WAKE_TIMEOUT` and RBAC `pods/log`. |
 | `stream for <user> ended early: RemoteProtocolError` in gateway logs | the claim/sandbox behind the open stream, not the gateway | Expected when a sandbox is deleted (claim delete, `/recreate`, or a `DELETE /users/<user>`) mid-stream: DSH dies, its chunked body ends incomplete, and `_relay` logs one line and ends the response cleanly; the browser's `EventSource` reconnects. Correlate with `Killing pod/<sandbox>` and a new claim adoption. If it repeats on an *idle* page with the sandbox up, it is an idle SSE cut through a proxy (Cloudflare drops a silent stream at ~100 s); confirm the gateway's `SSE_KEEPALIVE_INTERVAL` is not `0`. |
 | WebSocket closes 1011 | gateway logs, `Host`/Origin | DSH rejected the upstream authority; check `DSH_TRUSTED_HOSTS` and the gateway's pod-IP dial path. |
 | WebSocket closes 4401 | cookie, Origin | Missing gateway auth or cross-origin upgrade; send a matching `Origin`. |
-| SSO header ignored | gateway env | `AUTH_PROXY_HEADER` unset; setting it requires the proxy to be the only path to the ClusterIP Service. |
+| SSO header ignored | gateway env, claim annotation | `AUTH_PROXY_HEADER` unset; note the header is honored only for a claim the gateway minted itself (`aaas.example.com/token-sha256` marker), so a hand-applied or foreign claim is refused. Setting `AUTH_PROXY_HEADER` also requires the proxy to be the only path to the ClusterIP Service. |
 | Someone is treated as another user | service paths | Trust-boundary violation: the gateway is directly reachable. Remove the extra path and disable SSO until fixed. |
 
 ## Agent-sandbox MCP
@@ -40,11 +42,11 @@ events, then compare desired vs observed state. Keep output bounded. Never
 | 404 on connect | curl `/mcp`, `/healthz` | Wrong path/port; MCP endpoint is `/mcp`, health is at the root. |
 | `/readyz` 503 | response body, server logs | API unreachable or namespace `K8S_SANDBOX_PROBE_NAMESPACE` not listable; fix RBAC/config. |
 | `ctx.session_id is None` | server error | Connected over stdio; use streamable HTTP. |
-| `Sandbox claim ... is not found` | server error, `kubectl get claim` | Wrong namespace, or the claim belongs to another MCP session. List with `kubectl`; use the MCP only for its own claims. |
+| `Sandbox claim ... is not found` | server error, `kubectl get sandboxclaims` | Wrong namespace, or the claim belongs to another MCP session. List with `kubectl`; use the MCP only for its own claims. |
 | Creation cancelled at ~60 s | MCP call log | DSH `toolCallTimeoutMs` is 60 s while creation waits up to 180 s; raise the timeout. |
 | `execute_command` connection error | server logs, template ports | No runtime on 8888/8080/9090. The DSH template only listens on 3080; use a runtime template or a combined image. |
 | Output truncated / flooded | tool result | Pre-v1.0.8 is unbounded; v1.0.8 bounds output. Redirect verbose output to a file and read/download it; never pass `max_output_chars` to an old server. |
-| Orphaned claims after reconnect | `kubectl get claims -l mcp.k8s-agent-sandbox/session-id` | MCP sessions are transient; wait for `shutdown_after_seconds` or delete by label with explicit confirmation. |
+| Orphaned claims after reconnect | `kubectl get sandboxclaims -l mcp.k8s-agent-sandbox/session-id` | MCP sessions are transient; wait for `shutdown_after_seconds` or delete by label with explicit confirmation. |
 | `Forbidden` from the MCP server | server logs | Its ServiceAccount lacks claim/sandbox verbs, or RBAC is in another namespace; fix the Role, not the kubeconfig. |
 | Sandbox expired | `get_sandbox_status` -> `SandboxNotFound` | `shutdown_after_seconds` elapsed; create a new sandbox and keep the task inside the budget. |
 

@@ -4,16 +4,18 @@
 # multi-tenant platform (warm pool, per-user claims, gateway, idle-suspend),
 # see examples/dsh-agents-as-a-service/.
 #
-# Claims reference this template directly (spec.sandboxTemplateRef): there is
-# no warm pool and no per-user platform here. See the README for the full
-# quickstart; in short the prerequisites are:
+# The README walkthrough creates a one-replica SandboxWarmPool that references
+# this template, and a SandboxClaim adopts a spare through `warmPoolRef`; there
+# is no per-user platform, gateway or idle-suspend here. See the README for the
+# full quickstart; in short the prerequisites are:
 #   - Namespace dsh-demo.
 #   - Secret dsh-provider-keys in dsh-demo with key DEEPSEEK_API_KEY
 #     (injected via envFrom; the pod starts without it, only model calls fail).
 #   - Optional: Secret dsh-provider-keys-extra with additional provider keys
 #     (OPENROUTER_API_KEY, GEMINI_API_KEY, NVIDIA_API_KEY, ...). It is
 #     referenced with `optional: true`, so it may be absent.
-# The agent-sandbox controller (v1.0.8, API v1beta1) must be installed.
+# The agent-sandbox controller must be installed at the version pinned by
+# AGENT_SANDBOX_VERSION in versions.env (API v1beta1).
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
@@ -34,13 +36,21 @@ spec:
     spec:
       # The sandbox never talks to the Kubernetes API; no SA token belongs in it.
       automountServiceAccountToken: false
-      # Same DNS workaround as the multi-tenant template: serialize glibc's
-      # parallel A/AAAA queries, which otherwise stall the first external lookup
-      # of a fresh process for 5 s on some CNIs (and break DSH's 5 s GitHub
-      # plugin-manager preflight). Rationale in full at
+      # Same DNS tuning as the multi-tenant template, both options:
+      #   - ndots: "2" makes names with two or more dots (api.github.com,
+      #     registry.npmjs.org) absolute-first instead of trying the search path
+      #     first (Kubernetes defaults ndots to 5); short Service names still
+      #     resolve through search.
+      #   - single-request-reopen serializes glibc's parallel A/AAAA queries,
+      #     which otherwise stall the first external lookup of a fresh process
+      #     for 5 s on some CNIs (and break DSH's 5 s GitHub plugin-manager
+      #     preflight).
+      # Rationale in full at
       # examples/dsh-agents-as-a-service/manifests/base/10-sandboxtemplate.yaml.
       dnsConfig:
         options:
+          - name: ndots
+            value: "2"
           - name: single-request-reopen
       # OPTIONAL: run under gVisor. gVisor breaks `kubectl port-forward`, so
       # this quickstart's only access path will not work; use the multi-tenant

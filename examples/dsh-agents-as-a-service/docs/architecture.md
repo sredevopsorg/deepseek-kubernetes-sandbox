@@ -214,7 +214,9 @@ PVC. So before patching, the sweeper asks DSH itself whether work is outstanding
 DSH tracks the answer as `agent.status` (`idle` | `running`), which spans the whole driver drain
 interval and does not depend on a connected client; `session/list` projects it per session as
 `running` and reads the persisted list without resuming an agent. The gateway probes that endpoint
-with the same `dsh-auth-*` cookie it mints for the proxy (it never sends the launch or bearer token).
+with a `dsh-auth-*` cookie it mints for the probe itself, under the sandbox's pod-IP authority
+(falling back to the Service FQDN) rather than the browser-`Host` key used by the proxy cache; it
+never sends the launch or bearer token.
 
 `session/list` is a Remote, so it does **not** take a plain JSON body. DSH's Connection carries calls
 in an RPC envelope, and the Typert gateway requires the args to match the descriptor exactly:
@@ -234,7 +236,7 @@ The answer is tri-state:
 | --- | --- |
 | `running: true` for any session | Keep the sandbox and log that a turn is in progress. |
 | Every session `running: false`, including an empty list | Suspend, once the browser has also been idle for `IDLE_TIMEOUT`. |
-| Handshake/HTTP failure, timeout, non-JSON body, or a response without a `sessions` array (older DSH) | **Fail closed**: suspend nothing this cycle and retry next sweep. |
+| Handshake/HTTP failure, timeout, non-JSON body, or a response without an `items` array (or legacy `sessions`) | **Fail closed**: suspend nothing this cycle and retry next sweep. |
 
 Failing closed is deliberate: a probe that cannot prove idleness must never authorize deleting the
 pod. The cost of a false "unknown" is a sandbox that stays awake, not a lost turn. The probe runs
@@ -266,7 +268,8 @@ existing sandbox keeps its old `HOME=/workspace` and mount until it is recreated
 example's resource-layer walkthrough applies `dsh-alice` by hand, and every claim is named
 `dsh-<user>`. Claims the gateway creates carry `aaas.example.com/managed-by=dsh-gateway`; the
 sweeper skips everything else, so it can never suspend a sandbox an operator is using. Without
-that marker the sweeper would suspend a hand-applied claim 60s after first sighting and break
+that marker the sweeper would suspend a hand-applied claim after `IDLE_TIMEOUT` (360 s in the
+base demo; the code default is 60 s) once its probe reported no running agent, and break
 `kubectl logs`/`port-forward` against its pod.
 
 **Resume and file ownership.** The pod template sets `fsGroupChangePolicy: OnRootMismatch` on
@@ -395,7 +398,7 @@ The gateway runs with a namespace-scoped ServiceAccount (`manifests/base/50-gate
 
 | API group | Resource | Verbs | Why |
 | --- | --- | --- | --- |
-| `extensions.agents.x-k8s.io` | `sandboxclaims` | `get`, `list`, `create`, `patch`, `delete` | signup, state, account deletion, token rotation |
+| `extensions.agents.x-k8s.io` | `sandboxclaims` | `get`, `list`, `create`, `patch`, `delete` | signup, state, account deletion; `patch` is reserved (the gateway never patches claims or rotates the `token-sha256` marker) |
 | `agents.x-k8s.io` | `sandboxes` | `get`, `list`, `patch` | resolve DNS/pod, wake/suspend |
 | `""` (core) | `pods` | `get`, `list` | resolve the pod behind a sandbox |
 | `""` (core) | `pods/log` | `get` | launch-token handshake |
@@ -462,8 +465,9 @@ Notes and limits:
 - **SSO is trust-on-hop.** `AUTH_PROXY_HEADER` makes the gateway trust the proxy-asserted
   identity; the SSO variant must remain the only path to the Service, and its NetworkPolicy is
   required, not optional. Run [`scripts/preflight-sso.sh`](../scripts/preflight-sso.sh) after
-  applying it: it fails when the Role does not grant `patch` on `sandboxclaims` (SSO token
-  rotation) or when the variant's NetworkPolicies are missing.
+  applying it: it fails when the Role does not grant `patch` on `sandboxes` (the suspend/resume
+  mutation the gateway actually performs), warns when the reserved `sandboxclaims/patch` verb is
+  absent, and fails when the variant's NetworkPolicies are missing.
 
 ## Failure modes
 
