@@ -89,7 +89,7 @@ needs kind plus the agent-sandbox CRDs (see the example README).
 ## Versioning and releases
 
 - Release identity = DSH_VERSION plus an optional -rN repository revision.
-  The current identity is dsh-v0.2.2-rc.3: upstream ref dsh-v0.2.2-rc.3 with
+  The current identity is dsh-v0.2.2-rc.5: upstream ref dsh-v0.2.2-rc.5 with
   no repository revision (the first release at that ref). A repository-only
   change at the same ref publishes a new -rN.
 - Channels: release tags are immutable; latest follows the newest release;

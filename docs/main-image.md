@@ -40,12 +40,12 @@ To reproduce the equivalent by hand:
 
 ```bash
 docker build \
-  --build-arg DSH_VERSION=dsh-v0.2.2-rc.3 \
-  --build-arg DSH_COMMIT=38a6a5c965aa99ab525161efb7cc5cf1fe62fced \
+  --build-arg DSH_VERSION=dsh-v0.2.2-rc.5 \
+  --build-arg DSH_COMMIT=9c2670d3bce5275e0d1610272958121af87787bb \
   --build-arg RELEASE_REVISION= \
   --build-arg PNPM_VERSION=11.28.5 \
   --build-arg VCS_REF="$(git rev-parse --short HEAD)" \
-  -t ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.3 .
+  -t ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.5 .
 ```
 
 ### Build args
@@ -53,7 +53,7 @@ docker build \
 | Arg | Default / source | Purpose |
 | --- | --- | --- |
 | `DSH_REPO` | `https://github.com/deepseek-ai/deepseek-harness.git` | Upstream DSH repository to clone. |
-| `DSH_VERSION` | `DSH_VERSION` in [versions.env](../versions.env) | Upstream DSH git tag/ref to package (the base tag, e.g. `dsh-v0.2.2-rc.3`), not the release identity. The Dockerfile records it as `io.sredevopsorg.dsh.version` and (for local builds) `org.opencontainers.image.version`; published builds set the version label to the full release identity. |
+| `DSH_VERSION` | `DSH_VERSION` in [versions.env](../versions.env) | Upstream DSH git tag/ref to package (the base tag, e.g. `dsh-v0.2.2-rc.5`), not the release identity. The Dockerfile records it as `io.sredevopsorg.dsh.version` and (for local builds) `org.opencontainers.image.version`; published builds set the version label to the full release identity. |
 | `DSH_COMMIT` | `DSH_COMMIT` in [versions.env](../versions.env) | Full commit SHA `DSH_VERSION` must resolve to upstream. The build stage fails unless `git rev-parse HEAD` in the clone equals this value, which pins the source independently of a movable tag. |
 | `RELEASE_REVISION` | `RELEASE_REVISION` in [versions.env](../versions.env) | Repository revision suffix (`rN`), recorded in `io.sredevopsorg.release.revision`. The release identity is `DSH_VERSION` plus `-RELEASE_REVISION` when set. See [versioning](versioning.md). |
 | `PNPM_VERSION` | `PNPM_VERSION` in [versions.env](../versions.env) | pnpm version activated with corepack in both stages. |
@@ -182,7 +182,7 @@ repopulated from the new image (a fresh volume is; Docker copies the image's
 # One-time: create the workspace with the image user's ownership.
 docker run --rm -u 0 --entrypoint sh \
   -v dsh-home:/home/node/.dsh \
-  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.3 \
+  ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.5 \
   -c 'mkdir -p /home/node/.dsh/workspace && chown 1000:1000 /home/node/.dsh/workspace'
 ```
 
@@ -242,7 +242,7 @@ GitHub Container Registry:
 
 | Tag | Meaning |
 | --- | --- |
-| `dsh-v0.2.2-rc.3` | Current release identity. **Immutable**: once published it never moves. |
+| `dsh-v0.2.2-rc.5` | Current release identity. **Immutable**: once published it never moves. |
 | `latest` | Most recent release; points at the same digest as the current identity. |
 | `main` | Development channel rebuilt when image-definition files change on `main`; not a release, not for production. |
 
@@ -251,7 +251,7 @@ Release identities, channels and rollback rules are defined in
 pin a digest:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.3
+docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.5
 # ... pin the digest in your deployment manifests:
 #   image: ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox@sha256:<digest>
 ```
@@ -259,7 +259,7 @@ docker buildx imagetools inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbo
 ## Verifying an image
 
 ```bash
-docker inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.3 \
+docker inspect ghcr.io/sredevopsorg/deepseek-kubernetes-sandbox:dsh-v0.2.2-rc.5 \
   --format '{{json .Config.Labels}}'
 # org.opencontainers.image.title / .version / .source
 # io.sredevopsorg.dsh.version / io.sredevopsorg.release.revision
