@@ -21,8 +21,8 @@ ARG NODE_RUNTIME_IMAGE=docker.io/node:24-trixie-slim@sha256:af02d57b57719b9657a4
 FROM $NODE_BUILD_IMAGE AS build
 
 ARG DSH_REPO=https://github.com/deepseek-ai/deepseek-harness.git
-ARG DSH_VERSION=dsh-v0.2.2-rc.3
-ARG DSH_COMMIT=38a6a5c965aa99ab525161efb7cc5cf1fe62fced
+ARG DSH_VERSION=dsh-v0.2.2-rc.5
+ARG DSH_COMMIT=9c2670d3bce5275e0d1610272958121af87787bb
 ARG PNPM_VERSION=11.28.5
 
 ENV CI=true \
@@ -67,7 +67,7 @@ RUN cd /opt/dsh \
 # ---------------------------------------------------------------------------
 FROM $NODE_RUNTIME_IMAGE AS runtime
 
-ARG DSH_VERSION=dsh-v0.2.2-rc.3
+ARG DSH_VERSION=dsh-v0.2.2-rc.5
 ARG RELEASE_REVISION=
 ARG PNPM_VERSION=11.28.5
 ARG VCS_REF=unknown
@@ -85,7 +85,7 @@ ENV NODE_ENV=production \
     HOME=/home/node \
     DSH_HOME=/home/node/.dsh \
     DSH_PORT=3080 \
-    PATH="/app/node_modules/.bin:$PATH"
+    PATH="/app/node_modules/.bin:/home/node/.dsh/workspace/.local/share/pnpm/bin:$PATH"
 
 # git/ripgrep/jq/yq/curl/gh are deliberate agent tooling parity: a sandboxed DSH
 # instance expects the usual developer CLI. tini reaps signals for a clean stop.
@@ -161,10 +161,10 @@ EOF
 
 RUN chmod 0755 /usr/local/bin/dsh-entrypoint
 
+USER node
+ENV HOME=/home/node/.dsh/workspace DSH_HOME=/home/node/.dsh 
 VOLUME ["/home/node/.dsh"]
 WORKDIR /home/node/.dsh/workspace
-USER node
-ENV HOME=/home/node/.dsh/workspace DSH_HOME=/home/node/.dsh
 
 EXPOSE 3080
 STOPSIGNAL SIGTERM

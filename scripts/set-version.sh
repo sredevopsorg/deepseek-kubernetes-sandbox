@@ -2,8 +2,8 @@
 # Rewrite every version pin in one pass, then leave the tree ready for
 # "make check".
 #
-#   ./scripts/set-version.sh dsh-v0.2.2-rc.3          # new DSH ref, no revision
-#   ./scripts/set-version.sh dsh-v0.2.2-rc.3 r3        # same ref, new repo revision
+#   ./scripts/set-version.sh dsh-v0.2.2-rc.5          # new DSH ref, no revision
+#   ./scripts/set-version.sh dsh-v0.2.2-rc.5 r3        # same ref, new repo revision
 #
 # For a new DSH ref the script resolves the tag's commit with "git ls-remote"
 # (peeled ^{} commit first, tag ref as fallback) and rewrites DSH_COMMIT in
