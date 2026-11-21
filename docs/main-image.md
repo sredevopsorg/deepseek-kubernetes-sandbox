@@ -32,7 +32,10 @@ digest in [versions.env](../versions.env): a mutable tag alone is not trusted, a
 make image          # canonical: builds the DSH Web image, no push
 ```
 
-`make image` reads [versions.env](../versions.env) and passes the pins as build args.
+The Makefile targets use Docker when `docker info` succeeds, and fall back to
+Podman when Docker is unavailable or unresponsive and `podman info` succeeds.
+Select an engine explicitly with `make image CONTAINER_ENGINE=podman`. `make image`
+reads [versions.env](../versions.env) and passes the pins as build args.
 Pull requests that touch `Dockerfile`, `.dockerignore` or `versions.env` get the
 same build for `linux/amd64` from the [`ci-image.yaml`](../.github/workflows/ci-image.yaml)
 workflow — no registry login, no push — followed by a container smoke test.
