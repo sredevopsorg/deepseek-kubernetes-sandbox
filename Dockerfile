@@ -82,9 +82,10 @@ LABEL org.opencontainers.image.title="DeepSeek Harness Web packaged by SREDevOps
       io.sredevopsorg.release.revision="$RELEASE_REVISION"
 
 ENV NODE_ENV=production \
-    HOME=/home/node \
+    HOME=/home/node/.dsh/workspace \
     DSH_HOME=/home/node/.dsh \
     DSH_PORT=3080 \
+    PNPM_HOME=/home/node/.dsh/workspace/.local/share/pnpm \
     PATH="/app/node_modules/.bin:/home/node/.dsh/workspace/.local/share/pnpm/bin:$PATH"
 
 # git/ripgrep/jq/yq/curl/gh are deliberate agent tooling parity: a sandboxed DSH
@@ -94,8 +95,9 @@ ENV NODE_ENV=production \
 # syscalls; a hardened pod (all capabilities dropped, RuntimeDefault seccomp)
 # usually cannot create one, which is why DSH then falls back to Landlock and,
 # when that is unavailable too, to DSH_PERMISSION_MODE=danger-full-access.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+RUN export DEBIAN_FRONTEND=noninteractive && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends --no-install-suggests \
       ca-certificates \
       git \
       ripgrep \
@@ -109,13 +111,14 @@ RUN apt-get update \
       python3 \
       python3-pip \
       python3-venv \
- && rm -rf /var/lib/apt/lists/* \
- && apt-get autoclean -y
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get autoclean -y
 
-RUN install -d -o node -g node -m 0755 /home/node/.dsh/workspace "$DSH_HOME" \
-     && corepack enable \
-     && corepack prepare "pnpm@$PNPM_VERSION" --activate \
-     && pnpm --version
+RUN install -d -o node -g node -m 0775 "$HOME" "$DSH_HOME"
+
+RUN corepack enable && \
+    corepack prepare "pnpm@$PNPM_VERSION" --activate && \
+    pnpm --version
 
 COPY --from=build --chown=node:node /opt/dsh /app
 
@@ -162,7 +165,7 @@ EOF
 RUN chmod 0755 /usr/local/bin/dsh-entrypoint
 
 USER node
-ENV HOME=/home/node/.dsh/workspace DSH_HOME=/home/node/.dsh 
+ENV HOME=/home/node/.dsh/workspace DSH_HOME=/home/node/.dsh PNPM_HOME=/home/node/.dsh/workspace/.local/share/pnpm
 VOLUME ["/home/node/.dsh"]
 WORKDIR /home/node/.dsh/workspace
 

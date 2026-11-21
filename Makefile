@@ -18,6 +18,7 @@ EXAMPLE_DIR := examples/dsh-agents-as-a-service
 PYTHON ?= $(if $(wildcard $(CURDIR)/.venv/bin/python),$(CURDIR)/.venv/bin/python,python3)
 DSH_PORT ?= 3080
 VCS_REF ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+CONTAINER_ENGINE ?= $(shell if docker info >/dev/null 2>&1; then echo docker; elif podman info >/dev/null 2>&1; then echo podman; else echo docker; fi)
 
 .PHONY: help image run gateway test cov lint check e2e changelog release-dry-run set-version clean
 
@@ -25,7 +26,7 @@ help: ## Show available targets
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sed 's/:.*## /	/'
 
 image: ## Build the main DSH Web image (no push)
-	docker build \
+	$(CONTAINER_ENGINE) build \
 		--build-arg DSH_VERSION=$(DSH_VERSION) \
 		--build-arg DSH_COMMIT=$(DSH_COMMIT) \
 		--build-arg RELEASE_REVISION=$(RELEASE_REVISION) \
@@ -34,14 +35,14 @@ image: ## Build the main DSH Web image (no push)
 		-t $(IMAGE) .
 
 run: image ## Build and run the main image (needs DEEPSEEK_API_KEY)
-	docker run --rm -it \
+	$(CONTAINER_ENGINE) run --rm -it \
 		-p $(DSH_PORT):3080 \
 		-v dsh-home:/home/node/.dsh \
 		-e DEEPSEEK_API_KEY \
 		$(IMAGE)
 
 gateway: ## Build the example gateway image locally
-	docker build -t $(GATEWAY_LOCAL_IMAGE) $(GATEWAY_DIR)/
+	$(CONTAINER_ENGINE) build -t $(GATEWAY_LOCAL_IMAGE) $(GATEWAY_DIR)/
 
 test: ## Gateway unit tests
 	cd $(GATEWAY_DIR) && $(PYTHON) -m pytest -q

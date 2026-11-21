@@ -165,3 +165,7 @@ venv/
 coverage.xml
 
 .vscode/settings.json
+
+# Ignore everything containing ".local"
+**/.local/*
+**/*.local/*
