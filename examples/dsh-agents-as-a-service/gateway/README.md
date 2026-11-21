@@ -196,7 +196,7 @@ oauth2-proxy's egress to the gateway, DNS and public HTTPS.
 | Unknown user on `/login` | `401` (same as a bad token; no username enumeration) |
 | Cross-origin cookie mutation / cross-origin form signup or login | `403` |
 | Auth route over `AUTH_RATE_LIMIT` | `429` + `Retry-After`, before the body is read |
-| Request body over `MAX_BODY_MB` | `413` |
+| Request body over `MAX_BODY_MB` | `413`. Checked against `Content-Length` up front and, while streaming, against the bytes actually received; a malformed `Content-Length` only loses the early rejection, never the cap |
 | Client aborts mid-body, before the response starts | `499` (`CLIENT_CLOSED_REQUEST`). Nothing is forwarded to DSH and nothing can be delivered; it is not an error, so no traceback is logged. Covers the body-reading control routes (`POST /users`, `POST /login`) as well as the proxy. |
 | Client aborts mid-stream (SSE, long response) | The response already started, so its upstream status stands (typically `200`); the stream simply ends. No traceback, and the in-flight slot is released as the relay unwinds. |
 | Sandbox not provisioned, wake timeout, handshake failure | `503` + `Retry-After: 10`. The handshake error body is a fixed message: it never contains the launch token, the handshake URL or pod/credential details. |
@@ -208,6 +208,7 @@ oauth2-proxy's egress to the gateway, DNS and public HTTPS.
 | WS per-user concurrency cap | accept, then close `1011` |
 | WS upstream/handshake failure | accept, then close `1011` |
 | WS Kubernetes API error | accept, then close `1011` |
+| WS client disconnects while the gateway resolves the sandbox and dials upstream (the upgrade can no longer be accepted) | no close frame is possible; the upstream connection is closed and the in-flight slot released |
 | WS message from DSH over `WS_MAX_MESSAGE_BYTES` | the upstream/relay closes the connection (websockets' message-too-big path) |
 
 A close code can only be delivered after the WebSocket upgrade is accepted;
@@ -240,7 +241,7 @@ can also be injected into `create_app` for tests.
 | `COOKIE_MAX_AGE` | `604800` | Session lifetime in seconds (server-side expiry and cookie `Max-Age`). |
 | `MAX_BODY_MB` | `32` | Maximum buffered request body (and `413` threshold). |
 | `HTTP_TIMEOUT` | `300` | Upstream connect/read timeout in seconds. Proxied streams (SSE, long responses) keep the connect/write budget but have **no read timeout**, so an idle event stream is not cut every five minutes. |
-| `SWEEP_INTERVAL` | `15` | Seconds between idle sweeps. Sweeps also prune expired sessions and rate buckets and orphaned per-user state. |
+| `SWEEP_INTERVAL` | `15` | Seconds between idle sweeps. Sweeps also prune expired sessions and rate buckets and orphaned per-user state. A Kubernetes API error while reading one user's sandbox logs `sweeper: could not read the sandbox for <user> (...)`, skips that user and retries on the next cycle; it is never taken as "idle". |
 | `SESSION_ACTIVITY_PROBE` | `true` | Before suspending an idle sandbox, ask DSH (`POST /api/session/list`) whether any agent is still `running`. Browser idleness alone is not enough: a closed tab ends every proxied request while the turn keeps going, and suspending deletes the pod mid-turn. A probe that fails or returns a shape the gateway does not understand is treated as **unknown**, and the suspension is deferred to the next sweep (fail closed). `false` restores the browser-only heuristic. |
 | `SESSION_PROBE_TIMEOUT` | `5` | Upper bound in seconds for one activity probe. It sits on the sweeper's critical path, so keep it well below `SWEEP_INTERVAL`. |
 | `SSE_KEEPALIVE_INTERVAL` | `15` | While relaying a `text/event-stream` response, emit a `: keepalive` comment frame when the upstream has been silent this many seconds. Cloudflare and proxies with a read timeout close a silent connection (Cloudflare at about 100 s), and DSH's HMR event stream only writes when the plugin graph changes, so an idle tab would otherwise lose its stream and reconnect in a loop. Only streams without a `Content-Length` are punctuated; comments are ignored by `EventSource`. Set `0` to disable. |

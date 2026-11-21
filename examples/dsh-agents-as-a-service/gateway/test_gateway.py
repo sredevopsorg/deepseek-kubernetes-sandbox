@@ -70,6 +70,7 @@ class FakeK8s:
         self.token_patches = []
         self.conflict_on_create = False
         self.get_claim_error = None
+        self.get_sandbox_errors = []
         self.patch_error = None
         self.api_error = None
 
@@ -96,6 +97,8 @@ class FakeK8s:
         return list(self.claims.values())
 
     async def get_sandbox(self, name):
+        if self.get_sandbox_errors:
+            raise self.get_sandbox_errors.pop(0)
         return self.sandboxes.get(name)
 
     async def patch_operating_mode(self, name, mode):
@@ -176,17 +179,25 @@ class FakeUpstream:
 
 
 class FakeWS:
-    """Async context manager matching websockets' ClientConnection subset."""
+    """Async context manager matching websockets' ClientConnection subset.
+
+    ``accept_error`` is what Starlette's ``accept`` raises once the client has
+    already disconnected during the request (it waits for the ``connect``
+    message and sees the disconnect instead).
+    """
 
     def __init__(self):
         self.sent = []
         self.closed = False
         self.close_code = None
         self.subprotocol = None
+        self.accept_error = None
         self._stage = 0
         self._sent_event = asyncio.Event()
 
     async def send(self, data):
+        if self.accept_error is not None:
+            raise self.accept_error
         self.sent.append(data)
         self._sent_event.set()
 
@@ -211,6 +222,10 @@ class FakeWS:
         return self
 
     async def __aexit__(self, *exc_info):
+        # websockets' ClientConnection.__aexit__ closes the connection; the
+        # fake must too, or a test cannot tell "closed" from "leaked".
+        if not self.closed:
+            await self.close()
         return False
 
 
@@ -219,12 +234,14 @@ class FakeWSConnect:
         self.calls = []
         self.instances = []
         self.error = None
+        self.accept_error = None
 
     def __call__(self, url, **kwargs):
         self.calls.append((url, kwargs))
         if self.error is not None:
             raise self.error
         ws = FakeWS()
+        ws.accept_error = self.accept_error
         self.instances.append(ws)
         return ws
 
@@ -1715,6 +1732,40 @@ async def test_proxy_body_limit_returns_413(env):
 
 
 @pytest.mark.asyncio
+async def test_proxy_rejects_body_when_content_length_is_malformed(env):
+    """An unparseable Content-Length must not bypass the streaming cap.
+
+    The header check only saves a stream; when it cannot be parsed the counting
+    loop still enforces ``max_body_bytes`` (and nothing reaches DSH).
+    """
+    add_user(env.k8s)
+    env.gateway.settings = Settings(**{**env.settings.__dict__, "max_body_bytes": 4})
+    messages = [{"type": "http.request", "body": b"too large", "more_body": False}]
+
+    async def receive():
+        return messages.pop(0)
+
+    sent = await asgi_call(
+        env,
+        raw_scope(
+            "POST",
+            "/u/alice/api/echo",
+            headers=[
+                (b"origin", b"http://gateway.test"),
+                (b"cookie", session_cookie(env).encode()),
+                (b"content-type", b"application/json"),
+                (b"content-length", b"not-a-number"),
+            ],
+        ),
+        receive,
+    )
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert [start["status"] for start in starts] == [413]
+    assert env.upstream.proxy_requests == []
+    assert env.gateway.state.in_flight["alice"] == 0
+
+
+@pytest.mark.asyncio
 async def test_proxy_client_disconnect_mid_body_returns_499(env):
     """An aborted upload is answered 499 quietly and never reaches DSH."""
     add_user(env.k8s)
@@ -2088,6 +2139,72 @@ def test_ws_handshake_failure_closes_1011(env):
             with pytest.raises(WebSocketDisconnect) as exc:
                 ws.receive_text()
     assert exc.value.code == 1011
+
+
+@pytest.mark.asyncio
+async def test_ws_accept_failure_releases_slot_and_closes_upstream(env):
+    """A failed upgrade must not leave the slot held or the upstream lazy."""
+    add_user(env.k8s)
+    env.ws_connect.accept_error = RuntimeError(
+        "Cannot call 'accept' once the WebSocket has been closed."
+    )
+
+    class _Recorder:
+        def __init__(self):
+            self.sent = []
+
+        async def __call__(self, message):
+            self.sent.append(message)
+
+    recorder = _Recorder()
+
+    async def receive():
+        return {"type": "websocket.disconnect", "code": 1000}
+
+    await env.app(
+        {
+            "type": "websocket",
+            "asgi": {"version": "3.0"},
+            "scheme": "ws",
+            "path": "/u/alice/api/remote.mux",
+            "raw_path": b"/u/alice/api/remote.mux",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(b"host", b"gateway.test"), (b"authorization", f"Bearer {TOKEN}".encode())],
+            "client": ("10.0.0.9", 4321),
+            "server": ("gateway.test", 80),
+            "subprotocols": [],
+            "state": {},
+        },
+        receive,
+        recorder,
+    )
+
+    assert env.gateway.state.in_flight["alice"] == 0
+    # The gateway could not tell the client anything (accept failed), so the
+    # upstream must not be left open: it is closed on the way out.
+    assert env.ws_connect.instances[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_sweeper_logs_api_error_and_retries(env, capsys):
+    """A transient API read failure is logged and retried, never "idle"."""
+    busy_sweepable(env, running=False)
+    env.k8s.get_sandbox_errors.append(ApiException(status=503, reason="throttled"))
+
+    await env.gateway.sweep_once()
+
+    # No suspend without a fresh observation, and the maintenance claim is
+    # never taken (so the user is not stranded behind a stale flag).
+    assert env.k8s.patches == []
+    assert env.gateway.state.maintenance.get("alice") in (None, False)
+    output = capsys.readouterr().out
+    assert "sweeper: could not read the sandbox for alice" in output
+    assert "ApiException" in output
+
+    # The next cycle sees the sandbox again and proceeds normally.
+    await env.gateway.sweep_once()
+    assert env.k8s.patches == [("dsh-alice-sbx", "Suspended")]
 
 
 def test_ws_upstream_connect_failure_closes_1011(env):

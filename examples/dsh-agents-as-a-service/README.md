@@ -222,7 +222,10 @@ kubectl -n dsh-demo port-forward "pod/$SB" 18081:3080
 > gateway ownership annotation (`aaas.example.com/managed-by`). The gateway's
 > idle sweeper only suspends claims the gateway created (through `POST /users`
 > or SSO auto-provisioning), and only after its activity probe
-> reports no running agent. The resource-layer claims from these manifests are
+> reports no running agent. A sweep cycle that cannot read a sandbox because of
+> a transient Kubernetes API error logs `sweeper: could not read the sandbox for
+> <user>` and retries on the next cycle instead of suspending. The
+> resource-layer claims from these manifests are
 > never touched. You can deploy the gateway (step 8) and still keep a sandbox
 > you are port-forwarding to.
 

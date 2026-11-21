@@ -1461,10 +1461,15 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
         raw_length = request.headers.get("content-length")
         if raw_length:
             try:
-                if int(raw_length) > limit:
-                    raise BodyTooLarge
+                declared = int(raw_length)
             except ValueError:
-                pass
+                # An unparseable header is not a reason to reject the request:
+                # the streaming loop below counts the real bytes and raises
+                # BodyTooLarge (413) the moment they pass ``limit``. Skipping
+                # the check only loses the early, pre-stream rejection.
+                declared = None
+            if declared is not None and declared > limit:
+                raise BodyTooLarge
         chunks, total = [], 0
         async for chunk in request.stream():
             total += len(chunk)
@@ -1972,7 +1977,12 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
             try:
                 await websocket.accept(subprotocol=getattr(upstream, "subprotocol", None))
             except RuntimeError:
-                pass
+                # The upgrade never completed (the client left while the
+                # gateway was resolving the sandbox and dialing, so ``accept``
+                # saw a disconnect). Nothing can be pumped and no close frame
+                # can be delivered; fall through to the ``finally``, which
+                # closes the upstream and releases the slot.
+                return
             await self._pump(websocket, upstream)
             with contextlib.suppress(Exception):
                 await websocket.close(code=self._upstream_close_code(upstream))
@@ -2066,8 +2076,17 @@ against the JSON API. The browser session is an HttpOnly cookie.</p>
             user = claim_user(claim)
             try:
                 sandbox = await self._sandbox_of(claim)
-            except ApiException:
-                continue  # transient/stale claim; retry next cycle
+            except ApiException as exc:
+                # Transient or stale (the sandbox was deleted between the claim
+                # list and this read, or the API throttled us). Never suspend
+                # without a fresh observation, so skip the user and retry on the
+                # next cycle. Credential-free: user and failure kind only.
+                print(
+                    f"sweeper: could not read the sandbox for {user} "
+                    f"({type(exc).__name__}); retrying next cycle",
+                    flush=True,
+                )
+                continue
             if sandbox is None or derive_state(sandbox) != "Ready":
                 continue
             async with self.state.lock:
